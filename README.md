@@ -24,8 +24,8 @@ Any use of third-party trademarks or logos are subject to those third-party's po
 cheriot-kudu is 32-bit RISC-V microcontroller currently under development at Microsoft. Feature highlights include
  - 5 stage pipeline
  - in-order, dual-issue 
- - RV32IMC 
- - CHERIoT extension (same as cheriot-ibex)
+ - RV32IMC support
+ - CHERIoT support (same as cheriot-ibex)
  - Backward compatibility mode (same as cheriot-ibex)
 
 See the following block diagram for an overview of cheriot-kudu hardwared design.
@@ -36,5 +36,5 @@ See the following block diagram for an overview of cheriot-kudu hardwared design
 ## Simulation and emulation
 For VCS simulation, see the instructions in sim/ directory.
 
-In addition, [cheriot-safe](https://github.com/microsoft/cheriot-safe) provides an open-source FPGA platform for emulation and prototyping.
+[cheriot-safe](https://github.com/microsoft/cheriot-safe) provides an open-source FPGA platform for emulation and prototyping.
 
