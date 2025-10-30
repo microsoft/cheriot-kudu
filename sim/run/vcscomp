@@ -1,6 +1,39 @@
-export rtlRoot=../../rtl
-export primRoot=../../prim
-export dvutilsRoot=../../dv_utils
-export verifRoot=..
+#!/usr/local/bin/bash
+#
+VlogDef1="+define+CHERIoT"
+VlogDef2="+define+KUDU_PPL_CFG=0"
+VlogDef3=""
+FileList="kudu.vcs.f"
+OutFile="./simv"
+CompDir="simv.daidir"
 
-vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L +define+CHERIoT -timescale=1ns/1ps -debug_acc+all -f kudu.vcs.f $*
+# Loop over args
+for arg in "$@"; do
+  case "$arg" in
+    -rv32)  
+      VlogDef1="" 
+      OutFile="./simv32"
+      CompDir="simv32.daidir"
+      ;;
+    -conf1) VlogDef2="+define+KUDU_PPL_CFG=1" ;;
+    -conf2) VlogDef2="+define+KUDU_PPL_CFG=2" ;;
+    -conf3) VlogDef2="+define+KUDU_PPL_CFG=3" ;;
+    -dw)
+      VlogDef3="+define+KUDU_DW_MULT=1"
+      FileList="kudu_dw.vcs.f" 
+      ;;
+    *)
+      echo "Warning: Unknown option $arg" >&2
+      ;;
+  esac
+done
+
+VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3"
+echo "VlogDefs=$VlogDefs  FileList=$FileList"
+
+
+export rtlRoot=../../rtl
+export verifRoot=..
+export dwRoot=../../dw
+rm $CompDir/.vcs.timestamp
+vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps -debug_acc+all -o $OutFile $VlogDefs -f $FileList

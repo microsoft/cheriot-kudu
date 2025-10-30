@@ -123,13 +123,30 @@ module tb_kudu_top;
     i = $value$plusargs("CAP_ERR_RATE=%d", cfg_cap_err_rate);
     if (i == 1) cap_err_rate = cfg_cap_err_rate[2:0];
 
-    $display("TB> MemDataWidth = %2d, CFG.cheri_pmode=%1d", 
-             DBusW,  cheri_pmode);
+    $display("TB> MemDataWidth = %2d, CFG.cheri_pmode=%1d", DBusW,  cheri_pmode);
     $display("TB> INSTR_GNTW = %d, INSTR_RESPW = %d, DATA_GNTW = %d, DATA_RESPW = %d", 
              instr_gnt_wmax, instr_resp_wmax, data_gnt_wmax, data_resp_wmax); 
     $display("TB> INSTR_ERR_RATE = %d, DATA_ERR_RATE = %d, INTR_INTVL = %d, CAP_ERR_RATE = %d", 
              instr_err_rate,  data_err_rate, intr_intvl, cap_err_rate);
     $display("TB> DBG_REQ_INTVL = %d", dbg_req_intvl);
+  endtask
+
+  task print_dut_cfg ();
+  `ifndef IBEX
+     // print KUDU configuration parameters
+    $display("TB> DUT: Kudu configuration parameters");
+    $display("TB> DUT: CHERIoTEn = %1d, DualIssue = %1d", dut.CHERIoTEn, dut.DualIssue);
+    $display("TB> DUT: EarlyLoad = %1d, LoadFiltEn = %1d, DCahceEn = %1d, TSMapSize = %4d", 
+             dut.EarlyLoad, dut.LoadFiltEn, dut.DCacheEn, dut.TSMapSize);
+    $display("TB> DUT: NoMult = %1d, UseDWMult = %1d", dut.NoMult, dut.UseDWMult);
+    $display("TB> DUT: PipeCfg = %1d, IrStageBypass = %1d, IfRdataBypass = %1d, UnalignedFetch = %1d", 
+             dut.PipeCfg, dut.IrStageBypass, dut.IfRdataBypass, dut.UnalignedFetch);
+    $display("TB> DUT: PrefetchDepth = %1d, IrS0Depth = %1d", dut.PrefetchDepth, dut.IrS0Depth);
+    $display("TB> DUT: IfCompDecEn = %1d, IrCompDecEn = %1d, IfBTCacheEn = 0",
+             dut.IfCompDecEn, dut.IrCompDecEn);
+    $display("TB> DUT: PredictBhtSize = %2d, PredictUseBtb = %1d, PredictIbufEn = %1d", 
+             dut.PredictBhtSize, dut.PredictUseBtb, dut.PredictIbufEn);
+  `endif    
   endtask
 
 `ifdef CHERIoT
@@ -143,22 +160,24 @@ module tb_kudu_top;
   assign {irq_timer, irq_software,  irq_external} = irq_vec; 
 
 `ifndef IBEX
-  kudu_top #(
+  `ifndef KUDU_PPL_CFG
+    `define KUDU_PPL_CFG 3
+  `endif
+
+  `ifndef KUDU_DW_MULT
+    `define KUDU_DW_MULT 0
+  `endif
+
   `ifdef CHERIoT
-    .CHERIoTEn   (1'b1),
-  `else
-    .CHERIoTEn   (1'b0),
+    `define KUDU_CHERIOT_EN 1
+  `else 
+    `define KUDU_CHERIOT_EN 0
   `endif
-    .DualIssue   (1'b1),
-    .EarlyLoad   (1'b1),
-    .IrPipeCfg   (0),
-    .DCacheEn    (1'b1),
-    .NoMult      (1'b0),
-  `ifdef USE_DW
-    .UseDWMult   (1'b1),
-  `else
-    .UseDWMult   (1'b0),
-  `endif
+
+  kudu_top #(
+    .CHERIoTEn   (`KUDU_CHERIOT_EN),
+    .PipeCfg     (`KUDU_PPL_CFG),
+    .UseDWMult   (`KUDU_DW_MULT),
     .HeapBase    (32'h8000_0000),
     .TSMapSize   (1024),
     .DmHaltAddr  (32'h84000000),
@@ -212,19 +231,25 @@ module tb_kudu_top;
     .print_req  (stat_print_req)
   );
 
+  kudu_branch_log branch_log_i (
+    .clk_i      (clk),
+    .rst_ni     (rst_n),
+    .start_stop (mcycle_rd_event)
+  );
 
 `endif
 
 `ifdef IBEX
   logic [31:0] instr_rdata_ibex;
 
+                     // .RV32M           (RV32MSingleCycle),
   ibex_top_tracing #(
                      .HeapBase        (32'h8000_0000),
                      .TSMapBase       (32'h8003_0000),
                      .TSMapSize       (1024),
                      .DmHaltAddr      (32'h84000000),
                      .DmExceptionAddr (32'h84000008),
-                     .RV32M           (RV32MSingleCycle),
+                     .RV32M           (RV32MFast),
                      .MMRegDinW       (128),
                      .MMRegDoutW      (64),
                    `ifdef CHERIoT
@@ -347,6 +372,7 @@ module tb_kudu_top;
     $display("TB> Test timeout = %d", timeout);
 
     config_tb();
+    print_dut_cfg();
     {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable, cfg_cap_err_enable} = 4'h0;
 
     stat_print_req = 1'b0;

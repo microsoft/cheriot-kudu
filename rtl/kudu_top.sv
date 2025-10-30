@@ -4,15 +4,8 @@
 
 module kudu_top import super_pkg::*;  #(
   parameter bit          CHERIoTEn      = 1'b0,
-  parameter bit          DualIssue      = 1'b1,
-  parameter bit          EarlyLoad      = 1'b1,
-  parameter bit          DCacheEn       = 1'b0,
-  parameter int unsigned IrPipeCfg      = 0,
-  parameter bit          InstrBufEn     = 1'b1,
-  parameter bit          UnalignedFetch = 1'b0,
-  parameter bit          NoMult         = 1'b0,
+  parameter int unsigned PipeCfg        = 0,
   parameter bit          UseDWMult      = 1'b0,
-  parameter bit          LoadFiltEn     = 1'b1,
   parameter int unsigned HeapBase       = 32'h2001_0000,
   parameter int unsigned TSMapSize      = 1024,
   parameter int unsigned DmHaltAddr     = 32'h1A110800,
@@ -66,15 +59,40 @@ module kudu_top import super_pkg::*;  #(
   import csr_pkg::*;
   import cheri_pkg::*;
 
-  // pipeline configuration (IrPipeCfg)
-  //   0: 5-stage total, 0-1-1, InstrRdataBypass = 1, IrStageBypass = 00, CompDec in IR stage
-  //   1: 5-stage total, 1-0-1, InstrRdataBypass = 0, IrStageBypass = 01, CompDec in IR stage
-  //   2: 4-stage total, 0-1-0, InstrRdataBypass = 1, IrStageBypass = 10, CompDec in IF stage
-  //   3: 6-stage total, 1-1-1, InstrRdataBypass = 0, IrStageBypass = 00, CompDec in IR stage
-  localparam bit [1:0] IrStageBypass      = (IrPipeCfg == 1) ? 2'b01 : ((IrPipeCfg == 2) ? 2'b10 : 2'b00);
-  localparam bit       IfInstrRdataBypass = (IrPipeCfg == 0) || (IrPipeCfg == 2);
-  localparam bit       IfCompDecEn        = (IrPipeCfg == 2);
-  localparam bit       IrCompDecEn        = (IrPipeCfg != 2);
+  // pipeline configuration (PipeCfg)
+  // Use prefetch buffer:
+  //   0: 5-stage total, 0-1-1, InstrRdataBypass = 1, IrStageBypass = 00 
+  //   1: 5-stage total, 1-0-1, InstrRdataBypass = 0, IrStageBypass = 01
+  //   2: 4-stage total, 0-1-0, InstrRdataBypass = 1, IrStageBypass = 10
+  //   3: 6-stage total, 1-1-1, InstrRdataBypass = 0, IrStageBypass = 00
+
+  localparam bit [1:0]    IrStageBypass  = (PipeCfg == 0) ? 2'b00 : 
+                                           (PipeCfg == 1) ? 2'b01 :
+                                           (PipeCfg == 2) ? 2'b10 :
+                                           (PipeCfg == 3) ? 2'b00 :
+                                           2'b00;
+                                         
+  localparam bit          IfRdataBypass  = (PipeCfg == 0) || (PipeCfg == 2);
+  localparam bit          IfCompDecEn    = (PipeCfg == 2);
+  localparam bit          IrCompDecEn    = (PipeCfg != 2);
+  //localparam bit        IfBTCacheEn    = (PipeCfg == 4) || (PipeCfg == 5);
+                          
+  localparam bit          PredictUseBtb  = (PipeCfg == 0) || (PipeCfg == 2);
+  localparam bit          PredictIbufEn  = (PipeCfg == 0) || (PipeCfg == 2);
+  localparam int unsigned PredictBhtSize = (PipeCfg == 1) ? 32 :
+                                           (PipeCfg == 3) ? 32 :
+                                           16;
+  localparam int unsigned PrefetchDepth  = (PipeCfg == 1) ? 3 :
+                                           (PipeCfg == 3) ? 3 :
+                                           2;
+  localparam int unsigned IrS0Depth      = ((PipeCfg == 1) |  (PipeCfg == 3)) ? 4 : 2;
+
+  localparam bit          DualIssue      = 1'b1;
+  localparam bit          EarlyLoad      = 1'b1;
+  localparam bit          DCacheEn       = 1'b1;
+  localparam bit          UnalignedFetch = 1'b0;
+  localparam bit          NoMult         = 1'b0;
+  localparam bit          LoadFiltEn     = 1'b1;
 
   rf_rdata2_t     rf_rdata2_p0;
   rf_rdata2_t     rf_rdata2_p1;
@@ -211,10 +229,13 @@ module kudu_top import super_pkg::*;  #(
 
   if_stage #(
     .CHERIoTEn        (CHERIoTEn),
-    .InstrBufEn       (InstrBufEn), 
+    .InstrBufEn       (PredictIbufEn), 
     .CompDecEn        (IfCompDecEn),
-    .InstrRdataBypass (IfInstrRdataBypass),
-    .UnalignedFetch (UnalignedFetch)
+    .InstrRdataBypass (IfRdataBypass),
+    .UnalignedFetch   (UnalignedFetch),
+    .PredictUseBtb    (PredictUseBtb),
+    .PredictBhtSize   (PredictBhtSize),
+    .PrefetchDepth    (PrefetchDepth)
   ) if_stage_i(
     .clk_i                   (clk_i                   ),
     .rst_ni                  (rst_ni                  ),
@@ -244,6 +265,7 @@ module kudu_top import super_pkg::*;  #(
     .CompDecEn    (IrCompDecEn), 
     .StageBypass  (IrStageBypass),
     .CHERIoTEn    (CHERIoTEn),
+    .S0FifoDepth  (IrS0Depth),
     .DbgTriggerEn (DbgTriggerEn),
     .BrkptNum     (BrkptNum)    
   ) ir_stage_i (

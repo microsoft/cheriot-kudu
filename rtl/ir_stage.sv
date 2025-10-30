@@ -9,6 +9,7 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   parameter bit [1:0]     StageBypass    = 2'b00,
   parameter bit           CompDecEn      = 1'b1,
   parameter bit           CHERIoTEn      = 1'b0,
+  parameter int unsigned  S0FifoDepth    = 4,
   parameter rv32m_e       RV32M          = super_pkg::RV32MFast,
   parameter rv32b_e       RV32B          = super_pkg::RV32BNone,
   parameter bit           DbgTriggerEn   = 1'b0,
@@ -205,15 +206,7 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
 
   logic [1:0]  brkpt_match;
 
-  if (StageBypass[0]) begin : gen_no_stage0
-    assign ir_rdy_o    = s0_rd_rdy;
-    assign s0_rd_valid = us_valid_i;
-    assign s0_rdata0   = us_instr0_i;
-    assign s0_rdata1   = us_instr1_i;
-    assign s0_mema     = us_instr0_i;
-    assign s0_memb     = us_instr1_i;
-    assign s0_mema_is0 = 1'b1;
-  end else begin : gen_stage0
+  if (StageBypass[1]) begin : gen_stage0_direct
     stage_fifo # (.Width(irRegW), .PeekMem(1)) s0_fifo (
       .clk_i      (clk_i),
       .rst_ni     (rst_ni),
@@ -232,6 +225,33 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
       .wr_mema_o  (),
       .wr_memb_o  (),
       .wr_ptr_o   ()
+    );
+  end else begin : gen_stage0_buffer 
+    // assign ir_rdy_o    = s0_rd_rdy;
+    // assign s0_rd_valid = us_valid_i;
+    // assign s0_rdata0   = us_instr0_i;
+    // assign s0_rdata1   = us_instr1_i;
+    // assign s0_mema     = us_instr0_i;
+    // assign s0_memb     = us_instr1_i;
+    // assign s0_mema_is0 = 1'b1;
+    // stage_fifo # (.Width(irRegW)) s0_fifo (
+    dual_fifo # (
+      .Depth(S0FifoDepth), 
+      .Width(irRegW), 
+      .PplRead(1'b1), 
+      .WrThrough(StageBypass[0])
+    ) s0_fifo (
+      .clk_i      (clk_i),
+      .rst_ni     (rst_ni),
+      .flush_i    (ir_flush_i),
+      .wr_valid_i (us_valid_i),
+      .wr_data0_i (us_instr0_i),  
+      .wr_data1_i (us_instr1_i), 
+      .wr_rdy_o   (ir_rdy_o), 
+      .rd_rdy_i   (s0_rd_rdy),
+      .rd_valid_o (s0_rd_valid),
+      .rd_data0_o (s0_rdata0),
+      .rd_data1_o (s0_rdata1)
     );
   end
 

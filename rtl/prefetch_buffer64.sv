@@ -14,8 +14,9 @@
  * paths to the instruction cache.
  */
 module prefetch_buffer64 import super_pkg::*; #(
-  parameter bit UnalignedFetch = 1'b1,
-  parameter bit RdataBypass    = 1'b1
+  parameter bit          UnalignedFetch = 1'b0,
+  parameter bit          RdataBypass    = 1'b1,
+  parameter int unsigned FifoDepth      = 3
 ) (
   input  logic        clk_i,
   input  logic        rst_ni,
@@ -47,7 +48,7 @@ module prefetch_buffer64 import super_pkg::*; #(
   output logic        busy_o
 );
 
-  localparam int unsigned NUM_REQS  = 2;
+  localparam int unsigned NUM_REQS  = FifoDepth;
 
   logic                valid_new_req, valid_req;
   logic                valid_req_d, valid_req_q;

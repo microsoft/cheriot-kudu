@@ -21,8 +21,11 @@ module if_stage import super_pkg::*; #(
   parameter bit          CHERIoTEn         = 1'b0,
   parameter bit          InstrBufEn        = 1'b1,
   parameter bit          CompDecEn         = 1'b1,
-  parameter bit          UnalignedFetch    = 1'b1,
-  parameter bit          InstrRdataBypass  = 1'b1
+  parameter bit          UnalignedFetch    = 1'b0,
+  parameter bit          InstrRdataBypass  = 1'b1,
+  parameter bit          PredictUseBtb     = 1'b1,
+  parameter int unsigned PredictBhtSize    = 16,
+  parameter int unsigned PrefetchDepth     = 3
 ) (
   input  logic                        clk_i,
   input  logic                        rst_ni,
@@ -61,11 +64,10 @@ module if_stage import super_pkg::*; #(
 
   // prefetch buffer related signals
   logic         prefetch_busy;
-  logic         branch_req;
-  logic  [31:0] fetch_addr_n;
 
   logic         predict_pc_set;
-  logic  [31:0] predict_pc_target;
+  logic  [31:0] predict_pc_target, predict_br_target;
+  logic         predict_ibuf_hit;
   logic  [1:0]  fetch_valid;
 
   ir_reg_t      fetch_instr0, fetch_instr1;
@@ -74,13 +76,17 @@ module if_stage import super_pkg::*; #(
   logic  [31:0] instr1_pc_spec0;
   logic  [31:0] instr1_pc_spec1;
 
+  logic         branch_req;
+  logic  [31:0] fetch_addr_n;
   // The Branch predictor can provide a new PC which is internal to if_stage. Only override the mux
   // select to choose this if the core isn't already trying to set a PC.
   assign fetch_addr_n = ex_pc_set_i ? ex_pc_target_i : predict_pc_target;
+  assign branch_req  = ex_pc_set_i | predict_pc_set;
   
   prefetch_buffer64 #(
     .UnalignedFetch (UnalignedFetch),
-    .RdataBypass    (InstrRdataBypass)
+    .RdataBypass    (InstrRdataBypass),
+    .FifoDepth      (PrefetchDepth)
   ) prefetch_buffer_i (
       .clk_i               ( clk_i                      ),
       .rst_ni              ( rst_ni                     ),
@@ -103,10 +109,13 @@ module if_stage import super_pkg::*; #(
       .busy_o              ( prefetch_busy              )
   );
 
-  assign branch_req  = ex_pc_set_i | predict_pc_set;
   assign if_busy_o   = prefetch_busy;
 
-  branch_predict #(.InstrBufEn (InstrBufEn)) branch_predict_i (
+  branch_predict #(
+    .InstrBufEn (InstrBufEn), 
+    .UseBtb     (PredictUseBtb),
+    .BhtSize    (PredictBhtSize)
+  ) branch_predict_i (
     .clk_i               (clk_i            ),
     .rst_ni              (rst_ni           ),
     .pdt_en_i            (1'b1             ),
@@ -116,6 +125,8 @@ module if_stage import super_pkg::*; #(
     .instr_gnt_i         (instr_gnt_i      ),
     .predict_pc_set_o    (predict_pc_set   ),
     .predict_pc_target_o (predict_pc_target),
+    .predict_br_target_o (predict_br_target),
+    .predict_ibuf_hit_o  (predict_ibuf_hit ),
     .fetch_valid_i       (fetch_valid      ),
     .fetch_instr0_i      (fetch_instr0     ), 
     .fetch_instr1_i      (fetch_instr1     ), 

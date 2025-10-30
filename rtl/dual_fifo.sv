@@ -20,9 +20,10 @@
 //   
 //
 module dual_fifo # (
-  parameter int unsigned Depth        = 2,    // must be power of 2
-  parameter int unsigned Width        = 32,
-  parameter bit          PipelineRead = 1'b0  
+  parameter int unsigned Depth     = 2,    // must be power of 2
+  parameter int unsigned Width     = 32,
+  parameter bit          PplRead   = 1'b0,
+  parameter bit          WrThrough = 1'b0
 ) (
   input  logic              clk_i,
   input  logic              rst_ni,
@@ -41,12 +42,11 @@ module dual_fifo # (
   );
 
   localparam int unsigned      PtrW    = $clog2(Depth)+1;
-  localparam logic [PtrW-1:0]  DepthM1 = Depth-1;
-  localparam logic [PtrW-1:0]  DepthM2 = Depth-2;
   
   logic [PtrW-1:0] wr_ptr_q, wr_ptr_p1, wr_ptr_p2, wr_ptr_nxt;
   logic [PtrW-1:0] rd_ptr_q, rd_ptr_p1, rd_ptr_p2, rd_ptr_nxt;
-  logic [PtrW-1:0] cur_wr_depth, cur_rd_depth;
+  // logic [PtrW-1:0] cur_wr_depth, cur_rd_depth;
+  logic [PtrW-1:0] nxt_depth;
 
   logic [PtrW-2:0] wr_mem_addr[2];
   logic [PtrW-2:0] rd_mem_addr[2];
@@ -55,6 +55,8 @@ module dual_fifo # (
 
   logic [1:0] wr_rdy, rd_valid;
   logic [1:0] wr_data_en;
+
+  logic [1:0] room_status_q, fill_status_q; 
 
   // I/O assigments
   assign wr_rdy_o   = wr_rdy;
@@ -66,9 +68,6 @@ module dual_fifo # (
   assign rd_ptr_p1 = rd_ptr_q + 1;
   assign rd_ptr_p2 = rd_ptr_q + 2;
 
-  assign cur_wr_depth  = PipelineRead ? (wr_ptr_q - rd_ptr_nxt) : (wr_ptr_q - rd_ptr_q);  
-  assign cur_rd_depth  = wr_ptr_q - rd_ptr_q;
-
   // actual FIFO storage addresses
   assign wr_mem_addr[0] = wr_ptr_q[PtrW-2:0];
   assign wr_mem_addr[1] = wr_ptr_p1[PtrW-2:0];
@@ -76,17 +75,30 @@ module dual_fifo # (
   assign rd_mem_addr[0] = rd_ptr_q[PtrW-2:0];
   assign rd_mem_addr[1] = rd_ptr_p1[PtrW-2:0];
 
+  // localparam logic [PtrW-1:0]  DepthM1 = Depth-1;
+  // localparam logic [PtrW-1:0]  DepthM2 = Depth-2;
+  // assign cur_wr_depth  = PplRead ? (wr_ptr_q - rd_ptr_nxt) : (wr_ptr_q - rd_ptr_q);  
+  // assign cur_rd_depth  = wr_ptr_q - rd_ptr_q;
+  // assign wr_rdy[1] = (cur_wr_depth <= DepthM2);
+  // assign wr_rdy[0] = (cur_wr_depth <= DepthM1);
+  // assign rd_valid[1] = (cur_rd_depth >= 2);
+  // assign rd_valid[0] = (cur_rd_depth >= 1);
+
   // output signals
-  // assign wr_rdy[1] = (cur_wr_depth <= DepthM2) | flush_i;
-  // assign wr_rdy[0] = (cur_wr_depth <= DepthM1) | flush_i;
-  assign wr_rdy[1] = (cur_wr_depth <= DepthM2);
-  assign wr_rdy[0] = (cur_wr_depth <= DepthM1);
+  assign wr_rdy   = PplRead ? (room_status_q | rd_rdy_i) : room_status_q;
 
-  assign rd_valid[1] = (cur_rd_depth >= 2);
-  assign rd_valid[0] = (cur_rd_depth >= 1);
+  if (WrThrough) begin : wr_trough
+    assign rd_valid[0] = fill_status_q[0] | wr_valid_i[0];
+    assign rd_valid[1] = fill_status_q[1] | (fill_status_q[0] & wr_valid_i[0]) | wr_valid_i[1];
 
-  assign rd_data0_o = fifo_mem[rd_mem_addr[0]];
-  assign rd_data1_o = fifo_mem[rd_mem_addr[1]];
+    assign rd_data0_o  = fill_status_q[0] ? fifo_mem[rd_mem_addr[0]] : wr_data0_i;
+    assign rd_data1_o  = fill_status_q[1] ?  fifo_mem[rd_mem_addr[1]] :
+                         (fill_status_q[0] ? wr_data0_i : wr_data1_i);
+  end else begin : no_wr_through
+    assign rd_valid = fill_status_q;
+    assign rd_data0_o = fifo_mem[rd_mem_addr[0]];
+    assign rd_data1_o = fifo_mem[rd_mem_addr[1]];
+  end
 
   // extended read and write pointers
   always_comb begin
@@ -97,9 +109,6 @@ module dual_fifo # (
     else 
       rd_ptr_nxt = rd_ptr_q;
 
-    // if (flush_i) begin
-    //  wr_data_en = 2'b00;
-    // end else 
     if ((wr_rdy[1:0] == 2'b11) && (wr_valid_i == 2'b11)) begin
       wr_ptr_nxt = wr_ptr_p2;          // write 2
       wr_data_en = 2'b11;
@@ -113,20 +122,31 @@ module dual_fifo # (
 
   end
 
+  assign nxt_depth = wr_ptr_nxt - rd_ptr_nxt;
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      wr_ptr_q <= 0;
-      rd_ptr_q <= 0;
+      wr_ptr_q      <= 0;
+      rd_ptr_q      <= 0;
+      room_status_q <= 2'b11;
+      fill_status_q <= 2'b00;
     end else begin
       if (flush_i) begin
-        wr_ptr_q <= 0;
-        rd_ptr_q <= 0;
+        wr_ptr_q      <= 0;
+        rd_ptr_q      <= 0;
+        room_status_q <= 2'b11;
+        fill_status_q <= 2'b00;
       end else begin
         wr_ptr_q <= wr_ptr_nxt;
         rd_ptr_q <= rd_ptr_nxt;
+        room_status_q[1] <= (nxt_depth < (Depth-1));
+        room_status_q[0] <= (nxt_depth < (Depth));
+        fill_status_q[1] <= (nxt_depth > 1);
+        fill_status_q[0] <= (nxt_depth > 0);
       end
     end
   end
+
   
   // Generate storage flops and write enable logic
   for (genvar i=0; i < Depth; i++) begin : gen_fifo_mem

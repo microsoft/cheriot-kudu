@@ -195,32 +195,39 @@ module kudu_stats (
     while (1) begin
       @(posedge clk_i);
       if (print_req & ~print_req_q) begin
-        $display("TB>  cycle_cnt\t\t = %7d,  issue_cnt\t\t = %7d", cycle_cnt, issue_cnt);
-        $display("TB>  dual_issue_cnt\t = %7d,  single_issue_cnt\t = %7d,  idle_cnt\t\t = %7d",
+        $display("TB> STAT: ---------------------------------------------------------------------" );
+        $display("TB> STAT: cycle_cnt\t\t = %7d,  issue_cnt\t\t = %7d", cycle_cnt, issue_cnt);
+        $display("TB> STAT: dual_issue_cnt\t = %7d,  single_issue_cnt\t = %7d,  idle_cnt\t\t = %7d",
                   dual_issue_cnt, single_issue_cnt, cycle_cnt - dual_issue_cnt - single_issue_cnt);
-        $display("TB>  ir_valid0_cnt\t = %7d,  ir_valid1_cnt\t = %7d,  ir_valid2_cnt\t = %7d",
+        $display("TB>  STAT: ir_valid0_cnt\t = %7d,  ir_valid1_cnt\t = %7d,  ir_valid2_cnt\t = %7d",
                        ir_valid0_cnt, ir_valid1_cnt, ir_valid2_cnt);
-        $display("TB>  pc_set_cnt\t\t = %7d", pc_set_cnt);
-        $display("TB>  ir0_branch_mis_cnt\t = %7d,  ir0_jal_mis_cnt\t = %7d", ir0_branch_mis_cnt, ir0_jal_mis_cnt);
-        $display("TB>  ir1_branch_mis_cnt\t = %7d,  ir1_jal_mis_cnt\t = %7d", ir1_branch_mis_cnt, ir1_jal_mis_cnt);
-        $display("TB>  x1_irvalid1_cnt\t = %7d,  x1_mispredict0_cnt\t = %7d", 
+
+        $display("TB> STAT: Branch stats --------------------------------------------------------" );
+        $display("TB> STAT: pc_set_cnt\t\t = %7d", pc_set_cnt);
+        $display("TB> STAT: ir0_branch_mis_cnt\t = %7d,  ir0_jal_mis_cnt\t = %7d", ir0_branch_mis_cnt, ir0_jal_mis_cnt);
+        $display("TB> STAT: ir1_branch_mis_cnt\t = %7d,  ir1_jal_mis_cnt\t = %7d", ir1_branch_mis_cnt, ir1_jal_mis_cnt);
+
+        $display("TB> STAT: Single issue (x1) stats ---------------------------------------------" );
+        $display("TB> STAT: x1_irvalid1_cnt\t = %7d,  x1_mispredict0_cnt\t = %7d", 
                        single_case_cnt[0], single_case_cnt[1]);
-        $display("TB>  x1_ir1_raw_by0_cnt\t = %7d,  x1_ir1_raw_more_cnt = %7d", 
+        $display("TB> STAT: x1_ir1_raw_by0_cnt\t = %7d,  x1_ir1_raw_more_cnt = %7d", 
                        single_case_cnt[2], single_case_cnt[3]);
-        $display("TB>  x1_others_cnt\t = %7d", single_case_cnt[4]);
+        $display("TB> STAT: x1_others_cnt\t = %7d", single_case_cnt[4]);
 
-        $display("TB>  ir0_hazard_cnt\t = %7d,  ir0_raw_cnt\t = %7d,  ir0_waw_cnt\t = %7d",
+        $display("TB> STAT: IR0 stats -----------------------------------------------------------" );
+        $display("TB> STAT: ir0_hazard_cnt\t = %7d,  ir0_raw_cnt\t = %7d,  ir0_waw_cnt\t = %7d",
                        ir0_hazard_cnt, ir0_raw_cnt, ir0_waw_cnt);
-        $display("TB>  ir0_raw_alu_cnt\t = %7d,  ir0_raw_mult_cnt\t = %7d,  ir0_raw_ls_cnt\t = %7d",
+        $display("TB> STAT: ir0_raw_alu_cnt\t = %7d,  ir0_raw_mult_cnt\t = %7d,  ir0_raw_ls_cnt\t = %7d",
                        ir0_raw_alu_cnt, ir0_raw_mult_cnt, ir0_raw_ls_cnt);
-        $display("TB>  ir0_stall_nohaz_cnt = %7d", ir0_stall_nohaz_cnt);
+        $display("TB> STAT: ir0_stall_nohaz_cnt = %7d", ir0_stall_nohaz_cnt);
 
-        $display("TB>  ir1_hazard_cnt\t = %7d,  ir1_raw_cnt\t = %7d,  ir1_waw_cnt\t = %7d",
+        $display("TB> STAT: IR1 stats -----------------------------------------------------------" );
+        $display("TB> STAT: ir1_hazard_cnt\t = %7d,  ir1_raw_cnt\t = %7d,  ir1_waw_cnt\t = %7d",
                        ir1_hazard_cnt, ir1_raw_cnt, ir1_waw_cnt);
-        $display("TB>  ir1_raw_by_ir0_cnt\t = %7d", ir1_raw_by_ir0_cnt);
-        $display("TB>  ir1_raw_alu_cnt\t = %7d,  ir1_raw_mult_cnt\t = %7d,  ir1_raw_ls_cnt\t = %7d",
+        $display("TB> STAT: ir1_raw_by_ir0_cnt\t = %7d", ir1_raw_by_ir0_cnt);
+        $display("TB> STAT: ir1_raw_alu_cnt\t = %7d,  ir1_raw_mult_cnt\t = %7d,  ir1_raw_ls_cnt\t = %7d",
                        ir1_raw_alu_cnt, ir1_raw_mult_cnt, ir1_raw_ls_cnt);
-        $display("TB>  ir1_stall_nohaz_cnt = %7d,  ir1_ooo_rdy_cnt\t = %7d", 
+        $display("TB> STAT: ir1_stall_nohaz_cnt = %7d,  ir1_ooo_rdy_cnt\t = %7d", 
                        ir1_stall_nohaz_cnt, ir1_ooo_rdy_cnt);
       end
     end

@@ -571,7 +571,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       end
     endcase
 
-    if (ctrl_fsm_cs[CSM_BOOT_SET] || ctrl_fsm_cs[CSM_DECODE])
+    // if (ctrl_fsm_cs[CSM_BOOT_SET] || ctrl_fsm_cs[CSM_DECODE])
+    if (~ctrl_fsm_cs[CSM_RESET] && ~ctrl_fsm_cs[CSM_SLEEP])
       fetch_req_o = 1'b1;
     else
       fetch_req_o = 1'b0;

@@ -458,7 +458,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   assign ex2_err  = ~debug_mode_i & ex2_reg.flags.is_csr & (illegal_csr_insn_i | csr_cheri_asr_err);
 
   //  ASR error for SCR access: fill in scr address. ASR error for CSR: use zero
-  assign ex2_err_type = {(csr_cheri ? scr_addr : 0), illegal_csr_insn_i}; 
+  assign ex2_err_type = {(csr_cheri ? scr_addr : 4'h0), illegal_csr_insn_i}; 
 
   always_comb begin
     logic        rs1_is_zero;
