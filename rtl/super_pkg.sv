@@ -237,20 +237,6 @@ package super_pkg;
     OPCODE_AUICGP   = 7'h7b
   } opcode_e;
 
-  typedef enum integer {
-    RV32MNone        = 0,
-    RV32MSlow        = 1,
-    RV32MFast        = 2,
-    RV32MSingleCycle = 3
-  } rv32m_e;
-
-  typedef enum integer {
-    RV32BNone       = 0,
-    RV32BBalanced   = 1,
-    RV32BOTEarlGrey = 2,
-    RV32BFull       = 3
-  } rv32b_e;
-  
   ////////////////////
   // ALU operations //
   ////////////////////
@@ -264,27 +250,51 @@ package super_pkg;
     ALU_XOR,
     ALU_OR,
     ALU_AND,
-    // RV32B
-    ALU_XNOR,
-    ALU_ORN,
-    ALU_ANDN,
 
     // Shifts
     ALU_SRA,
     ALU_SRL,
     ALU_SLL,
 
-    // Comparisons
-    ALU_LT,
-    ALU_LTU,
-    ALU_GE,
-    ALU_GEU,
-    ALU_EQ,
-    ALU_NE,
-
     // Set lower than
     ALU_SLT,
-    ALU_SLTU
+    ALU_SLTU,
+
+    // RV32B zba
+    ALU_SH1ADD,
+    ALU_SH2ADD,
+    ALU_SH3ADD,
+ 
+    // RV32B zbb
+    ALU_XNOR,
+    ALU_ORN,
+    ALU_ANDN,
+    ALU_CLZ,
+    ALU_CTZ,
+    ALU_CPOP,
+    ALU_MAX,
+    ALU_MAXU,
+    ALU_MIN,
+    ALU_MINU,
+    ALU_SEXTB,
+    ALU_SEXTH,
+    ALU_ZEXTH,
+    ALU_ROL,
+    ALU_ROR,
+    ALU_ORCB,
+    ALU_REV8,
+ 
+    // RV32B zbc
+    ALU_CLMUL,
+    ALU_CLMULH,
+    ALU_CLMULR,
+
+    // RV32B zbs
+    ALU_BCLR,
+    ALU_BSET,
+    ALU_BINV,
+    ALU_BEXT
+
   } alu_op_e;
  
   typedef enum logic [1:0] {

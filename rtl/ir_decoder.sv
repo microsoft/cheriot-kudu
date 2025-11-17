@@ -14,10 +14,10 @@
 
 
 module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
-  parameter bit     CHERIoTEn  = 1'b0,
-  parameter rv32m_e RV32M      = super_pkg::RV32MFast,
-  parameter rv32b_e RV32B      = super_pkg::RV32BNone,
-  parameter bit     IbexCmpt   = 1'b1 
+  parameter bit        CHERIoTEn  = 1'b0,
+  parameter bit        RV32M      = 1'b1,
+  parameter bit        RV32B      = 1'b1,
+  parameter bit        IbexCmpt   = 1'b1 
 ) (
   input  logic         clk_i,
   input  logic         rst_ni,
@@ -214,8 +214,74 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
         pl_type       = PL_ALU;
         rf_ren_a      = 1'b1;
         rf_we         = 1'b1;
-        // illegal_insn  = (instr[14:12] == 3'b001) || (instr[14:12] == 3'b101); // RV32B
-      end
+
+        // func3 code 0, 2, 3, 4, 6, 7 are used by RV32I base operations (addi, slti, andi, etc)
+        if (instr[14:12] == 3'b001)  begin
+          unique case (instr[31:25])
+            7'b000_0000:  // slli
+            begin
+              illegal_insn = 1'b0;
+            end
+
+            7'b011_0000: 
+            begin
+              unique case (instr[24:20])
+                {5'b00000},           // clz
+                {5'b00001},           // ctz
+                {5'b00010},           // cpop
+                {5'b00100},           // sext.b
+                {5'b00101}:           // sext.h
+                  illegal_insn  = ~RV32M;
+                default: begin
+                  illegal_insn = 1'b1;
+                end
+              endcase  
+            end //
+
+            7'b001_0100,  // bseti
+            7'b010_0100,  // bclri
+            7'b011_0100:  // binvi
+            begin
+              illegal_insn  = ~RV32M;  
+            end
+
+            default: begin
+              illegal_insn = 1'b1;
+            end
+          endcase
+        end else if (instr[14:12] == 3'b101) begin
+          unique case (instr[31:25])
+            7'b000_0000,     // srli
+            7'b010_0000:     // srai     
+            begin
+              illegal_insn = 1'b0;
+            end
+  
+            7'b011_0000:     // rori
+            begin
+              illegal_insn  = ~RV32M;  
+            end
+
+            7'b001_0100:     // orc.b
+            begin               
+              illegal_insn  = ~(RV32M && (instr[24:20] == 5'b00111));
+            end
+
+            7'b011_0100:     // rev8 
+            begin               
+              illegal_insn  = ~(RV32M && (instr[24:20] == 5'b11000));
+            end
+
+            7'b010_0100:     // bexti
+            begin
+              illegal_insn  = ~RV32M;  
+            end
+            default: begin
+              illegal_insn = 1'b1;
+            end
+          endcase  
+        end
+      end   // OPCODE_IMM
 
       OPCODE_OP: begin  // Register-Register ALU operation
         rf_ren_a      = 1'b1;
@@ -227,9 +293,9 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
         end else begin
           unique case ({instr[31:25], instr[14:12]})
             // RV32I ALU operations
-            {7'b000_0000, 3'b000},
-            {7'b010_0000, 3'b000},
-            {7'b000_0000, 3'b010},
+            {7'b000_0000, 3'b000},   // add
+            {7'b010_0000, 3'b000},   // sub
+            {7'b000_0000, 3'b010},   
             {7'b000_0000, 3'b011},
             {7'b000_0000, 3'b100},
             {7'b000_0000, 3'b110},
@@ -252,14 +318,52 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
             {7'b000_0001, 3'b111}:    // remu
             begin // mul
               pl_type       = PL_MULT;
-              illegal_insn  = (RV32M == RV32MNone) ? 1'b1 : 1'b0;
+              illegal_insn  = ~RV32M;
             end
+
+            // RV32B instructions
+            // RV32B zba
+            {7'b001_0000, 3'b010}, // sh1add
+            {7'b001_0000, 3'b100}, // sh2add
+            {7'b001_0000, 3'b110}, // sh3add
+            // RV32B zbb
+            {7'b010_0000, 3'b111}, // andn
+            {7'b010_0000, 3'b110}, // orn
+            {7'b010_0000, 3'b100}, // xnor
+            {7'b011_0000, 3'b001}, // rol
+            {7'b011_0000, 3'b101}, // ror
+            {7'b000_0101, 3'b100}, // min
+            {7'b000_0101, 3'b110}, // max
+            {7'b000_0101, 3'b101}, // minu
+            {7'b000_0101, 3'b111}, // maxu
+            {7'b000_0100, 3'b100}, // zexth 
+            // RV32B zbs 
+            {7'b010_0100, 3'b001}, // bclr
+            {7'b001_0100, 3'b001}, // bset
+            {7'b011_0100, 3'b001}, // binv
+            {7'b010_0100, 3'b101}, // bext
+            // RV32B zbc
+            {7'b000_0101, 3'b001}, // clmul
+            {7'b000_0101, 3'b010}, // clmulr
+            {7'b000_0101, 3'b011}: begin // clmulh
+              pl_type       = PL_ALU;
+              illegal_insn  = ~RV32B;
+            end
+            {7'b000_0100, 3'b100}: begin  // RV32B zext.h
+              pl_type       = PL_ALU;
+              illegal_insn  = ~RV32B | (instr[24:20] != 0); 
+            end
+            {7'b011_0100, 3'b101}: begin  // RV32B rev8
+              pl_type       = PL_ALU;
+              illegal_insn  = ~RV32B | (instr[24:20] != 5'b11000); 
+            end
+
             default: begin
               illegal_insn = 1'b1;
             end
           endcase
         end
-      end
+      end   // OPCODE_OP
 
       /////////////
       // Special //

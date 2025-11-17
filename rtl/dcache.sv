@@ -96,7 +96,7 @@ module dcache import super_pkg::*; (
 
   logic [3:0]      rd_tag_match, wr_tag_match;
   logic            unaligned_access, unaligned_access_q;
-  logic            byp_tag_match;
+  logic            byp_tag_match, use_byp_data;
   logic [31:0]     cache_rdata, cache_rdata_ext;
   logic            waw_act_match;
 
@@ -122,12 +122,12 @@ module dcache import super_pkg::*; (
 
   // bypass/forward wdata to the new load instruction (full word write only)
   // note it is possible that byp_tag_match and one of the rd_tag_match are both true
-  assign byp_tag_match  = ~lsu_req_info_q.rf_we & 
-                          (lsu_req_info_i.addr[31:addrLo] == lsu_req_info_q.addr[31:addrLo]) & 
-                          (lsu_req_info_q.data_type == 2'b00);
+  assign byp_tag_match  = ~lsu_req_info_q.rf_we & ~unaligned_access_q &
+                          (lsu_req_info_i.addr[31:addrLo] == lsu_req_info_q.addr[31:addrLo]);
+  assign use_byp_data   = byp_tag_match & (lsu_req_info_q.data_type == 2'b00);
 
   // assign last_wdata  = lsu_req_info_q.wdata & {CacheMemW{byp_tag_match}};
-  assign cache_rdata = byp_tag_match ? lsu_req_info_q.wdata :
+  assign cache_rdata = use_byp_data ? lsu_req_info_q.wdata :
                                        (line_rdata[0] | line_rdata[1] | line_rdata[2] | line_rdata[3]);
 
   // generate return register content based on cache read data and instruction request type
@@ -148,6 +148,12 @@ module dcache import super_pkg::*; (
     assign fwd_act_o[i] = fwd_info_o.valid[1] && (fwd_info_o.addr1 == i);
   end 
 
+  // we don't yet handle bypass case for partial-word writes, so if one of the lines match but
+  // there is a partial-word write, don't treat this as a chache hit
+  // 
+  logic cache_rd_match_ok;
+  assign cache_rd_match_ok = | {rd_tag_match & {4{~byp_tag_match}}, use_byp_data};
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       fwd_info_o <= NULL_PL_FWD;
@@ -157,7 +163,7 @@ module dcache import super_pkg::*; (
       fwd_info_o.data0    <= 32'h0;  
   
       if (lsu_req_i & lsu_req_done_i & lsu_req_info_i.rf_we & lsu_req_info_i.cache_ok & ~lsu_req_info_i.is_cap &
-          ~unaligned_access & (|{rd_tag_match, byp_tag_match}) & waw_fifo_rdata[5]) 
+          ~unaligned_access & cache_rd_match_ok & waw_fifo_rdata[5]) 
         fwd_info_o.valid[1] <= 1'b1;
       else if ((lsu_req_i & lsu_req_done_i) || waw_act_match)
         fwd_info_o.valid[1] <= 1'b0;
@@ -231,7 +237,7 @@ module dcache import super_pkg::*; (
   assign resp_good = lsu_resp_valid_i & ~(load_err_i | store_err_i) & lsu_req_info_q.cache_ok;
   assign resp_bad  = lsu_resp_valid_i & (load_err_i | store_err_i) & lsu_req_info_q.cache_ok;
 
-  assign resp_full_word    = resp_good & (lsu_req_info_q.rf_we | (lsu_req_info_q.data_type == 2'b00)) & 
+  assign resp_full_word    = resp_good & ((lsu_req_info_q.data_type == 2'b00)) & 
                              ~unaligned_access_q & ~lsu_req_info_q.is_cap;
   assign resp_partial_word = resp_good & ~lsu_req_info_q.rf_we & (lsu_req_info_q.data_type != 2'b00) & 
                              ~unaligned_access_q & ~lsu_req_info_q.is_cap;

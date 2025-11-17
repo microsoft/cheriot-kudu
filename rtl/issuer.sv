@@ -802,7 +802,10 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     end else if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == SYSCTL) & (sysctl_q.ebrk | sysctl_q.ecall)) begin
       csr_save_cause_o = 1'b1;
       csr_exc_pc_o     = ir0_dec.pc;             
-      csr_mcause_o     = sysctl_q.ebrk ? EXC_CAUSE_BREAKPOINT : EXC_CAUSE_ECALL_MMODE;  // QQQ  priv mode for ecall
+      csr_mcause_o     = sysctl_q.ebrk ? EXC_CAUSE_BREAKPOINT : 
+                         (priv_mode_i == PRIV_LVL_M) ?  EXC_CAUSE_ECALL_MMODE :
+                          EXC_CAUSE_ECALL_UMODE;
+
       csr_mtval_o      = ir0_dec.pc;
     end
 

@@ -16,7 +16,8 @@
  */
 
 module alu_decoder import super_pkg::*; #(
-  parameter bit CHERIoTEn           = 1'b1
+  parameter bit CHERIoTEn       = 1'b1,
+  parameter bit RV32B           = 1'b1
 ) (
   input  ir_dec_t         instr_i,               // instruction read from memory/cache
   input  logic            cheri_pmode_i,
@@ -125,15 +126,36 @@ module alu_decoder import super_pkg::*; #(
           3'b111: alu_operator_o = ALU_AND;  // And with Immediate
 
           3'b001: begin
-            alu_operator_o = ALU_SLL; // Shift Left Logical by Immediate
+            unique case (instr_alu[31:25])
+              7'b000_0000: alu_operator_o = ALU_SLL; // Shift Left Logical by Immediate
+              7'b011_0000: 
+              begin
+                unique case (instr_alu[24:20])
+                  {5'b00000}: alu_operator_o = ALU_CLZ;           // clz
+                  {5'b00001}: alu_operator_o = ALU_CTZ;           // ctz
+                  {5'b00010}: alu_operator_o = ALU_CPOP;          // cpop
+                  {5'b00100}: alu_operator_o = ALU_SEXTB;         // sext.b
+                  {5'b00101}: alu_operator_o = ALU_SEXTH;         // sext.h
+                  default:; 
+                endcase
+              end
+              7'b001_0100: alu_operator_o = ALU_BSET;  // bseti
+              7'b010_0100: alu_operator_o = ALU_BCLR;  // bclri
+              7'b011_0100: alu_operator_o = ALU_BINV;  // binvi
+              default: ;
+            endcase
           end
 
           3'b101: begin
-            if (instr_alu[31:27] == 5'b0_0000) begin
-              alu_operator_o = ALU_SRL;               // Shift Right Logical by Immediate
-            end else if (instr_alu[31:27] == 5'b0_1000) begin
-              alu_operator_o = ALU_SRA;               // Shift Right Arithmetically by Immediate
-            end
+            unique case (instr_alu[31:25])
+              7'b000_0000: alu_operator_o = ALU_SRL;     // Shift Right Logical by Immediate
+              7'b010_0000: alu_operator_o = ALU_SRA;     // Shift Right Arithmetically by Immediate
+              7'b011_0000: alu_operator_o = ALU_ROR;     // rori
+              7'b001_0100: alu_operator_o = ALU_ORCB;    // orc.b
+              7'b011_0100: alu_operator_o = ALU_REV8;    // rev8
+              7'b010_0100: alu_operator_o = ALU_BEXT;    // bexti
+              default: ;
+            endcase;
           end
 
           default: ;
@@ -156,6 +178,37 @@ module alu_decoder import super_pkg::*; #(
           {7'b000_0000, 3'b001}: alu_operator_o = ALU_SLL;   // Shift Left Logical
           {7'b000_0000, 3'b101}: alu_operator_o = ALU_SRL;   // Shift Right Logical
           {7'b010_0000, 3'b101}: alu_operator_o = ALU_SRA;   // Shift Right Arithmetic
+          
+          // RV32B zba
+          {7'b001_0000, 3'b010}: if (RV32B) alu_operator_o = ALU_SH1ADD;
+          {7'b001_0000, 3'b100}: if (RV32B) alu_operator_o = ALU_SH2ADD;
+          {7'b001_0000, 3'b110}: if (RV32B) alu_operator_o = ALU_SH3ADD;
+
+          // RV32B zbb
+          {7'b000_0101, 3'b100}: if (RV32B) alu_operator_o = ALU_MIN;
+          {7'b000_0101, 3'b110}: if (RV32B) alu_operator_o = ALU_MAX;
+          {7'b000_0101, 3'b101}: if (RV32B) alu_operator_o = ALU_MINU;
+          {7'b000_0101, 3'b111}: if (RV32B) alu_operator_o = ALU_MAXU;
+
+          {7'b010_0000, 3'b100}: if (RV32B) alu_operator_o = ALU_XNOR;
+          {7'b010_0000, 3'b110}: if (RV32B) alu_operator_o = ALU_ORN;
+          {7'b010_0000, 3'b111}: if (RV32B) alu_operator_o = ALU_ANDN;
+
+          {7'b011_0000, 3'b001}: if (RV32B) alu_operator_o = ALU_ROL;
+          {7'b011_0000, 3'b101}: if (RV32B) alu_operator_o = ALU_ROR;
+
+          {7'b000_0100, 3'b100}: if (RV32B) alu_operator_o = ALU_ZEXTH;
+
+          // RV32B zbc
+          {7'b000_0101, 3'b001}: if (RV32B) alu_operator_o = ALU_CLMUL;
+          {7'b000_0101, 3'b010}: if (RV32B) alu_operator_o = ALU_CLMULR;
+          {7'b000_0101, 3'b011}: if (RV32B) alu_operator_o = ALU_CLMULH;
+
+          // RV32B zbs
+          {7'b010_0100, 3'b001}: if (RV32B) alu_operator_o = ALU_BCLR;
+          {7'b001_0100, 3'b001}: if (RV32B) alu_operator_o = ALU_BSET;
+          {7'b011_0100, 3'b001}: if (RV32B) alu_operator_o = ALU_BINV;
+          {7'b010_0100, 3'b101}: if (RV32B) alu_operator_o = ALU_BEXT;
 
           default: ;
         endcase

@@ -8,6 +8,7 @@
 
 module alu_pipeline import super_pkg::*; import cheri_pkg::*; # (
   parameter bit    CHERIoTEn   = 1'b1,
+  parameter bit    RV32B       = 1'b1,
   parameter bit    SingleStage = 1'b1     
 ) (
   input  logic                 clk_i,
@@ -105,7 +106,7 @@ module alu_pipeline import super_pkg::*; import cheri_pkg::*; # (
 
   assign instr_2cycle = 1'b0;    
 
-  alu_decoder #(.CHERIoTEn(CHERIoTEn)) alu_decoder_i (
+  alu_decoder #(.CHERIoTEn(CHERIoTEn), .RV32B(RV32B)) alu_decoder_i (
     .instr_i               (instr_i),    
     .cheri_pmode_i         (cheri_pmode),
     .imm_o                 (rv32_imm),
@@ -114,7 +115,7 @@ module alu_pipeline import super_pkg::*; import cheri_pkg::*; # (
     .alu_op_b_mux_sel_o    (rv32_alu_op_b_mux_sel)
   );
 
-  rv32_alu rv32_alu_i (
+  rv32_alu #(.RV32B(RV32B)) rv32_alu_i (
     .operator_i            (rv32_alu_operator),
     .alu_op_a_mux_sel_i    (rv32_alu_op_a_mux_sel),
     .alu_op_b_mux_sel_i    (rv32_alu_op_b_mux_sel),

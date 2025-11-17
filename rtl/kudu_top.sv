@@ -6,6 +6,7 @@ module kudu_top import super_pkg::*;  #(
   parameter bit          CHERIoTEn      = 1'b0,
   parameter int unsigned PipeCfg        = 0,
   parameter bit          UseDWMult      = 1'b0,
+  parameter bit          DCacheEn       = 1'b1,
   parameter int unsigned HeapBase       = 32'h2001_0000,
   parameter int unsigned TSMapSize      = 1024,
   parameter int unsigned DmHaltAddr     = 32'h1A110800,
@@ -89,10 +90,11 @@ module kudu_top import super_pkg::*;  #(
 
   localparam bit          DualIssue      = 1'b1;
   localparam bit          EarlyLoad      = 1'b1;
-  localparam bit          DCacheEn       = 1'b1;
   localparam bit          UnalignedFetch = 1'b0;
   localparam bit          NoMult         = 1'b0;
   localparam bit          LoadFiltEn     = 1'b1;
+  localparam bit          RV32M          = 1'b1;
+  localparam bit          RV32B          = 1'b1;
 
   rf_rdata2_t     rf_rdata2_p0;
   rf_rdata2_t     rf_rdata2_p1;
@@ -266,6 +268,8 @@ module kudu_top import super_pkg::*;  #(
     .StageBypass  (IrStageBypass),
     .CHERIoTEn    (CHERIoTEn),
     .S0FifoDepth  (IrS0Depth),
+    .RV32M        (RV32M),
+    .RV32B        (RV32B),
     .DbgTriggerEn (DbgTriggerEn),
     .BrkptNum     (BrkptNum)    
   ) ir_stage_i (
@@ -419,7 +423,7 @@ module kudu_top import super_pkg::*;  #(
     .ir1_cjalr_err_o     (ir1_cjalr_err      )
   );
 
-  alu_pipeline #(.CHERIoTEn(CHERIoTEn)) alu_pipeline0_i (
+  alu_pipeline #(.CHERIoTEn(CHERIoTEn), .RV32B(RV32B)) alu_pipeline0_i (
     .clk_i             (clk_i           ),
     .rst_ni            (rst_ni          ),
     .cheri_pmode_i     (cheri_pmode_i   ),
@@ -439,7 +443,7 @@ module kudu_top import super_pkg::*;  #(
     .alupl_output_o    (alupl0_output   )
   );
 
-  alu_pipeline #(.CHERIoTEn(CHERIoTEn)) alu_pipeline1_i (
+  alu_pipeline #(.CHERIoTEn(CHERIoTEn), .RV32B(RV32B)) alu_pipeline1_i (
     .clk_i             (clk_i           ),
     .rst_ni            (rst_ni          ),
     .cheri_pmode_i     (cheri_pmode_i   ),
@@ -586,7 +590,9 @@ module kudu_top import super_pkg::*;  #(
   cs_registers #(
     .CHERIoTEn    (CHERIoTEn),
     .DbgTriggerEn (DbgTriggerEn),
-    .BrkptNum     (BrkptNum)    
+    .BrkptNum     (BrkptNum),    
+    .RV32M        (RV32M),
+    .RV32B        (RV32B)
   ) cs_registers_i (
     .clk_i                        (clk_i),
     .rst_ni                       (rst_ni),

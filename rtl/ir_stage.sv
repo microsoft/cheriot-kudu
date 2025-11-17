@@ -10,8 +10,8 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   parameter bit           CompDecEn      = 1'b1,
   parameter bit           CHERIoTEn      = 1'b0,
   parameter int unsigned  S0FifoDepth    = 4,
-  parameter rv32m_e       RV32M          = super_pkg::RV32MFast,
-  parameter rv32b_e       RV32B          = super_pkg::RV32BNone,
+  parameter bit           RV32M      = 1'b1,
+  parameter bit           RV32B      = 1'b1,
   parameter bit           DbgTriggerEn   = 1'b0,
   parameter int unsigned  BrkptNum       = 1
 ) (

@@ -26,8 +26,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   parameter int unsigned      PMPGranularity    = 0,
   parameter int unsigned      PMPNumRegions     = 4,
   parameter bit               RV32E             = 0,
-  parameter rv32m_e           RV32M             = RV32MFast,
-  parameter rv32b_e           RV32B             = RV32BNone,
+  parameter bit               RV32M             = 1'b1,
+  parameter bit               RV32B             = 1'b1,
   parameter bit               CHERIoTEn         = 1'b1
 ) (
   // Clock and Reset
@@ -130,8 +130,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   output logic                 cheri_fatal_err_o
   );
 
-  localparam int unsigned RV32BEnabled = (RV32B == RV32BNone) ? 0 : 1;
-  localparam int unsigned RV32MEnabled = (RV32M == RV32MNone) ? 0 : 1;
+  localparam int unsigned RV32BEnabled = RV32B;
+  localparam int unsigned RV32MEnabled = RV32M;
   localparam int unsigned PMPAddrWidth = (PMPGranularity > 0) ? 33 - PMPGranularity : 32;
 
   // misa
