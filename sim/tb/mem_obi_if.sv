@@ -18,6 +18,7 @@ module mem_obi_if import kudu_dv_pkg::*; #(
   input  logic          data_we,
   input  logic [3:0]    data_be,
   input  logic          data_is_cap,
+  input  logic          data_is_lrsc,
   input  logic [31:0]   data_addr,
   input  logic [DW-1:0] data_wdata,
   input  logic [7:0]    data_flag,       // sideband signals (flow through)
@@ -26,17 +27,20 @@ module mem_obi_if import kudu_dv_pkg::*; #(
   output logic          data_rvalid,
   output logic [DW-1:0] data_rdata,
   output logic          data_err,
+  output logic          data_sc_resp,
   output mem_cmd_t      data_resp_info,  // loopback information for checking
 
   output logic          mem_cs,
   output logic          mem_is_cap,
+  output logic          mem_is_lrsc,
   output logic          mem_we,
   output logic [3:0]    mem_be,
   output logic [7:0]    mem_flag,     
   output logic [29:0]   mem_addr32,
   output logic [DW-1:0] mem_wdata,
   input  logic [DW-1:0] mem_rdata,
-  input  logic          mem_err
+  input  logic          mem_err,
+  input  logic          mem_sc_resp
 );
   
   function automatic logic[3:0] gen_wait(int unsigned wmax);
@@ -75,6 +79,7 @@ module mem_obi_if import kudu_dv_pkg::*; #(
   assign cmd_avail      = cmd_fifo_wr || !cmd_fifo_empty;
 
   assign cur_wr_cmd.is_cap  = data_is_cap;
+  assign cur_wr_cmd.is_lrsc = data_is_lrsc;
   assign cur_wr_cmd.we      = data_we;
   assign cur_wr_cmd.be      = data_be;
   assign cur_wr_cmd.flag    = data_flag;
@@ -157,13 +162,15 @@ module mem_obi_if import kudu_dv_pkg::*; #(
 
   always @(posedge clk_i, negedge rst_ni) begin
     if (~rst_ni) begin
-      data_rvalid <= 1'b0;
-      data_err    <= 1'b0;
+      data_rvalid    <= 1'b0;
+      data_err       <= 1'b0;
+      data_sc_resp   <= 1'b0;
       cmd_rd_ptr_ext <= 0;
       resp_waits     <= 0;
     end else begin
-      data_rvalid <= resp_valid;
-      data_err    <= resp_valid & mem_err;
+      data_rvalid  <= resp_valid;
+      data_err     <= resp_valid & mem_err;
+      data_sc_resp <= resp_valid & mem_sc_resp;
 
       if (cmd_fifo_rd) begin
          resp_waits      <= gen_wait(RESP_WMAX);
@@ -178,6 +185,7 @@ module mem_obi_if import kudu_dv_pkg::*; #(
   //
   assign mem_cs      = resp_valid;
   assign mem_is_cap  = cur_rd_cmd.is_cap;
+  assign mem_is_lrsc = cur_rd_cmd.is_lrsc;
   assign mem_we      = cur_rd_cmd.we;
   assign mem_be      = cur_rd_cmd.be;
   assign mem_flag    = cur_rd_cmd.flag;

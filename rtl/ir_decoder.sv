@@ -37,7 +37,8 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   logic        rf_ren_a, rf_ren_b, rf_we;
   logic        rf_ren_a_final, rf_ren_b_final, rf_we_final;
   logic        illegal_insn, illegal_reg_cheri;
-  logic        csr_insn, wfi_insn, ebrk_insn, ecall_insn, dret_insn, mret_insn, cjalr_insn;
+  logic        csr_insn, wfi_insn, ebrk_insn, ecall_insn, dret_insn, mret_insn;
+  logic        cjalr_insn, fencei_insn;
   logic [31:0] imm_j_type, imm_b_type;
   logic        any_err;
   sysctl_t     sysctl;
@@ -110,7 +111,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   
   // this determines the "special case" path for the issuer controller state machine (ctrl_fsm)
   assign sysctl.valid  = (csr_wr | cscr_wr | wfi_insn | ebrk_insn | ecall_insn | dret_insn | 
-                         mret_insn | cjalr_insn | brkpt_match_i);
+                         mret_insn | cjalr_insn | fencei_insn | brkpt_match_i);
   assign sysctl.csrw   = csr_wr || cscr_wr;
   assign sysctl.mret   = mret_insn; 
   assign sysctl.dret   = dret_insn; 
@@ -118,6 +119,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   assign sysctl.ebrk   = ebrk_insn; 
   assign sysctl.ecall  = ecall_insn; 
   assign sysctl.cjalr  = cjalr_insn; 
+  assign sysctl.fencei = fencei_insn; 
 
   assign illegal_reg_cheri = cheri_pmode & ((rf_ren_a & rs1[4]) | (rf_ren_b & rs2[4]) | (rf_we & rd[4]));
 
@@ -139,6 +141,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
     wfi_insn            = 1'b0;
     csr_insn            = 1'b0;
     cjalr_insn          = 1'b0;
+    fencei_insn         = 1'b0;
    
     cheri_opcode_en     = 1'b0; 
     cheri_auipcc_en     = 1'b0;
@@ -193,6 +196,19 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
         cheri_clc_en  = cheri_pmode && (instr[14:12] == 3'b011);
         illegal_insn  = (instr[14:13] == 2'b11) ||
                         & (~cheri_pmode && (instr[14:12] == 3'b011));
+      end
+
+      //////////////////
+      // Atomic LR/SC //
+      //////////////////
+
+      OPCODE_ATOMIC: begin
+        pl_type       = PL_LS;
+        rf_ren_a      = 1'b1;
+        rf_ren_b      = instr[27];
+        rf_we         = 1'b1;       // both lr/sc writes to rd
+        illegal_insn  = (instr[31:28] != 4'b0001) || (instr[14:12] != 3'b010) ||
+                        (~instr[27] && (instr[24:20] != 5'h0));
       end
 
       /////////
@@ -381,6 +397,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
             // requests will be ignored).
             // If present, the ICache will also be flushed.
             pl_type       = PL_BRANCH;
+            fencei_insn   = 1'b1;
           end
           default: begin
             illegal_insn       = 1'b1;

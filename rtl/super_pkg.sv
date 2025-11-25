@@ -58,6 +58,7 @@ package super_pkg;
     logic ecall;
     logic ebrk;
     logic cjalr;
+    logic fencei;
   } sysctl_t;
 
   parameter sysctl_t NULL_SYSCTL = sysctl_t'(0);
@@ -177,7 +178,9 @@ package super_pkg;
   } waw_act_t;
 
   typedef struct packed {
-    logic              rf_we;         
+    logic              rf_we;
+    logic              lr;         
+    logic              sc;         
     logic              is_cap;
     logic              cheri_err;
     logic              align_err_only;
@@ -227,6 +230,7 @@ package super_pkg;
     OPCODE_OP_IMM   = 7'h13,
     OPCODE_AUIPC    = 7'h17,
     OPCODE_STORE    = 7'h23,
+    OPCODE_ATOMIC   = 7'h2f,
     OPCODE_OP       = 7'h33,
     OPCODE_LUI      = 7'h37,
     OPCODE_BRANCH   = 7'h63,

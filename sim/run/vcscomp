@@ -1,8 +1,9 @@
 #!/usr/local/bin/bash
 #
 VlogDef1="+define+CHERIoT"
-VlogDef2="+define+KUDU_PPL_CFG=0"
+VlogDef2="+define+KUDU_PPL_CFG=1"
 VlogDef3=""
+VlogDef4=""
 FileList="kudu.vcs.f"
 OutFile="./simv"
 CompDir="simv.daidir"
@@ -15,9 +16,11 @@ for arg in "$@"; do
       OutFile="./simv32"
       CompDir="simv32.daidir"
       ;;
+    -conf0) VlogDef2="+define+KUDU_PPL_CFG=0" ;;
     -conf1) VlogDef2="+define+KUDU_PPL_CFG=1" ;;
     -conf2) VlogDef2="+define+KUDU_PPL_CFG=2" ;;
     -conf3) VlogDef2="+define+KUDU_PPL_CFG=3" ;;
+    -riscv_test) VlogDef4="+define+RISCV_TEST_SUITE" ;;
     -dw)
       VlogDef3="+define+KUDU_DW_MULT=1"
       FileList="kudu_dw.vcs.f" 
@@ -28,7 +31,7 @@ for arg in "$@"; do
   esac
 done
 
-VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3"
+VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3 $VlogDef4"
 echo "VlogDefs=$VlogDefs  FileList=$FileList"
 
 

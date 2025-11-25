@@ -40,11 +40,13 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   output logic            data_we_o,
   output logic [3:0]      data_be_o,
   output logic            data_is_cap_o,
+  output logic            data_is_lrsc_o,
   output logic [31:0]     data_addr_o,
   output logic [MemW-1:0] data_wdata_o,
   input  logic            data_gnt_i,
   input  logic            data_rvalid_i,
   input  logic            data_err_i,
+  input  logic            data_sc_resp_i,
   input  logic [MemW-1:0] data_rdata_i,
   input  logic            data_pmp_err_i,
 
@@ -102,25 +104,37 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   //  EX1 (address generation) stage
   // 
   
-  // select input
-  assign instr_dec  = sel_ira_i ? ira_dec_i : irb_dec_i;
-  assign full_data2 = sel_ira_i ? ira_full_data2_i : irb_full_data2_i;
+  logic is_lr_a, is_lr_b, is_sc_a, is_sc_b;
+  logic is_lr, is_sc;
+
+  // decode and address generation
+  assign is_lr_a    = (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_ATOMIC) && ~ira_dec_i.insn[27]; 
+  assign is_lr_b    = (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_ATOMIC) && ~irb_dec_i.insn[27]; 
+  assign is_sc_a    = (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_ATOMIC) && ira_dec_i.insn[27]; 
+  assign is_sc_b    = (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_ATOMIC) && irb_dec_i.insn[27]; 
  
   assign ira_imm12 = ira_dec_i.rf_we ? ira_dec_i.insn[31:20] : {ira_dec_i.insn[31:25], ira_dec_i.insn[11:7]};
   assign irb_imm12 = irb_dec_i.rf_we ? irb_dec_i.insn[31:20] : {irb_dec_i.insn[31:25], irb_dec_i.insn[11:7]};
 
-  assign ira_ls_addr = ira_full_data2_i.d0[31:0] + {{20{ira_imm12[11]}}, ira_imm12};
-  assign irb_ls_addr = irb_full_data2_i.d0[31:0] + {{20{irb_imm12[11]}}, irb_imm12};
+  assign ira_ls_addr = (is_lr_a | is_sc_a) ?  ira_full_data2_i.d0[31:0] : 
+                       ira_full_data2_i.d0[31:0] + {{20{ira_imm12[11]}}, ira_imm12};
+  assign irb_ls_addr = (is_lr_b | is_sc_b) ?  irb_full_data2_i.d0[31:0] : 
+                       irb_full_data2_i.d0[31:0] + {{20{irb_imm12[11]}}, irb_imm12};
+
+  // select input
+  assign instr_dec  = sel_ira_i ? ira_dec_i : irb_dec_i;
+  assign full_data2 = sel_ira_i ? ira_full_data2_i : irb_full_data2_i;
+  assign is_lr      = sel_ira_i ? is_lr_a : is_lr_b;
+  assign is_sc      = sel_ira_i ? is_sc_a : is_sc_b;
 
   assign cs1_fcap       = full_cap_t'(full_data2.d0);
   assign cs2_fcap       = full_cap_t'(full_data2.d1);
 
-  // decode and address generation
   assign opcode   = opcode_e'(instr_dec.insn[6:0]);
 
   always_comb begin
     logic          lc_cglg, lc_csdlm, lc_ctag;
-    logic          is_cap;
+    logic          is_cap, is_load;
 
     unique case (instr_dec.insn[13:12])
       2'b00:   data_type = 2'b10; // sb
@@ -134,11 +148,14 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     lc_ctag   = ~cs1_fcap.perms[PERM_MC];
     
     is_cap    = instr_dec.cheri_op.clc | instr_dec.cheri_op.csc;
+    is_load   = (opcode == OPCODE_LOAD); 
 
     lsu_req_dec = NULL_LSU_REQ_INFO;
 
     lsu_req_dec            = NULL_LSU_REQ_INFO;
-    lsu_req_dec.rf_we      = (opcode == OPCODE_LOAD);
+    lsu_req_dec.rf_we      = is_load || is_lr || is_sc;
+    lsu_req_dec.lr         = is_lr;
+    lsu_req_dec.sc         = is_sc;
     lsu_req_dec.is_cap     = is_cap;
     lsu_req_dec.data_type  = data_type;
     lsu_req_dec.wdata      = (cheri_pmode & is_cap) ? op2memcap(full_data2.d1[OpW-1:0]) : 
@@ -151,8 +168,8 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     lsu_req_dec.rd         = instr_dec.rd;
 
     // QQQ will change to configurable range
-    lsu_req_dec.early_load = lsu_req_dec.rf_we && (lsu_req_dec.addr[31:24] == 8'h80);
-    lsu_req_dec.cache_ok   = (lsu_req_dec.addr[31:24] == 8'h80);
+    lsu_req_dec.early_load = is_load && ~lsu_req_dec.sc && (lsu_req_dec.addr[31:24] == 8'h80);
+    lsu_req_dec.cache_ok   = (lsu_req_dec.addr[31:24] == 8'h80) && ~is_lr && ~is_sc;
 
     if (cheri_pmode) lsu_req_dec.lschk_info =  build_lschk_info(cs1_fcap, cs2_fcap);
   end
@@ -213,15 +230,17 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     .debug_mode_i          (debug_mode_i      ),
     .data_req_o            (data_req_o        ),
     .data_is_cap_o         (data_is_cap_o     ),
+    .data_is_lrsc_o        (data_is_lrsc_o    ),
     .data_gnt_i            (data_gnt_i        ),
-    .data_rvalid_i         (data_rvalid_i     ),
-    .data_err_i            (data_err_i        ),
-    .data_pmp_err_i        (data_pmp_err      ),
     .data_addr_o           (data_addr_o       ),
     .data_we_o             (data_we_o         ),
     .data_be_o             (data_be_o         ),
     .data_wdata_o          (data_wdata_o      ),
+    .data_rvalid_i         (data_rvalid_i     ),
     .data_rdata_i          (data_rdata_i      ),
+    .data_err_i            (data_err_i        ),
+    .data_sc_resp_i        (data_sc_resp_i    ),
+    .data_pmp_err_i        (data_pmp_err      ),
     .lsu_req_i             (lsu_req           ),      
     .lsu_req_done_o        (lsu_req_done      ),
     .lsu_req_info_i        (lsu_req_info      ),

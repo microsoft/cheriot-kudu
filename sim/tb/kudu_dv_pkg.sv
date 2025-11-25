@@ -11,12 +11,14 @@ package kudu_dv_pkg;
   typedef struct packed {
     logic [7:0]    flag;
     logic          is_cap;
+    logic          is_lrsc;
     logic          we;
     logic [3:0]    be;
     logic [29:0]   addr32;
     logic [64:0]   wdata;
     logic [64:0]   rdata;
     logic          err;
+    logic          sc_resp;
   } mem_cmd_t;
 
 endpackage

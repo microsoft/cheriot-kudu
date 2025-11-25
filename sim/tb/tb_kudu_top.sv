@@ -43,8 +43,8 @@ module tb_kudu_top;
   logic [31:0] data_addr;
   logic [DBusW-1:0] data_wdata;
   logic [DBusW-1:0] data_rdata;
-  logic        data_err;
-  logic        data_is_cap;
+  logic        data_err, data_sc_resp;
+  logic        data_is_cap, data_is_lrsc;
   logic [7:0]  data_flag;
   mem_cmd_t    data_resp_info;
 
@@ -161,7 +161,7 @@ module tb_kudu_top;
 
 `ifndef IBEX
   `ifndef KUDU_PPL_CFG
-    `define KUDU_PPL_CFG 3
+    `define KUDU_PPL_CFG 1
   `endif
 
   `ifndef KUDU_DW_MULT
@@ -203,10 +203,12 @@ module tb_kudu_top;
     .data_we_o            (data_we     ),
     .data_be_o            (data_be     ),
     .data_is_cap_o        (data_is_cap ),
+    .data_is_lrsc_o       (data_is_lrsc),
     .data_addr_o          (data_addr   ),
     .data_wdata_o         (data_wdata  ),
     .data_rdata_i         (data_rdata  ),
     .data_err_i           (data_err    ),
+    .data_sc_resp_i       (data_sc_resp),
     .tsmap_cs_o           (tsmap_cs    ),
     .tsmap_addr_o         (tsmap_addr  ),
     .tsmap_rdata_i        (tsmap_rdata ),
@@ -250,6 +252,7 @@ module tb_kudu_top;
                      .DmHaltAddr      (32'h84000000),
                      .DmExceptionAddr (32'h84000008),
                      .RV32M           (RV32MFast),
+                     .RV32B           (RV32BFull),
                      .MMRegDinW       (128),
                      .MMRegDoutW      (64),
                    `ifdef CHERIoT
@@ -314,6 +317,8 @@ module tb_kudu_top;
 
   logic addr_b2_q;
   assign instr_rdata_ibex = addr_b2_q ? instr_rdata[63:32] : instr_rdata[31:0];
+
+  assign data_is_lrsc = 1'b0;   // ibex doesn't support lr/sc yet
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -381,7 +386,7 @@ module tb_kudu_top;
     #1;
     rst_n = 1'b0;
 
-    $readmemh(vhx_path, u_instr_mem.iram, 'h0);   // load main executable
+    //$readmemh(vhx_path, u_instr_mem.iram, 'h0);   // load main executable
     $readmemh(vhx_path, u_data_mem.dram, 'h0);   // load main executable
 
 
@@ -389,7 +394,7 @@ module tb_kudu_top;
     if (i != 0) begin
       $sformat(dbg_vhx_path, "./bin/%s.vhx", dbgrom_name);
       $display("TB> Loading Debug ROM %s", dbg_vhx_path);
-      $readmemh(dbg_vhx_path, u_instr_mem.dbgrom, 'h0);   // load main executable
+      $readmemh(dbg_vhx_path, u_data_mem.dbgrom, 'h0);   // load main executable
       $readmemh(dbg_vhx_path, u_data_mem.dbgrom, 'h0);   // load main executable
     end  
 
@@ -433,26 +438,6 @@ module tb_kudu_top;
   //
   // RAMs 
   //
-  instr_mem_model # (
-   `ifndef IBEX
-    .UnalignedFetch(1'b1)
-   `else
-    .UnalignedFetch(1'b0)
-   `endif
-  ) u_instr_mem (
-    .clk             (clk           ), 
-    .rst_n           (rst_n         ),
-    .ERR_RATE        (instr_err_rate),
-    .GNT_WMAX        (instr_gnt_wmax),
-    .RESP_WMAX       (instr_resp_wmax),
-    .err_enable      (instr_err_enable),
-    .instr_req       (instr_req     ),
-    .instr_addr      (instr_addr    ),
-    .instr_gnt       (instr_gnt     ),
-    .instr_rvalid    (instr_rvalid  ),
-    .instr_rdata     (instr_rdata),
-    .instr_err       (instr_err     )
-  );
   
   logic [64:0] data_rdata65, data_wdata65;
 
@@ -461,17 +446,34 @@ module tb_kudu_top;
   assign data_rdata   = data_rdata65[DBusW-1:0];
   assign data_wdata65 = data_wdata;
 
-  data_mem_model #(.DW(65)) u_data_mem (
+  data_mem_model #(
+  `ifndef IBEX
+     .UnalignedFetch(1'b1)
+  `else
+     .UnalignedFetch(1'b0)
+  `endif
+  ) u_data_mem (
     .clk             (clk          ), 
     .rst_n           (rst_n        ),
-    .ERR_RATE        (data_err_rate),
-    .GNT_WMAX        (data_gnt_wmax),
-    .RESP_WMAX       (data_resp_wmax),
-    .err_enable      (data_err_enable),
+    .INSTR_ERR_RATE  (instr_err_rate),
+    .INSTR_GNT_WMAX  (instr_gnt_wmax),
+    .INSTR_RESP_WMAX (instr_resp_wmax),
+    .instr_err_enable(instr_err_enable),
+    .instr_req       (instr_req     ),
+    .instr_addr      (instr_addr    ),
+    .instr_gnt       (instr_gnt     ),
+    .instr_rvalid    (instr_rvalid  ),
+    .instr_rdata     (instr_rdata),
+    .instr_err       (instr_err     ),
+    .DATA_ERR_RATE   (data_err_rate),
+    .DATA_GNT_WMAX   (data_gnt_wmax),
+    .DATA_RESP_WMAX  (data_resp_wmax),
+    .data_err_enable (data_err_enable),
     .data_req        (data_req     ),
     .data_we         (data_we      ),
     .data_be         (data_be      ),
     .data_is_cap     (data_is_cap  ),
+    .data_is_lrsc    (data_is_lrsc ),
     .data_addr       (data_addr    ),
     .data_wdata      (data_wdata65 ),
     .data_flag       (data_flag    ),   // from mem_monitor
@@ -479,6 +481,7 @@ module tb_kudu_top;
     .data_rvalid     (data_rvalid  ),
     .data_rdata      (data_rdata65 ),
     .data_err        (data_err     ),
+    .data_sc_resp    (data_sc_resp ),
     .data_resp_info  (data_resp_info),  // to mem_monitor
     .tsmap_cs        (tsmap_cs     ),
     .tsmap_addr      (tsmap_addr   ),

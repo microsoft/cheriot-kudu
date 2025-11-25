@@ -39,7 +39,6 @@ $rtlRoot/tracer_wrapper.sv
 $verifRoot/tb/kudu_dv_pkg.sv
 $verifRoot/tb/mem_obi_if.sv
 $verifRoot/tb/data_mem_model.sv
-$verifRoot/tb/instr_mem_model.sv
 $verifRoot/tb/kudu_stats.sv
 $verifRoot/tb/kudu_branch_log.sv
 $verifRoot/tb/intr_gen.sv

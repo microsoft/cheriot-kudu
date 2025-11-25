@@ -26,10 +26,12 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   // data memory interface       
   output logic            data_req_o,
   output logic            data_is_cap_o,
+  output logic            data_is_lrsc_o,
   input  logic            data_gnt_i,
   input  logic            data_rvalid_i,
   input  logic            data_err_i,
   input  logic            data_pmp_err_i,
+  input  logic            data_sc_resp_i,
                           
   output logic [31:0]     data_addr_o,
   output logic            data_we_o,
@@ -239,7 +241,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
       2'b01:   rdata_w_ext = {1'b0, data_rdata_i[ 7:0], rdata_q[31:8]};
       2'b10:   rdata_w_ext = {1'b0, data_rdata_i[15:0], rdata_q[31:16]};
       2'b11:   rdata_w_ext = {1'b0, data_rdata_i[23:0], rdata_q[31:24]};
-      default: rdata_w_ext =  data_rdata_i[31:0];
+      default: rdata_w_ext = data_rdata_i[31:0];
     endcase
   end
 
@@ -557,10 +559,14 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     end
   end
 
+  logic [31:0]  rdata_sc_muxed;
+
+  assign rdata_sc_muxed = lsu_req_info_q.sc ? {31'h0, data_sc_resp_i} : data_rdata_ext;
+  
   if (CHERIoTEn) begin : gen_cap_rd
-    assign lsu_rdata = lsu_req_info_q.is_cap ? mem2regcap(data_rdata_i, lsu_req_info_q.clrperm) : {33'h0, data_rdata_ext};
+    assign lsu_rdata = lsu_req_info_q.is_cap ? mem2regcap(data_rdata_i, lsu_req_info_q.clrperm) : {33'h0, rdata_sc_muxed};
   end else begin : gen_no_cap_rd
-    assign lsu_rdata = data_rdata_ext;
+    assign lsu_rdata = rdata_sc_muxed;
   end
 
   /////////////
@@ -592,15 +598,16 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign data_addr_w_aligned = {data_addr[31:2], 2'b00};
 
   // output to data interface
-  assign data_addr_o   = data_addr_w_aligned;
+  assign data_addr_o    = data_addr_w_aligned;
 
-  assign data_wdata_o  = data_wdata;
-  assign data_we_o     = ~lsu_req_info_i.rf_we;
-  assign data_be_o     = data_be;
+  assign data_wdata_o   = data_wdata;
+  assign data_we_o      = ~lsu_req_info_i.rf_we || lsu_req_info_i.sc;
+  assign data_be_o      = data_be;
 
-  assign data_is_cap_o = lsu_req_info_i.is_cap;
+  assign data_is_cap_o  = lsu_req_info_i.is_cap;
+  assign data_is_lrsc_o = lsu_req_info_i.lr | lsu_req_info_i.sc;
 
-  assign addr_last_o   = addr_last_q;
+  assign addr_last_o    = addr_last_q;
   assign busy_o = (ls_fsm_cs != IDLE);
 
 endmodule

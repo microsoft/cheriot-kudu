@@ -657,14 +657,15 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         // till its operands are resolved to compute target PC
         special_case_q  <= SYSCTL;
         special_setpc_q <= (ir0_dec.sysctl.ebrk | ir0_dec.sysctl.ecall | ir0_dec.sysctl.mret | 
-                            ir0_dec.sysctl.dret | ir0_dec.sysctl.cjalr);
+                            ir0_dec.sysctl.dret | ir0_dec.sysctl.cjalr | ir0_dec.sysctl.fencei);
         sysctl_q        <= ir0_dec.sysctl;
         unique case (1'b1)
-          ir0_dec.sysctl.ebrk:  special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
-          ir0_dec.sysctl.ecall: special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
-          ir0_dec.sysctl.mret:  special_pc_q <= csr_mepc_i;
-          ir0_dec.sysctl.cjalr: special_pc_q <= ir0_jalr_target_i;
-          ir0_dec.sysctl.dret:  special_pc_q <= csr_depc_i;
+          ir0_dec.sysctl.ebrk:   special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
+          ir0_dec.sysctl.ecall:  special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
+          ir0_dec.sysctl.mret:   special_pc_q <= csr_mepc_i;
+          ir0_dec.sysctl.cjalr:  special_pc_q <= ir0_jalr_target_i;
+          ir0_dec.sysctl.dret:   special_pc_q <= csr_depc_i;
+          ir0_dec.sysctl.fencei: special_pc_q <= ir0_dec.pc_nxt;
           default:;
         endcase
       end else if (ctrl_fsm_ns[CSM_ISSUE_SPECIAL]) begin

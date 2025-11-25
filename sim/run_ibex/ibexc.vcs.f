@@ -43,7 +43,6 @@ $rtlRoot/ibexc_top_tracing.sv
 ../tb/kudu_dv_pkg.sv
 ../tb/mem_obi_if.sv
 ../tb/data_mem_model.sv
-../tb/instr_mem_model.sv
 ../tb/ibex_stats.sv
 ../tb/intr_gen.sv
 ../tb/tb_kudu_top.sv

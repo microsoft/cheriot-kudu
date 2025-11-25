@@ -1411,6 +1411,18 @@ module tracer import super_pkg::*; import tracer_pkg::*; import cheri_pkg::*; (
         INSN_AUIPC:        decode_cheri_auipcc_insn();
         INSN_AUICGP:       decode_cheri_auicgp_insn();
 
+        // ATOMIC 
+        INSN_LR:         decode_r1_insn("lr.w");
+        INSN_SC:         decode_r_insn("sc.w");
+        INSN_AMOSWAP:    decode_r_insn("amoswap.w");
+        INSN_AMOADD:     decode_r_insn("amoadd.w");
+        INSN_AMOXOR:     decode_r_insn("amoxor.w");
+        INSN_AMOOR:      decode_r_insn("amoor.w");
+        INSN_AMOMIN:     decode_r_insn("amomin.w");
+        INSN_AMOMAX:     decode_r_insn("amomax.w");
+        INSN_AMOMINU:    decode_r_insn("amominu.w");
+        INSN_AMOMAXU:    decode_r_insn("amomaxu.w");
+
         default:         decode_mnemonic("INVALID");
       endcase
     end

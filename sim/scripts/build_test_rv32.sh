@@ -22,7 +22,7 @@ export ELF_OUTPUT=$TESTNAME.elf
 export BIN_OUTPUT=$TESTNAME.bin
 export HEX_OUTPUT=$TESTNAME.vhx
 
-export MARCH=rv32imc_zicsr
+export MARCH=rv32imac_zicsr
 export MABI=ilp32
  
 # run the compile 

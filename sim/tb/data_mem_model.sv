@@ -5,30 +5,44 @@
 //
 // data interface/memory model
 //
-module data_mem_model import kudu_dv_pkg::*; #(
-  parameter int unsigned DW = 65
-)( 
+module data_mem_model import kudu_dv_pkg::*; # (
+  parameter bit UnalignedFetch = 1'b1
+) (
   input  logic              clk,
   input  logic              rst_n,
 
-  input  logic [2:0]        ERR_RATE,   
-  input  logic [3:0]        GNT_WMAX,
-  input  logic [3:0]        RESP_WMAX,
+  input  logic [2:0]        INSTR_ERR_RATE,   
+  input  logic [3:0]        INSTR_GNT_WMAX,
+  input  logic [3:0]        INSTR_RESP_WMAX,
+  input  logic              instr_err_enable,
+ 
+  input  logic [2:0]        DATA_ERR_RATE,   
+  input  logic [3:0]        DATA_GNT_WMAX,
+  input  logic [3:0]        DATA_RESP_WMAX,
+  input  logic              data_err_enable,
 
-  input  logic              err_enable,
+  input  logic              instr_req,
+  input  logic [31:0]       instr_addr,
+                            
+  output logic              instr_gnt,
+  output logic              instr_rvalid,
+  output logic [63:0]       instr_rdata,
+  output logic              instr_err,
  
   input  logic              data_req,
   input  logic              data_we,
   input  logic [3:0]        data_be,
   input  logic              data_is_cap,
+  input  logic              data_is_lrsc,
   input  logic [31:0]       data_addr,
-  input  logic [DW-1:0]     data_wdata,
+  input  logic [64:0]       data_wdata,
   input  logic [7:0]        data_flag,
 
   output logic              data_gnt,
   output logic              data_rvalid,
-  output logic [DW-1:0]     data_rdata,
+  output logic [64:0]       data_rdata,
   output logic              data_err,
+  output logic              data_sc_resp,
   output mem_cmd_t          data_resp_info,
 
   input  logic              tsmap_cs,
@@ -41,8 +55,11 @@ module data_mem_model import kudu_dv_pkg::*; #(
   output logic              uart_stop_sim
 );
  
+  // we only support DW=65 now
+  localparam int unsigned DW = 65;
+
   localparam int unsigned DRAM_AW32   = 16; 
-  localparam int unsigned DRAM_AW     = (DW == 65)? (DRAM_AW32-1) : DRAM_AW32; 
+  localparam int unsigned DRAM_AW     = DRAM_AW32-1; 
 
   localparam int unsigned TSRAM_AW    = 10; 
   localparam int unsigned NMMRI       = 128/32;
@@ -52,12 +69,14 @@ module data_mem_model import kudu_dv_pkg::*; #(
 
   logic          mem_cs;
   logic          mem_is_cap;
+  logic          mem_is_lrsc;
   logic          mem_we;
   logic [3:0]    mem_be;
   logic [29:0]   mem_addr32;
   logic [DW-1:0] mem_wdata;
   logic [DW-1:0] mem_rdata;
   logic          mem_err;
+  logic          mem_sc_resp;
 
   // simple unified memory system model
   logic [DW-1:0]      dram[0:2**DRAM_AW-1];
@@ -82,41 +101,49 @@ module data_mem_model import kudu_dv_pkg::*; #(
 
   logic [7:0]          mem_flag;
 
-  
   logic [DW-1:0]        dbgrom[0:2**DBGROM_AW-1];
   logic [DBGROM_AW-1:0] dbgrom_addr;
-  logic [DW:0]          dbgrom_rdata;
+  logic [DW-1:0]        dbgrom_rdata;
   logic                 dbgrom_sel, dbgrom_cs;
+
+
+  ////////////////////////////////////////////////////////////////////////////////////////
+  //  Data access port
+  ////////////////////////////////////////////////////////////////////////////////////////
 
   mem_obi_if #(
     .DW         (DW),
     .sample_delay (1)
-  ) u_mem_obj_if (
-    .clk_i        (clk),
-    .rst_ni       (rst_n),
-    .GNT_WMAX     (GNT_WMAX),
-    .RESP_WMAX    (RESP_WMAX),
-    .data_req     (data_req),
-    .data_we      (data_we),
-    .data_be      (data_be),
-    .data_is_cap  (data_is_cap),
-    .data_addr    (data_addr),
-    .data_wdata   (data_wdata),
-    .data_flag    (data_flag),
-    .data_gnt     (data_gnt),
-    .data_rvalid  (data_rvalid),
-    .data_rdata   (data_rdata),
-    .data_err     (data_err),
+  ) u_data_if (
+    .clk_i          (clk),
+    .rst_ni         (rst_n),
+    .GNT_WMAX       (DATA_GNT_WMAX),
+    .RESP_WMAX      (DATA_RESP_WMAX),
+    .data_req       (data_req),
+    .data_we        (data_we),
+    .data_be        (data_be),
+    .data_is_cap    (data_is_cap),
+    .data_is_lrsc   (data_is_lrsc),
+    .data_addr      (data_addr),
+    .data_wdata     (data_wdata),
+    .data_flag      (data_flag),
+    .data_gnt       (data_gnt),
+    .data_rvalid    (data_rvalid),
+    .data_rdata     (data_rdata),
+    .data_err       (data_err),
+    .data_sc_resp   (data_sc_resp),
     .data_resp_info (data_resp_info),
-    .mem_cs       (mem_cs),
-    .mem_is_cap   (mem_is_cap),
-    .mem_we       (mem_we),
-    .mem_be       (mem_be),
-    .mem_flag     (mem_flag),
-    .mem_addr32   (mem_addr32),
-    .mem_wdata    (mem_wdata),
-    .mem_rdata    (mem_rdata),
-    .mem_err      (mem_err)
+    .mem_cs         (mem_cs),
+    .mem_is_cap     (mem_is_cap),
+    .mem_is_lrsc    (mem_is_lrsc),
+    .mem_we         (mem_we),
+    .mem_be         (mem_be),
+    .mem_flag       (mem_flag),
+    .mem_addr32     (mem_addr32),
+    .mem_wdata      (mem_wdata),
+    .mem_rdata      (mem_rdata),
+    .mem_err        (mem_err),
+    .mem_sc_resp    (mem_sc_resp)
   );
 
   //
@@ -126,6 +153,7 @@ module data_mem_model import kudu_dv_pkg::*; #(
   logic dram_word_sel;
   logic dbgrom_word_sel;
   logic mem_req_isr, mem_req_stkz;
+  logic dram_lr_status_q;
 
   assign mem_req_stkz = mem_flag[2];
   assign mem_req_isr  = mem_flag[0];
@@ -135,8 +163,10 @@ module data_mem_model import kudu_dv_pkg::*; #(
                                                (dbgrom_sel_q ? {1'h0, dbgrom_rdata} : 
                                                65'h0)));
 
+  assign mem_sc_resp = dram_sel? ~dram_lr_status_q : 1'b0;
+
   // mem_err is in the mem_cs
-  assign mem_err   = (ERR_RATE == 0) ? (mem_cs & (~dram_sel & ~tsram_p0_sel & ~uart_cs0 & ~uart_cs1 & ~mmreg_sel)) :
+  assign mem_err   = (DATA_ERR_RATE == 0) ? (mem_cs & (~dram_sel & ~tsram_p0_sel & ~uart_cs0 & ~uart_cs1 & ~mmreg_sel)) :
                      (~mem_req_isr & dram_sel ? dram_err_schd : (tsram_p0_sel ? tsram_p0_err_schd : 1'b0));
 
   always @(posedge clk, negedge rst_n) begin
@@ -145,11 +175,18 @@ module data_mem_model import kudu_dv_pkg::*; #(
       tsram_p0_sel_q    <= 1'b0;
       mmreg_sel_q       <= 1'b0;
       dbgrom_sel_q      <= 1'b0;
+      dram_lr_status_q  <= 1'b0;
     end else begin
       dram_sel_q        <= dram_sel;
       tsram_p0_sel_q    <= tsram_p0_sel;
       mmreg_sel_q       <= mmreg_sel;  
       dbgrom_sel_q      <= dbgrom_sel;
+
+      if (dram_cs & ~mem_we & mem_is_lrsc)
+        dram_lr_status_q <= 1'b1;
+      else if (dram_cs & mem_we)
+        dram_lr_status_q <= 1'b0;
+
     end
   end
 
@@ -160,73 +197,56 @@ module data_mem_model import kudu_dv_pkg::*; #(
   // don't generate memory access if
   //   - responds with an error, or
   //   - accesses from stkz is supposed to be ignored.
-  assign dram_addr   = (DW == 65) ? mem_addr32[DRAM_AW:1] : mem_addr32[DRAM_AW-1:0];
+  assign dram_addr   = mem_addr32[DRAM_AW:1]; 
   assign dram_sel    = mem_cs & mem_addr32[29] & (mem_addr32[28:DRAM_AW32+1] == 0);   
   assign dram_cs     = dram_sel & ~mem_err;   
 
-  assign dram_word_sel = (DW == 65) ? mem_addr32[0] : 1'b0;
+  assign dram_word_sel = mem_addr32[0];
 
-  if (DW == 65) begin : gen_dram_rw65
-    always @(posedge clk) begin
-      if (dram_cs && mem_we && mem_is_cap) begin
-        dram[dram_addr] <= mem_wdata;
-      end else if (dram_cs && mem_we && dram_word_sel) begin
-        if(mem_be[0])
-          dram[dram_addr][39:32]  <= mem_wdata[7:0];
-        if(mem_be[1])
-          dram[dram_addr][47:40] <= mem_wdata[15:8];
-        if(mem_be[2])
-          dram[dram_addr][55:48] <= mem_wdata[23:16];
-        if(mem_be[3])
-          dram[dram_addr][63:56] <= mem_wdata[31:24];
-      end else if (dram_cs && mem_we) begin
-        if(mem_be[0])
-          dram[dram_addr][7:0]  <= mem_wdata[7:0];
-        if(mem_be[1])
-          dram[dram_addr][15:8] <= mem_wdata[15:8];
-        if(mem_be[2])
-          dram[dram_addr][23:16] <= mem_wdata[23:16];
-        if(mem_be[3])
-          dram[dram_addr][31:24] <= mem_wdata[31:24];
-      end
-       
-        // CPU should always take care of driving the tag bit
-      if (dram_cs && mem_we) dram[dram_addr][64]  <= mem_wdata[64];
-
-      if (dram_cs && ~mem_we && mem_is_cap)
-        dram_rdata <= dram[dram_addr];  
-      else if (dram_cs && ~mem_we && dram_word_sel)
-        dram_rdata <= {33'h0, dram[dram_addr][63:32]};  
-      else if (dram_cs && ~mem_we)
-        dram_rdata <= {33'h0, dram[dram_addr][31:0]};  
-
+  always @(posedge clk) begin
+    if (dram_cs && mem_we && mem_is_cap) begin
+      dram[dram_addr] <= mem_wdata;
+    end else if (dram_cs && mem_we && dram_word_sel) begin
+      if(mem_be[0])
+        dram[dram_addr][39:32]  <= mem_wdata[7:0];
+      if(mem_be[1])
+        dram[dram_addr][47:40] <= mem_wdata[15:8];
+      if(mem_be[2])
+        dram[dram_addr][55:48] <= mem_wdata[23:16];
+      if(mem_be[3])
+        dram[dram_addr][63:56] <= mem_wdata[31:24];
+    end else if (dram_cs && mem_we) begin
+      if(mem_be[0])
+        dram[dram_addr][7:0]  <= mem_wdata[7:0];
+      if(mem_be[1])
+        dram[dram_addr][15:8] <= mem_wdata[15:8];
+      if(mem_be[2])
+        dram[dram_addr][23:16] <= mem_wdata[23:16];
+      if(mem_be[3])
+        dram[dram_addr][31:24] <= mem_wdata[31:24];
     end
-  end else begin : gen_dram_rw33
-    always @(posedge clk) begin
-      if (dram_cs && mem_we) begin
-        if(mem_be[0])
-          dram[dram_addr][7:0]  <= mem_wdata[7:0];
-        if(mem_be[1])
-          dram[dram_addr][15:8] <= mem_wdata[15:8];
-        if(mem_be[2])
-          dram[dram_addr][23:16] <= mem_wdata[23:16];
-        if(mem_be[3])
-          dram[dram_addr][31:24] <= mem_wdata[31:24];
-       
-        // CPU should always take care of driving the tag bit
-      end else if (dram_cs)
-        dram_rdata <= dram[dram_addr];  
-    end
+     
+      // CPU should always take care of driving the tag bit
+    if (dram_cs && mem_we) dram[dram_addr][64]  <= mem_wdata[64];
+
+    if (dram_cs && ~mem_we && mem_is_cap)
+      dram_rdata <= dram[dram_addr];  
+    else if (dram_cs && ~mem_we && dram_word_sel)
+      dram_rdata <= {33'h0, dram[dram_addr][63:32]};  
+    else if (dram_cs && ~mem_we)
+      dram_rdata <= {33'h0, dram[dram_addr][31:0]};  
+
   end
 
   always @(negedge clk, negedge rst_n) begin
     if (~rst_n) begin
-      dram_err_schd <= 1'b0;
+      dram_err_schd    <= 1'b0;
     end else begin
-      if (~err_enable)
+      if (~data_err_enable)
         dram_err_schd <= 1'b0;
       else if (dram_sel)
-        dram_err_schd <= (ERR_RATE == 0) ? 1'b0 : ($urandom()%(2**(8-ERR_RATE))==0);
+        dram_err_schd <= (DATA_ERR_RATE == 0) ? 1'b0 : ($urandom()%(2**(8-DATA_ERR_RATE))==0);
+
     end
   end 
 
@@ -271,10 +291,10 @@ module data_mem_model import kudu_dv_pkg::*; #(
     if (~rst_n) begin
       tsram_p0_err_schd <= 1'b0;
     end else begin
-      if (~err_enable)
+      if (~data_err_enable)
         tsram_p0_err_schd <= 1'b0;
       else if (tsram_p0_sel)
-        tsram_p0_err_schd <= (ERR_RATE == 0) ? 1'b0 : ($urandom()%(2**(8-ERR_RATE))==0);
+        tsram_p0_err_schd <= (DATA_ERR_RATE == 0) ? 1'b0 : ($urandom()%(2**(8-DATA_ERR_RATE))==0);
     end
   end 
  
@@ -390,6 +410,38 @@ module data_mem_model import kudu_dv_pkg::*; #(
   assign uart_cs0    = mem_cs && (mem_addr32[29:22] == 8'h83) && (mem_addr32[21:8] == 14'h2000);
   assign uart_cs1    = mem_cs && (mem_addr32[29:22] == 8'h10) && (mem_addr32[21:8] == 14'h0000);
 
+`ifdef RISCV_TEST_SUITE
+  logic tohost_cs0, tohost_cs1;
+  assign tohost_cs0   = mem_cs && (mem_addr32[29:0] == 30'h2000_2000);
+  assign tohost_cs1   = mem_cs && (mem_addr32[29:0] == 30'h2000_2001);
+
+  // tohost print out pass/fail message
+  //   - pass:  0x01 to cs0,  followed by 0x0 to cs1 
+  //   - fail:  any value not 0x01 to cs0, followed by 0x0 to cs1 
+  initial begin
+    uart_stop_sim = 1'b0;
+    @(posedge rst_n);
+
+    while (1) begin
+      @(posedge clk);
+      if (tohost_cs0 && (mem_wdata == 32'h1)) begin
+        while (~tohost_cs1) @(posedge clk);
+        if (tohost_cs1 && (mem_wdata == 32'h0)) begin
+          $display("RISCV Test passed :)");
+          uart_stop_sim = 1'b1;
+          repeat (100) @(posedge clk);
+        end
+      end else if (tohost_cs0) begin
+        while (~tohost_cs1) @(posedge clk);
+        if (tohost_cs1 && (mem_wdata == 32'h0)) begin
+          $display("RISCV Test failed :(");
+          uart_stop_sim = 1'b1;
+          repeat(100) @(posedge clk);
+        end
+      end
+    end
+  end
+`else
   // UART printout
   initial begin
     uart_stop_sim = 1'b0;
@@ -405,34 +457,116 @@ module data_mem_model import kudu_dv_pkg::*; #(
           $write("%c", mem_wdata[7:0]);
     end
   end
-
+`endif
 
   //
   // Debug ROM
   // starting at 0x8400_0000
   //
-  assign dbgrom_addr   = (DW == 65) ? mem_addr32[DRAM_AW:1] : mem_addr32[DRAM_AW-1:0];
+  assign dbgrom_addr   = mem_addr32[DRAM_AW:1]; 
   assign dbgrom_sel    = mem_cs & (mem_addr32[29:24] == 6'h21) && (mem_addr32[23:DRAM_AW32+1] == 0);   
   assign dbgrom_cs     = dbgrom_sel & ~mem_err;   
 
-  assign dbgrom_word_sel = (DW == 65) ? mem_addr32[0] : 1'b0;
+  assign dbgrom_word_sel = mem_addr32[0];
 
-  if (DW == 65) begin : gen_dbgrom_rw65
-    always @(posedge clk) begin
-      if (dbgrom_cs && ~mem_we && mem_is_cap)
-        dbgrom_rdata <= dbgrom[dbgrom_addr];  
-      else if (dbgrom_cs && ~mem_we && dbgrom_word_sel)
-        dbgrom_rdata <= {33'h0, dbgrom[dbgrom_addr][63:32]};  
-      else if (dbgrom_cs && ~mem_we)
-        dbgrom_rdata <= {33'h0, dbgrom[dbgrom_addr][31:0]};  
-    end
-  end else begin : gen_dbgrom_rw33
-    always @(posedge clk) begin
-      // CPU should always take care of driving the tag bit
-      if (dbgrom_cs)
-        dbgrom_rdata <= dbgrom[dbgrom_addr];  
-    end
+  always @(posedge clk) begin
+    if (dbgrom_cs && ~mem_we && mem_is_cap)
+      dbgrom_rdata <= dbgrom[dbgrom_addr];  
+    else if (dbgrom_cs && ~mem_we && dbgrom_word_sel)
+      dbgrom_rdata <= {33'h0, dbgrom[dbgrom_addr][63:32]};  
+    else if (dbgrom_cs && ~mem_we)
+      dbgrom_rdata <= {33'h0, dbgrom[dbgrom_addr][31:0]};  
   end
 
+  ////////////////////////////////////////////////////////////////////////////////////////
+  //  Instruction fetch port
+  ////////////////////////////////////////////////////////////////////////////////////////
+  logic          instr_mem_cs;
+  logic [29:0]   instr_mem_addr32;
+  logic [63:0]   instr_mem_rdata;
+
+
+  mem_obi_if #(
+    .DW         (64),
+    .sample_delay (2)
+  ) u_instr_if (
+    .clk_i          (clk),
+    .rst_ni         (rst_n),
+    .GNT_WMAX       (INSTR_GNT_WMAX),
+    .RESP_WMAX      (INSTR_RESP_WMAX),
+    .data_req       (instr_req),
+    .data_we        (1'b0),
+    .data_be        (4'hf),
+    .data_is_cap    (1'b0),
+    .data_is_lrsc   (1'b0),
+    .data_addr      (instr_addr),
+    .data_wdata     (64'h0),
+    .data_flag      (8'h0),
+    .data_gnt       (instr_gnt),
+    .data_rvalid    (instr_rvalid),
+    .data_rdata     (instr_rdata),
+    .data_err       (instr_err),
+    .data_sc_resp   (),
+    .data_resp_info (),
+    .mem_cs         (instr_mem_cs),
+    .mem_is_cap     (),
+    .mem_is_lrsc    (),
+    .mem_we         (),
+    .mem_be         (),
+    .mem_flag       (),
+    .mem_addr32     (instr_mem_addr32),
+    .mem_wdata      (),
+    .mem_rdata      (instr_mem_rdata),
+    .mem_err        (instr_mem_err),
+    .mem_sc_resp    (1'b0)
+  );
+
+  logic instr_dram_sel, instr_dbgrom_sel;
+  logic instr_dram_sel_q, instr_dbgrom_sel_q;
+
+  logic [63:0] instr_dram_rdata, instr_dbgrom_rdata;
+
+  logic [DRAM_AW-1:0]   instr_dram_addr; 
+  logic [DBGROM_AW-1:0] instr_dbgrom_addr;
+
+  assign instr_mem_rdata = instr_dram_sel_q ? instr_dram_rdata : 
+                           instr_dbgrom_sel_q ? instr_dbgrom_rdata : 64'h0;
+
+  assign instr_mem_err = 1'b0;
+
+  assign instr_dram_sel    = instr_mem_cs & instr_mem_addr32[29] & (instr_mem_addr32[28:DRAM_AW32+1] == 0);   
+  assign instr_dram_addr   = instr_mem_addr32[DRAM_AW-1:1];
+
+  assign instr_dbgrom_addr = instr_mem_addr32[DRAM_AW:1]; 
+  assign instr_dbgrom_sel  = instr_mem_cs & (instr_mem_addr32[29:24] == 6'h21) && (instr_mem_addr32[23:DRAM_AW32+1] == 0);   
+ 
+  always @(posedge clk, negedge rst_n) begin
+    if (~rst_n) begin
+      instr_dram_sel_q     <= 1'b0;
+      instr_dbgrom_sel_q   <= 1'b0;
+    end else begin
+      instr_dram_sel_q     <= instr_dram_sel;
+      instr_dbgrom_sel_q   <= instr_dbgrom_sel;
+    end
+  end 
+
+  always @(posedge clk, negedge rst_n) begin
+    if (~rst_n) begin
+      instr_dram_rdata   <= 0;
+      instr_dbgrom_rdata <= 0;
+    end else begin
+      if (instr_dram_sel & (~instr_mem_addr32[0] | ~UnalignedFetch)) 
+        instr_dram_rdata <= dram[instr_dram_addr];
+      else if  (instr_dram_sel & instr_mem_addr32[0])
+        instr_dram_rdata <= {dram[instr_dram_addr+1][31:0], dram[instr_dram_addr][63:32]};
+
+      if (instr_dbgrom_sel  & (~instr_mem_addr32[0] | ~UnalignedFetch))
+        instr_dbgrom_rdata <= dbgrom[instr_dbgrom_addr];  
+      else if  (instr_dbgrom_sel & instr_mem_addr32[0])
+        instr_dbgrom_rdata <= {dbgrom[instr_dbgrom_addr+1][31:0], dbgrom[instr_dbgrom_addr][63:32]};
+      
+    end
+
+  end
 
 endmodule
