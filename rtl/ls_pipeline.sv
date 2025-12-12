@@ -11,6 +11,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   parameter bit          LoadFiltEn = 1'b1,
   parameter bit          EarlyLoad  = 1'b1,
   parameter bit          DCacheEn   = 1'b1,
+  parameter bit          RV32A      = 1'b1,
   parameter int unsigned HeapBase  = 32'h2001_0000,
   parameter int unsigned TSMapSize = 1024
 ) (
@@ -30,6 +31,10 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   input  full_data2_t     ira_full_data2_i,
   input  full_data2_t     irb_full_data2_i,
 
+  // cmplx unit interface
+  input logic             cmplx_lsu_req_valid_i,
+  input lsu_req_info_t    cmplx_lsu_req_info_i,
+
   // downstream (commit) side interface
   input  logic            ds_rdy_i,
   output logic            lspl_valid_o,
@@ -40,7 +45,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   output logic            data_we_o,
   output logic [3:0]      data_be_o,
   output logic            data_is_cap_o,
-  output logic            data_is_lrsc_o,
+  output logic [3:0]      data_amo_flag_o,
   output logic [31:0]     data_addr_o,
   output logic [MemW-1:0] data_wdata_o,
   input  logic            data_gnt_i,
@@ -108,10 +113,10 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   logic is_lr, is_sc;
 
   // decode and address generation
-  assign is_lr_a    = (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_ATOMIC) && ~ira_dec_i.insn[27]; 
-  assign is_lr_b    = (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_ATOMIC) && ~irb_dec_i.insn[27]; 
-  assign is_sc_a    = (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_ATOMIC) && ira_dec_i.insn[27]; 
-  assign is_sc_b    = (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_ATOMIC) && irb_dec_i.insn[27]; 
+  assign is_lr_a    = RV32A && (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_AMO) && ~ira_dec_i.insn[27]; 
+  assign is_lr_b    = RV32A && (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_AMO) && ~irb_dec_i.insn[27]; 
+  assign is_sc_a    = RV32A && (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_AMO) && ira_dec_i.insn[27]; 
+  assign is_sc_b    = RV32A && (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_AMO) && irb_dec_i.insn[27]; 
  
   assign ira_imm12 = ira_dec_i.rf_we ? ira_dec_i.insn[31:20] : {ira_dec_i.insn[31:25], ira_dec_i.insn[11:7]};
   assign irb_imm12 = irb_dec_i.rf_we ? irb_dec_i.insn[31:20] : {irb_dec_i.insn[31:25], irb_dec_i.insn[11:7]};
@@ -150,27 +155,30 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     is_cap    = instr_dec.cheri_op.clc | instr_dec.cheri_op.csc;
     is_load   = (opcode == OPCODE_LOAD); 
 
-    lsu_req_dec = NULL_LSU_REQ_INFO;
-
-    lsu_req_dec            = NULL_LSU_REQ_INFO;
-    lsu_req_dec.rf_we      = is_load || is_lr || is_sc;
-    lsu_req_dec.lr         = is_lr;
-    lsu_req_dec.sc         = is_sc;
-    lsu_req_dec.is_cap     = is_cap;
-    lsu_req_dec.data_type  = data_type;
-    lsu_req_dec.wdata      = (cheri_pmode & is_cap) ? op2memcap(full_data2.d1[OpW-1:0]) : 
+    if (~cmplx_lsu_req_valid_i) begin
+      lsu_req_dec = NULL_LSU_REQ_INFO;
+      lsu_req_dec.rf_we      = is_load || is_lr || is_sc;
+      lsu_req_dec.amo_flag   = {2'b00, is_sc, is_lr};
+      lsu_req_dec.is_cap     = is_cap;
+      lsu_req_dec.data_type  = data_type;
+      lsu_req_dec.wdata      = (cheri_pmode & is_cap) ? op2memcap(full_data2.d1[OpW-1:0]) : 
                                                       full_data2.d1[MemW-1:0];   
-    lsu_req_dec.clrperm    = debug_mode_i ? 4'h0 : {lc_ctag, 1'b0, lc_csdlm, lc_cglg};
-    lsu_req_dec.sign_ext   = ~instr_dec.insn[14]; 
-    lsu_req_dec.addr       = sel_ira_i ? ira_ls_addr : irb_ls_addr;
-    lsu_req_dec.pc         = instr_dec.pc;
-    lsu_req_dec.rs1        = instr_dec.rs1;
-    lsu_req_dec.rd         = instr_dec.rd;
+      lsu_req_dec.clrperm    = debug_mode_i ? 4'h0 : {lc_ctag, 1'b0, lc_csdlm, lc_cglg};
+      lsu_req_dec.sign_ext   = ~instr_dec.insn[14]; 
+      lsu_req_dec.addr       = sel_ira_i ? ira_ls_addr : irb_ls_addr;
+      lsu_req_dec.pc         = instr_dec.pc;
+      lsu_req_dec.rs1        = instr_dec.rs1;
+      lsu_req_dec.rd         = instr_dec.rd;
 
-    // QQQ will change to configurable range
-    lsu_req_dec.early_load = is_load && ~lsu_req_dec.sc && (lsu_req_dec.addr[31:24] == 8'h80);
-    lsu_req_dec.cache_ok   = (lsu_req_dec.addr[31:24] == 8'h80) && ~is_lr && ~is_sc;
+      // QQQ will change to configurable range
+      // don't do early load for lr/sc
+      lsu_req_dec.early_load = is_load && (lsu_req_dec.addr[31:24] == 8'h80);
+      lsu_req_dec.cache_ok   = (lsu_req_dec.addr[31:24] == 8'h80) && ~is_lr && ~is_sc;
+    end else begin
+      lsu_req_dec = cmplx_lsu_req_info_i;
+    end
 
+    // for complex instructions, load/store capability is still in cs1
     if (cheri_pmode) lsu_req_dec.lschk_info =  build_lschk_info(cs1_fcap, cs2_fcap);
   end
 
@@ -203,14 +211,17 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
 
   //
   // LSU interface
-  // 
+  //
+  logic lsu_if_req_valid;
+  assign lsu_if_req_valid = us_valid_i | cmplx_lsu_req_valid_i;
+ 
   lsu_if # (.CHERIoTEn(CHERIoTEn), .EarlyLoad(EarlyLoad)) lsu_if_i (
     .clk_i             (clk_i         ),
     .rst_ni            (rst_ni        ),
     .cheri_pmode_i     (cheri_pmode_i ),
     .debug_mode_i      (debug_mode_i  ),
     .flush_i           (flush_i       ),
-    .us_valid_i        (us_valid_i    ),
+    .us_valid_i        (lsu_if_req_valid),
     .lsu_req_dec_i     (lsu_req_dec   ),
     .lsif_rdy_o        (lspl_rdy_o    ),
     .lsu_req_done_i    (lsu_req_done  ),
@@ -230,7 +241,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     .debug_mode_i          (debug_mode_i      ),
     .data_req_o            (data_req_o        ),
     .data_is_cap_o         (data_is_cap_o     ),
-    .data_is_lrsc_o        (data_is_lrsc_o    ),
+    .data_amo_flag_o       (data_amo_flag_o   ),
     .data_gnt_i            (data_gnt_i        ),
     .data_addr_o           (data_addr_o       ),
     .data_we_o             (data_we_o         ),

@@ -1038,6 +1038,12 @@ module tracer import super_pkg::*; import tracer_pkg::*; import cheri_pkg::*; (
     end
   endfunction
 
+  function automatic void decode_amo_insn(input string mnemonic);
+    data_accessed = RS1 | RS2 | RD |MEM;
+    decoded_str = $sformatf("%s\tx%0d,x%0d,x%0d", mnemonic, rvfi_rd_addr, rvfi_rs1_addr,
+        rvfi_rs2_addr);
+  endfunction
+
   // cycle counter
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
@@ -1412,16 +1418,16 @@ module tracer import super_pkg::*; import tracer_pkg::*; import cheri_pkg::*; (
         INSN_AUICGP:       decode_cheri_auicgp_insn();
 
         // ATOMIC 
-        INSN_LR:         decode_r1_insn("lr.w");
-        INSN_SC:         decode_r_insn("sc.w");
-        INSN_AMOSWAP:    decode_r_insn("amoswap.w");
-        INSN_AMOADD:     decode_r_insn("amoadd.w");
-        INSN_AMOXOR:     decode_r_insn("amoxor.w");
-        INSN_AMOOR:      decode_r_insn("amoor.w");
-        INSN_AMOMIN:     decode_r_insn("amomin.w");
-        INSN_AMOMAX:     decode_r_insn("amomax.w");
-        INSN_AMOMINU:    decode_r_insn("amominu.w");
-        INSN_AMOMAXU:    decode_r_insn("amomaxu.w");
+        INSN_LR:         decode_amo_insn("lr.w");
+        INSN_SC:         decode_amo_insn("sc.w");
+        INSN_AMOSWAP:    decode_amo_insn("amoswap.w");
+        INSN_AMOADD:     decode_amo_insn("amoadd.w");
+        INSN_AMOXOR:     decode_amo_insn("amoxor.w");
+        INSN_AMOOR:      decode_amo_insn("amoor.w");
+        INSN_AMOMIN:     decode_amo_insn("amomin.w");
+        INSN_AMOMAX:     decode_amo_insn("amomax.w");
+        INSN_AMOMINU:    decode_amo_insn("amominu.w");
+        INSN_AMOMAXU:    decode_amo_insn("amomaxu.w");
 
         default:         decode_mnemonic("INVALID");
       endcase

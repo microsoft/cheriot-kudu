@@ -10,8 +10,9 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   parameter bit           CompDecEn      = 1'b1,
   parameter bit           CHERIoTEn      = 1'b0,
   parameter int unsigned  S0FifoDepth    = 4,
-  parameter bit           RV32M      = 1'b1,
-  parameter bit           RV32B      = 1'b1,
+  parameter bit           RV32M          = 1'b1,
+  parameter bit           RV32B          = 1'b1,
+  parameter bit           RV32A          = 1'b1,
   parameter bit           DbgTriggerEn   = 1'b0,
   parameter int unsigned  BrkptNum       = 1
 ) (
@@ -306,7 +307,8 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   ir_decoder #(
     .CHERIoTEn (CHERIoTEn),
     .RV32M     (RV32M),   
-    .RV32B     (RV32B)  
+    .RV32B     (RV32B),  
+    .RV32A     (RV32A)  
   ) ir0_decoder_i (
     .clk_i         (clk_i),
     .rst_ni        (rst_ni),
@@ -321,7 +323,8 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   ir_decoder #(
     .CHERIoTEn (CHERIoTEn),
     .RV32M     (RV32M),   
-    .RV32B     (RV32B)  
+    .RV32B     (RV32B),  
+    .RV32A     (RV32A)  
   ) ir1_decoder_i (
     .clk_i         (clk_i),
     .rst_ni        (rst_ni),

@@ -33,7 +33,7 @@ module kudu_top import super_pkg::*;  #(
   // Data memory interface
   output logic                         data_req_o,
   output logic                         data_is_cap_o,
-  output logic                         data_is_lrsc_o,
+  output logic [3:0]                   data_amo_flag_o,
   input  logic                         data_gnt_i,
   input  logic                         data_rvalid_i,
   output logic                         data_we_o,
@@ -97,6 +97,7 @@ module kudu_top import super_pkg::*;  #(
   localparam bit          LoadFiltEn     = 1'b1;
   localparam bit          RV32M          = 1'b1;
   localparam bit          RV32B          = 1'b1;
+  localparam bit          RV32A          = 1'b1;
 
   rf_rdata2_t     rf_rdata2_p0;
   rf_rdata2_t     rf_rdata2_p1;
@@ -133,8 +134,7 @@ module kudu_top import super_pkg::*;  #(
   logic           multpl_rdy;
   logic [4:0]     ex_valid;
                   
-  logic           lspl_sel_ira;
-  logic           multpl_sel_ira;
+  logic           lspl_sel_ira, multpl_sel_ira, cmplx_sel_ira;
                   
   logic [31:0]    alupl0_fwd_act, alupl1_fwd_act, lspl_fwd_act,  multpl_fwd_act;
   waw_act_t       waw_act;
@@ -209,6 +209,13 @@ module kudu_top import super_pkg::*;  #(
   logic [BrkptNum-1:0] tmatch_control;
   logic [31:0]         tmatch_value[0:BrkptNum-1];
 
+  logic             cmplx_instr_start;
+  logic             cmplx_instr_done; 
+  logic             cmplx_sbd_wr;
+  sbd_fifo_t        cmplx_sbd_wdata;
+  logic             cmplx_lsu_req_valid;
+  lsu_req_info_t    cmplx_lsu_req_info;
+
   regfile #(.NRegs(32)) regfile_i (
      // Clock and Reset
     .clk_i          (clk_i       ),
@@ -272,6 +279,7 @@ module kudu_top import super_pkg::*;  #(
     .S0FifoDepth  (IrS0Depth),
     .RV32M        (RV32M),
     .RV32B        (RV32B),
+    .RV32A        (RV32A),
     .DbgTriggerEn (DbgTriggerEn),
     .BrkptNum     (BrkptNum)    
   ) ir_stage_i (
@@ -316,6 +324,7 @@ module kudu_top import super_pkg::*;  #(
     .CHERIoTEn  (CHERIoTEn ), 
     .DualIssue  (DualIssue ), 
     .LoadFiltEn (LoadFiltEn),
+    .RV32A      (RV32A     ),
     .DmHaltAddr (DmHaltAddr),
     .DmExcAddr  (DmExcAddr )
   ) issuer_i (
@@ -341,6 +350,7 @@ module kudu_top import super_pkg::*;  #(
     .ex_valid_o                (ex_valid                ),
     .lspl_sel_ira_o            (lspl_sel_ira            ),
     .multpl_sel_ira_o          (multpl_sel_ira          ),
+    .cmplx_sel_ira_o           (cmplx_sel_ira           ),
     .alupl0_fwd_act_i          (alupl0_fwd_act          ),
     .alupl1_fwd_act_i          (alupl1_fwd_act          ),
     .lspl_fwd_act_i            (lspl_fwd_act            ),
@@ -391,7 +401,11 @@ module kudu_top import super_pkg::*;  #(
     .debug_csr_save_o          (debug_csr_save          ),
     .trvk_en_i                 (trvk_en                 ), 
     .trvk_addr_i               (trvk_addr               ),
-    .trvk_outstanding_i        (trvk_outstanding        )
+    .trvk_outstanding_i        (trvk_outstanding        ),
+    .cmplx_instr_done_i        (cmplx_instr_done        ),
+    .cmplx_sbd_wr_i            (cmplx_sbd_wr            ),
+    .cmplx_sbd_wdata_i         (cmplx_sbd_wdata         ),
+    .cmplx_instr_start_o       (cmplx_instr_start       ) 
   );
   
   dual_fifo # (.Depth(8), .Width($bits(sbd_fifo_t))) sbd_fifo_i (
@@ -469,50 +483,53 @@ module kudu_top import super_pkg::*;  #(
                  .EarlyLoad  (EarlyLoad ), 
                  .DCacheEn   (DCacheEn  ),
                  .LoadFiltEn (LoadFiltEn),
+                 .RV32A      (RV32A     ),
                  .HeapBase   (HeapBase  ),
                  .TSMapSize  (TSMapSize ) 
 
   ) ls_pipeline_i ( 
-    .clk_i              (clk_i             ),
-    .rst_ni             (rst_ni            ),
-    .flush_i            (cmt_flush         ),
-    .cheri_pmode_i      (cheri_pmode_i     ),
-    .debug_mode_i       (debug_mode        ),
-    .us_valid_i         (ex_valid[3]       ),
-    .lspl_rdy_o         (lspl_rdy          ),
-    .sel_ira_i          (lspl_sel_ira      ),
-    .ira_dec_i          (ira_dec           ),
-    .irb_dec_i          (irb_dec           ),
-    .ira_full_data2_i   (ira_full_data2_fwd),
-    .irb_full_data2_i   (irb_full_data2_fwd),
-    .ds_rdy_i           (cmt_lspl_rdy      ),
-    .lspl_valid_o       (lspl_valid        ),
-    .lspl_output_o      (lspl_output       ),
-    .data_req_o         (data_req_o        ),
-    .data_we_o          (data_we_o         ),
-    .data_be_o          (data_be_o         ),
-    .data_is_cap_o      (data_is_cap_o     ),
-    .data_is_lrsc_o     (data_is_lrsc_o    ),
-    .data_addr_o        (data_addr_o       ),
-    .data_wdata_o       (data_wdata_o      ),
-    .data_gnt_i         (data_gnt_i        ),
-    .data_rvalid_i      (data_rvalid_i     ),
-    .data_err_i         (data_err_i        ),
-    .data_rdata_i       (data_rdata_i      ),
-    .data_sc_resp_i     (data_sc_resp_i    ),
-    .data_pmp_err_i     (1'b0              ),
-    .waw_act_i          (waw_act           ),
-    .fwd_act_o          (lspl_fwd_act      ),
-    .fwd_info_o         (lspl_fwd_info     ),
-    .trvk_en_o          (trvk_en           ), 
-    .trvk_clrtag_o      (trvk_clrtag       ), 
-    .trvk_addr_o        (trvk_addr         ),
-    .trvk_outstanding_o (trvk_outstanding  ),
-    .tsmap_cs_o         (tsmap_cs_o        ),
-    .tsmap_addr_o       (tsmap_addr_o      ),
-    .tsmap_rdata_i      (tsmap_rdata_i     ),   
-    .csr_lsu_wr_req_o   (csr_lsu_wr_req    ),
-    .csr_lsu_addr_o     (csr_lsu_addr      )
+    .clk_i                 (clk_i             ),
+    .rst_ni                (rst_ni            ),
+    .flush_i               (cmt_flush         ),
+    .cheri_pmode_i         (cheri_pmode_i     ),
+    .debug_mode_i          (debug_mode        ),
+    .us_valid_i            (ex_valid[3]       ),
+    .lspl_rdy_o            (lspl_rdy          ),
+    .sel_ira_i             (lspl_sel_ira      ),
+    .ira_dec_i             (ira_dec           ),
+    .irb_dec_i             (irb_dec           ),
+    .ira_full_data2_i      (ira_full_data2_fwd),
+    .irb_full_data2_i      (irb_full_data2_fwd),
+    .cmplx_lsu_req_valid_i (cmplx_lsu_req_valid),
+    .cmplx_lsu_req_info_i  (cmplx_lsu_req_info ),
+    .ds_rdy_i              (cmt_lspl_rdy      ),
+    .lspl_valid_o          (lspl_valid        ),
+    .lspl_output_o         (lspl_output       ),
+    .data_req_o            (data_req_o        ),
+    .data_we_o             (data_we_o         ),
+    .data_be_o             (data_be_o         ),
+    .data_is_cap_o         (data_is_cap_o     ),
+    .data_amo_flag_o       (data_amo_flag_o   ),
+    .data_addr_o           (data_addr_o       ),
+    .data_wdata_o          (data_wdata_o      ),
+    .data_gnt_i            (data_gnt_i        ),
+    .data_rvalid_i         (data_rvalid_i     ),
+    .data_err_i            (data_err_i        ),
+    .data_rdata_i          (data_rdata_i      ),
+    .data_sc_resp_i        (data_sc_resp_i    ),
+    .data_pmp_err_i        (1'b0              ),
+    .waw_act_i             (waw_act           ),
+    .fwd_act_o             (lspl_fwd_act      ),
+    .fwd_info_o            (lspl_fwd_info     ),
+    .trvk_en_o             (trvk_en           ), 
+    .trvk_clrtag_o         (trvk_clrtag       ), 
+    .trvk_addr_o           (trvk_addr         ),
+    .trvk_outstanding_o    (trvk_outstanding  ),
+    .tsmap_cs_o            (tsmap_cs_o        ),
+    .tsmap_addr_o          (tsmap_addr_o      ),
+    .tsmap_rdata_i         (tsmap_rdata_i     ),   
+    .csr_lsu_wr_req_o      (csr_lsu_wr_req    ),
+    .csr_lsu_addr_o        (csr_lsu_addr      )
   );
 
   mult_pipeline # (
@@ -680,6 +697,26 @@ module kudu_top import super_pkg::*;  #(
     .pcc_cap_o                    (pcc_cap_r),
     .csr_dbg_tclr_fault_o         (),
     .cheri_fatal_err_o            ()
+  );
+
+  cmplx_unit # (.RV32A(RV32A)) comlx_unit_i (
+    .clk_i                 (clk_i              ),    
+    .rst_ni                (rst_ni             ),
+    .flush_i               (cmt_flush        ),
+    .sel_ira_i             (cmplx_sel_ira      ),
+    .ira_dec_i             (ira_dec            ),
+    .irb_dec_i             (irb_dec            ),
+    .ira_full_data2_i      (ira_full_data2_fwd ),
+    .irb_full_data2_i      (irb_full_data2_fwd ),
+    .cmplx_instr_start_i   (cmplx_instr_start  ), 
+    .cmplx_instr_done_o    (cmplx_instr_done   ),
+    .cmplx_sbd_wr_o        (cmplx_sbd_wr       ),
+    .cmplx_sbd_wdata_o     (cmplx_sbd_wdata    ),
+    .lspl_valid_i          (lspl_valid         ),
+    .lspl_output_i         (lspl_output        ),
+    .lspl_rdy_i            (lspl_rdy           ),
+    .cmplx_lsu_req_valid_o (cmplx_lsu_req_valid),
+    .cmplx_lsu_req_info_o  (cmplx_lsu_req_info )
   );
 
 `ifdef  RVFI

@@ -377,17 +377,17 @@ package tracer_pkg;
   parameter logic [31:0] INSN_AUICGP  = { 25'h?,                          {OPCODE_AUICGP} };
 
   // RV32 A extentions
-  parameter logic [31:0] INSN_LR       = {5'h2,  2'b??, 5'h0, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_SC       = {5'h3,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_AMOSWAP  = {5'h1,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_AMOADD   = {5'h0,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_AMOXOR   = {5'h4,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_AMOAND   = {5'hc,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_AMOOR    = {5'h8,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_AMOMIN   = {5'h10, 2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_AMOMAX   = {5'h14, 2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_AMOMINU  = {5'h18, 2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
-  parameter logic [31:0] INSN_AMOMAXU  = {5'h1c, 2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_ATOMIC} };
+  parameter logic [31:0] INSN_LR       = {5'h2,  2'b??, 5'h0, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_SC       = {5'h3,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_AMOSWAP  = {5'h1,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_AMOADD   = {5'h0,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_AMOXOR   = {5'h4,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_AMOAND   = {5'hc,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_AMOOR    = {5'h8,  2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_AMOMIN   = {5'h10, 2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_AMOMAX   = {5'h14, 2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_AMOMINU  = {5'h18, 2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
+  parameter logic [31:0] INSN_AMOMAXU  = {5'h1c, 2'b??, 5'h?, 5'h?, 3'b010,  5'h?, {OPCODE_AMO} };
 
   typedef struct packed {
     logic            valid;

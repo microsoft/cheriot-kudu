@@ -17,6 +17,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   parameter bit        CHERIoTEn  = 1'b0,
   parameter bit        RV32M      = 1'b1,
   parameter bit        RV32B      = 1'b1,
+  parameter bit        RV32A      = 1'b1,
   parameter bit        IbexCmpt   = 1'b1 
 ) (
   input  logic         clk_i,
@@ -39,6 +40,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   logic        illegal_insn, illegal_reg_cheri;
   logic        csr_insn, wfi_insn, ebrk_insn, ecall_insn, dret_insn, mret_insn;
   logic        cjalr_insn, fencei_insn;
+  logic        amo_insn;
   logic [31:0] imm_j_type, imm_b_type;
   logic        any_err;
   sysctl_t     sysctl;
@@ -96,6 +98,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   assign ir_dec_o.is_jalr   = (opcode == OPCODE_JALR);
   assign ir_dec_o.is_csr    = csr_insn || cheri_op.cscrrw;
   assign ir_dec_o.sysctl    = sysctl;
+  assign ir_dec_o.is_cmplx  = amo_insn; 
   assign ir_dec_o.is_cheri  = (opcode == OPCODE_JAL) || (opcode == OPCODE_JALR) || (|cheri_op);
   assign ir_dec_o.cheri_op  = cheri_op;
   assign ir_dec_o.is_brkpt  = brkpt_match_i; 
@@ -108,7 +111,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
 
   assign ir_dec_o.btarget = ir_reg_i.pc + ((opcode == OPCODE_JAL) ? imm_j_type : imm_b_type);
   assign ir_dec_o.pc_nxt  = ir_reg_i.pc + (ir_reg_i.is_comp ? 2 : 4);
-  
+
   // this determines the "special case" path for the issuer controller state machine (ctrl_fsm)
   assign sysctl.valid  = (csr_wr | cscr_wr | wfi_insn | ebrk_insn | ecall_insn | dret_insn | 
                          mret_insn | cjalr_insn | fencei_insn | brkpt_match_i);
@@ -127,6 +130,8 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   // Decoder //
   /////////////
 
+  logic is_lrsc;
+
   always_comb begin
     pl_type             = PL_ALU;
     rf_ren_a            = 1'b0;
@@ -142,6 +147,8 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
     csr_insn            = 1'b0;
     cjalr_insn          = 1'b0;
     fencei_insn         = 1'b0;
+    amo_insn            = 1'b0;
+    is_lrsc             = 1'b0;
    
     cheri_opcode_en     = 1'b0; 
     cheri_auipcc_en     = 1'b0;
@@ -171,7 +178,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
       end
 
       OPCODE_BRANCH: begin // Branch
-        pl_type       = PL_BRANCH;
+        pl_type       = PL_LOCAL;
         rf_ren_a      = 1'b1;
         rf_ren_b      = 1'b1;
         illegal_insn  = (instr[14:13] == 2'b01);
@@ -198,17 +205,23 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
                         & (~cheri_pmode && (instr[14:12] == 3'b011));
       end
 
-      //////////////////
-      // Atomic LR/SC //
-      //////////////////
+      //////////////////////
+      // Atomic LR/SC/AMO //
+      //////////////////////
 
-      OPCODE_ATOMIC: begin
-        pl_type       = PL_LS;
+      OPCODE_AMO: begin
+        is_lrsc       = (instr[31:28] == 4'b0001) &&  (instr[14:12] == 3'b010) &&
+                        (instr[27] || (instr[24:20] == 5'h0));
+        amo_insn      = (instr[14:12] == 3'b010) && 
+                        ((instr[30:27] == 4'h0) || (instr[30:27] == 4'h4) ||
+                         (instr[30:27] == 4'h8) || (instr[30:27] == 4'hc) || 
+                         (instr[31:27] == 5'h1));
+        pl_type       = is_lrsc ? PL_LS : PL_LOCAL;
         rf_ren_a      = 1'b1;
-        rf_ren_b      = instr[27];
-        rf_we         = 1'b1;       // both lr/sc writes to rd
-        illegal_insn  = (instr[31:28] != 4'b0001) || (instr[14:12] != 3'b010) ||
-                        (~instr[27] && (instr[24:20] != 5'h0));
+        rf_ren_b      = ~(instr[31:27] == 5'b00010);    // LR is the only case not using rs2
+        rf_we         = 1'b1;
+        illegal_insn  = ~RV32A | (~is_lrsc & ~amo_insn);
+                        
       end
 
       /////////
@@ -389,14 +402,14 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
         unique case (instr[14:12])
           3'b000: begin
             // FENCE is treated as a NOP since all memory operations are already strictly ordered.
-            pl_type       = PL_BRANCH;
+            pl_type       = PL_LOCAL;
           end
           3'b001: begin
             // FENCE.I is implemented as a jump to the next PC, this gives the required flushing
             // behaviour (iside prefetch buffer flushed and response to any outstanding iside
             // requests will be ignored).
             // If present, the ICache will also be flushed.
-            pl_type       = PL_BRANCH;
+            pl_type       = PL_LOCAL;
             fencei_insn   = 1'b1;
           end
           default: begin
@@ -407,7 +420,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
 
       OPCODE_SYSTEM: begin
         if (instr[14:12] == 3'b000) begin
-          pl_type = PL_BRANCH;
+          pl_type = PL_LOCAL;
           // non CSR related SYSTEM instructions
           unique case (instr[31:20])
             12'h000:  // ECALL

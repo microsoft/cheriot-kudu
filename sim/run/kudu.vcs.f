@@ -32,6 +32,7 @@ $rtlRoot/branch_predict.sv
 $rtlRoot/ibex_counter.sv
 $rtlRoot/ibex_csr.sv
 $rtlRoot/cs_registers.sv
+$rtlRoot/cmplx_unit.sv
 $rtlRoot/kudu_top.sv
 $rtlRoot/tracer_pkg.sv
 $rtlRoot/tracer.sv

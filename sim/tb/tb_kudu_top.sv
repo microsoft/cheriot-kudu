@@ -44,7 +44,8 @@ module tb_kudu_top;
   logic [DBusW-1:0] data_wdata;
   logic [DBusW-1:0] data_rdata;
   logic        data_err, data_sc_resp;
-  logic        data_is_cap, data_is_lrsc;
+  logic        data_is_cap;
+  logic [3:0]  data_amo_flag;
   logic [7:0]  data_flag;
   mem_cmd_t    data_resp_info;
 
@@ -203,7 +204,7 @@ module tb_kudu_top;
     .data_we_o            (data_we     ),
     .data_be_o            (data_be     ),
     .data_is_cap_o        (data_is_cap ),
-    .data_is_lrsc_o       (data_is_lrsc),
+    .data_amo_flag_o      (data_amo_flag),
     .data_addr_o          (data_addr   ),
     .data_wdata_o         (data_wdata  ),
     .data_rdata_i         (data_rdata  ),
@@ -318,7 +319,7 @@ module tb_kudu_top;
   logic addr_b2_q;
   assign instr_rdata_ibex = addr_b2_q ? instr_rdata[63:32] : instr_rdata[31:0];
 
-  assign data_is_lrsc = 1'b0;   // ibex doesn't support lr/sc yet
+  assign data_amo_flag = 4'h0;   // ibex doesn't support lr/sc/amo yet
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -340,11 +341,12 @@ module tb_kudu_top;
 
 `endif
 
+`ifndef NO_FSDB
   initial begin
     #0 $fsdbDumpfile("tb_kudu_top.fsdb");
     $fsdbDumpvars(0, "+all", tb_kudu_top); 
   end
-
+`endif
 
   // Generate clk
   initial begin
@@ -473,7 +475,7 @@ module tb_kudu_top;
     .data_we         (data_we      ),
     .data_be         (data_be      ),
     .data_is_cap     (data_is_cap  ),
-    .data_is_lrsc    (data_is_lrsc ),
+    .data_amo_flag   (data_amo_flag ),
     .data_addr       (data_addr    ),
     .data_wdata      (data_wdata65 ),
     .data_flag       (data_flag    ),   // from mem_monitor

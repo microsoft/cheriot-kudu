@@ -15,6 +15,7 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
   typedef struct packed {
     logic [4:0]  pl;
     logic        is_ex;   // instr actually goes to commit FIFO and EX pipelines
+    logic        is_amo;
     rvfi_t       rvfi;
     ir_dec_t     ir_dec;
   } instr_trace_t;
@@ -76,7 +77,8 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
       insn32                 = `ISSUER_PATH.ir0_dec.insn;
       result.pl              = `ISSUER_PATH.ir0_pl_sel;
       result.ir_dec          = `ISSUER_PATH.ir0_dec;
-      result.is_ex           = (| `ISSUER_PATH.ir0_pl_sel[4:1]);
+      result.is_ex           = (| `ISSUER_PATH.ir0_pl_sel[4:1]) || `ISSUER_PATH.ir0_amo_issued;  // AMO defers sbdfifo writes
+      result.is_amo          = `ISSUER_PATH.ir0_amo_issued;
       result.rvfi.valid      = `ISSUER_PATH.ir0_issued | `ISSUER_PATH.ir0_trap_event;     
       result.rvfi.insn       = `ISSUER_PATH.ir0_dec.is_comp ?  `ISSUER_PATH.ir0_dec.c_insn : `ISSUER_PATH.ir0_dec.insn;
       result.rvfi.trap       = `ISSUER_PATH.ir0_trap_event;
@@ -93,6 +95,7 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
       result.pl              = `ISSUER_PATH.ir1_pl_sel;
       result.ir_dec          = `ISSUER_PATH.ir1_dec;
       result.is_ex           = (| `ISSUER_PATH.ir1_pl_sel[4:1]);
+      result.is_amo          = 1'b0;        // AMO can only be issued on IR0
       result.rvfi.valid      = `ISSUER_PATH.ir1_issued;     
       result.rvfi.insn       = `ISSUER_PATH.ir1_dec.is_comp ?  `ISSUER_PATH.ir1_dec.c_insn : `ISSUER_PATH.ir1_dec.insn;
       result.rvfi.trap       = 1'b0;    // trap can only happen on IR0
@@ -125,6 +128,11 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
         result.rvfi.mem_wmask = 4'b0011;        // half word 
       else
         result.rvfi.mem_wmask = 4'b1111;        // word 
+    end else if (opcode == OPCODE_AMO) begin
+      if (insn32[31:27] == 5'h2)
+        result.rvfi.mem_rmask = 4'b1111;        // LR.w
+      else if (insn32[31:27] == 5'h3)
+        result.rvfi.mem_wmask = 4'b1111;        // SC.w
     end        
 
     // fill later at the committer side
@@ -160,7 +168,7 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
   
   logic [1:0]      cmt_good;
   logic            cmt_flush;
-  instr_trace_t    instr_a, instr_b;
+  instr_trace_t    instr_a, instr_b, instr_b_q;
   logic [4:0]      cmt_pl0, cmt_pl1;
   logic [31:0]     cmt_pc0, cmt_pc1;
   logic            is_load;
@@ -184,21 +192,24 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
   assign irq_issued  = (`ISSUER_PATH.ctrl_fsm_cs[CSM_ISSUE_SPECIAL]) && (`ISSUER_PATH.special_case_q == IRQ) ;
   assign is_load     = `TOP_PATH.lspl_output.we;
   assign mem_addr    = `TOP_PATH.ls_pipeline_i.rvfi_mem_addr;
-  assign mem_wdata   = is_load ? 0 : `TOP_PATH.ls_pipeline_i.rvfi_mem_wdata;
-  assign mem_rdata   = is_load ? `TOP_PATH.lspl_output.wdata : 0;
+  assign mem_wdata   = `TOP_PATH.ls_pipeline_i.rvfi_mem_wdata;
+  assign mem_rdata   = `TOP_PATH.lspl_output.wdata;
   assign rf_we_vec   = {`COMMITTER_PATH.rf_we2_o, `COMMITTER_PATH.rf_we1_o, `COMMITTER_PATH.rf_we0_o};
 
   assign load_waddr_conflict = `COMMITTER_PATH.load_waddr_conflict;
 
   initial begin
     int         i;
-    int         ex_pop_cnt, cmt_cnt;
+    int         cmt_ptr, cmt_cnt;
     logic       irq_status;
     logic       rf_we;
+    logic       amo_state;
+    logic       is_sc;
 
     instr_trace_fifo = {};
     rvfi_req         = 1'b0;
     irq_status       = 1'b0;
+    amo_state        = 1'b0;
 
     @(posedge rst_ni);
     
@@ -224,7 +235,7 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
       if (cmt_good[1]) cmt_cnt++;
       // $display("time = %t, cmt_cnt = %d", $time, cmt_cnt);
 
-      ex_pop_cnt = 0;
+      cmt_ptr = 0;
       rvfi_req_queue = {};
 
       if (cmt_flush) instr_trace_fifo = {};    
@@ -232,54 +243,59 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
       while (instr_trace_fifo.size() > 0) begin
         instr_b = instr_trace_fifo[0];
 
-        // keep popping from the fifo till the next uncommmited EX entry
-        // - so we are reading a least cmt_cnt EX entries, and whatever non-EX entries before that
-        if (instr_b.is_ex &&  (ex_pop_cnt >= cmt_cnt)) begin
-          break;
-        end else begin
-          // $display("--- instr_b.pc = %x, pl = %x", instr_b.rvfi.pc_rdata, instr_b.pl);
+        // keep popping the fifo till all commits in the curent cycle are consumed by EX entries
+        // -- EX entry means a instruction can't be completed at issue time and needs to use
+        //    use one of the 4 ex pipelines to get results later
 
-          if (instr_b.is_ex) begin 
-            if (instr_b.is_ex && (ex_pop_cnt == 0) && (cmt_pl0 != instr_b.pl)) 
-              $error("--- Error!!! EX commit %d not matching: %x, %x, %x, %x", ex_pop_cnt, cmt_pl0, 
-                     instr_b.pl, cmt_pc0, instr_b.ir_dec.pc);
-            else if (instr_b.is_ex && (ex_pop_cnt == 1) && (cmt_pl1 != instr_b.pl))
-              $error("--- Error!!! EX commit %d not matching: %x, %x, %x, %x", ex_pop_cnt, cmt_pl1, 
-                     instr_b.pl, cmt_pc1, instr_b.ir_dec.pc);
+        if (instr_b.is_ex&&  (cmt_ptr >= cmt_cnt)) break;
+        
+        // $display("--- instr_b.pc = %x, pl = %x", instr_b.rvfi.pc_rdata, instr_b.pl);
 
-            // figure out the rf_we status for instr_b
-            // RVFI requires to set rd_addr to 0 if rf_we is deasserted (trap, etc)
-            // if there is a load address conflict (load result over written by a subsequent isntr 
-            // commmited in the same cycle), display the trace as if the reg write from the load
-            // actually happened
-            rf_we = instr_b.pl[3] ? (rf_we_vec[2] | load_waddr_conflict) : 
-                                   ((ex_pop_cnt == 0) ? rf_we_vec[0] : rf_we_vec[1]);
 
-            // fill EX instruction info using pipeline outputs
-            if (instr_b.pl[1]) begin
-              instr_b.rvfi.rd_addr    = rf_we ? `TOP_PATH.alupl0_output.waddr : 0;
-              instr_b.rvfi.rd_wdata   = `TOP_PATH.alupl0_output.wdata;
-              instr_b.rvfi.trap       = instr_b.rvfi.trap | `TOP_PATH.alupl0_output.err;
-            end else if (instr_b.pl[2]) begin
-              instr_b.rvfi.rd_addr    = rf_we ? `TOP_PATH.alupl1_output.waddr : 0;
-              instr_b.rvfi.rd_wdata   = `TOP_PATH.alupl1_output.wdata;
-              instr_b.rvfi.trap       = instr_b.rvfi.trap | `TOP_PATH.alupl1_output.err;
-            end else if (instr_b.pl[3]) begin
-              instr_b.rvfi.rd_addr    = rf_we ? `TOP_PATH.lspl_output.waddr : 0;
-              instr_b.rvfi.rd_wdata   = is_load ? mem_rdata : 0;
-              instr_b.rvfi.mem_addr   = mem_addr;
-              instr_b.rvfi.mem_wdata  = mem_wdata;
-              instr_b.rvfi.mem_rdata  = mem_rdata;
-              instr_b.rvfi.trap       = instr_b.rvfi.trap | `TOP_PATH.lspl_output.err;
-            end else if (instr_b.pl[4]) begin
-              instr_b.rvfi.rd_addr    = rf_we ? `TOP_PATH.multpl_output.waddr : 0;
-              instr_b.rvfi.rd_wdata   = `TOP_PATH.multpl_output.wdata;
-              instr_b.rvfi.trap       = instr_b.rvfi.trap | `TOP_PATH.multpl_output.err;
-            end
+        if (~instr_b.is_ex) begin     //  non-EX entries (everty resolved at issue time already
+          // send req to tracer and pop it from fifo
+          rvfi_req_queue = {rvfi_req_queue, instr_b.rvfi};
+          instr_trace_fifo =  instr_trace_fifo[1:$];
 
-            ex_pop_cnt ++;
+        end else if (instr_b.is_ex & ~instr_b.is_amo) begin // "simple" EX entries (one commit per issue)
+          // figure out the rf_we status for instr_b
+          // RVFI requires to set rd_addr to 0 if rf_we is deasserted (trap, etc)
+          // if there is a load address conflict (load result over written by a subsequent isntr 
+          // commmited in the same cycle), display the trace as if the reg write from the load
+          // actually happened
+          if ((cmt_ptr == 0) && (cmt_pl0 != instr_b.pl)) 
+            $error("--- Error!!! EX commit %d not matching: %x, %x, %x, %x", cmt_ptr, cmt_pl0, 
+                   instr_b.pl, cmt_pc0, instr_b.ir_dec.pc);
+          else if ((cmt_ptr == 1) && (cmt_pl1 != instr_b.pl))
+            $error("--- Error!!! EX commit %d not matching: %x, %x, %x, %x", cmt_ptr, cmt_pl1, 
+                   instr_b.pl, cmt_pc1, instr_b.ir_dec.pc);
+          rf_we = instr_b.pl[3] ? (rf_we_vec[2] | load_waddr_conflict) : 
+                                 ((cmt_ptr == 0) ? rf_we_vec[0] : rf_we_vec[1]);
+          is_sc = (instr_b.rvfi.insn[6:0] === OPCODE_AMO) &&  (instr_b.rvfi.insn[31:27] === 5'h3); 
+
+          // fill EX instruction info using pipeline outputs
+          if (instr_b.pl[1]) begin
+            instr_b.rvfi.rd_addr    = rf_we ? `TOP_PATH.alupl0_output.waddr : 0;
+            instr_b.rvfi.rd_wdata   = `TOP_PATH.alupl0_output.wdata;
+            instr_b.rvfi.trap       = instr_b.rvfi.trap | `TOP_PATH.alupl0_output.err;
+          end else if (instr_b.pl[2]) begin
+            instr_b.rvfi.rd_addr    = rf_we ? `TOP_PATH.alupl1_output.waddr : 0;
+            instr_b.rvfi.rd_wdata   = `TOP_PATH.alupl1_output.wdata;
+            instr_b.rvfi.trap       = instr_b.rvfi.trap | `TOP_PATH.alupl1_output.err;
+          end else if (instr_b.pl[3]) begin
+            instr_b.rvfi.rd_addr    = rf_we ? `TOP_PATH.lspl_output.waddr : 0;
+            instr_b.rvfi.rd_wdata   = is_load ? mem_rdata : 0;
+            instr_b.rvfi.mem_addr   = mem_addr;
+            instr_b.rvfi.mem_wdata  = (is_load & ~is_sc) ? 0 : mem_wdata;
+            instr_b.rvfi.mem_rdata  = is_load ? mem_rdata : 0;
+            instr_b.rvfi.trap       = instr_b.rvfi.trap | `TOP_PATH.lspl_output.err;
+          end else if (instr_b.pl[4]) begin
+            instr_b.rvfi.rd_addr    = rf_we ? `TOP_PATH.multpl_output.waddr : 0;
+            instr_b.rvfi.rd_wdata   = `TOP_PATH.multpl_output.wdata;
+            instr_b.rvfi.trap       = instr_b.rvfi.trap | `TOP_PATH.multpl_output.err;
           end
 
+          cmt_ptr ++;
           // match ibex RVFI implementation
           if (instr_b.rvfi.rd_addr == 0) instr_b.rvfi.rd_wdata = 0;
           if (instr_b.rvfi.rd_addr == 0) instr_b.rvfi.mem_rdata = 0; 
@@ -288,10 +304,47 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
 
           // send req to tracer and pop it from fifo
           rvfi_req_queue = {rvfi_req_queue, instr_b.rvfi};
-
           instr_trace_fifo =  instr_trace_fifo[1:$];
+
+        end else if (instr_b.is_ex & instr_b.is_amo) begin      // complex EX cases
+          if ((cmt_cnt > 1) ||  (cmt_pl0 != 5'h8)) 
+            $error("--- Error!!! AMO commit %d not matching: %x, %x, %x, %x", cmt_ptr, cmt_pl0, 
+                   instr_b.pl, cmt_pc0, instr_b.ir_dec.pc);
+
+          rf_we = rf_we_vec[2];         // AMO load/store are handled serially
+
+          // $display("Seeing AMO@%t, %d %d %d", $time(), amo_state, rf_we, `TOP_PATH.lspl_output.waddr);
+ 
+          // only pop fifo if AMO completes or erred
+          if (amo_state == 0) begin
+            instr_b.rvfi.mem_addr   = mem_addr;
+            instr_b.rvfi.trap       = instr_b.rvfi.trap | `TOP_PATH.lspl_output.err;
+            instr_b.rvfi.rd_addr    = rf_we ? `TOP_PATH.lspl_output.waddr : 0;
+            instr_b.rvfi.mem_rmask  = 4'b1111;
+            instr_b.rvfi.mem_rdata  = mem_rdata;
+            instr_b.rvfi.rd_wdata   = mem_rdata;
+            if (`TOP_PATH.lspl_output.err) begin
+              // $display("sending RVFI @%t, rd = %d %x", $time(),  instr_b.rvfi.rd_addr, instr_b.rvfi.rd_wdata);
+              rvfi_req_queue = {rvfi_req_queue, instr_b.rvfi};
+              instr_trace_fifo =  instr_trace_fifo[1:$];
+            end else begin
+              instr_b_q = instr_b;
+              amo_state = 1;
+            end
+          end else if (amo_state == 1) begin
+            instr_b_q.rvfi.mem_wdata  = mem_wdata;    // accumulate from amo_state_0
+            instr_b_q.rvfi.mem_wmask  = 4'b1111;
+            // $display("sending RVFI @%t, rd = %d %x", $time(),  instr_b_q.rvfi.rd_addr, instr_b_q.rvfi.rd_wdata);
+            rvfi_req_queue = {rvfi_req_queue, instr_b_q.rvfi};
+            instr_trace_fifo =  instr_trace_fifo[1:$];
+            amo_state = 0;
+          end  
+
+          cmt_ptr ++;
+         
         end
-      end  // while (pop)
+
+      end  // while (pop trace_fifo)
       
       // send req to tracer in one shot, simulation time advanced
       while (rvfi_req_queue.size() > 0) begin

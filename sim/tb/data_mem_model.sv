@@ -33,7 +33,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
   input  logic              data_we,
   input  logic [3:0]        data_be,
   input  logic              data_is_cap,
-  input  logic              data_is_lrsc,
+  input  logic [3:0]        data_amo_flag,
   input  logic [31:0]       data_addr,
   input  logic [64:0]       data_wdata,
   input  logic [7:0]        data_flag,
@@ -69,7 +69,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
 
   logic          mem_cs;
   logic          mem_is_cap;
-  logic          mem_is_lrsc;
+  logic [3:0]    mem_amo_flag;
   logic          mem_we;
   logic [3:0]    mem_be;
   logic [29:0]   mem_addr32;
@@ -123,7 +123,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
     .data_we        (data_we),
     .data_be        (data_be),
     .data_is_cap    (data_is_cap),
-    .data_is_lrsc   (data_is_lrsc),
+    .data_amo_flag  (data_amo_flag),
     .data_addr      (data_addr),
     .data_wdata     (data_wdata),
     .data_flag      (data_flag),
@@ -135,7 +135,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
     .data_resp_info (data_resp_info),
     .mem_cs         (mem_cs),
     .mem_is_cap     (mem_is_cap),
-    .mem_is_lrsc    (mem_is_lrsc),
+    .mem_amo_flag   (mem_amo_flag),
     .mem_we         (mem_we),
     .mem_be         (mem_be),
     .mem_flag       (mem_flag),
@@ -182,7 +182,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
       mmreg_sel_q       <= mmreg_sel;  
       dbgrom_sel_q      <= dbgrom_sel;
 
-      if (dram_cs & ~mem_we & mem_is_lrsc)
+      if (dram_cs & ~mem_we & mem_amo_flag[0])
         dram_lr_status_q <= 1'b1;
       else if (dram_cs & mem_we)
         dram_lr_status_q <= 1'b0;
@@ -206,7 +206,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
   always @(posedge clk) begin
     if (dram_cs && mem_we && mem_is_cap) begin
       dram[dram_addr] <= mem_wdata;
-    end else if (dram_cs && mem_we && dram_word_sel) begin
+    end else if (dram_cs && mem_we && (~mem_amo_flag[1] | dram_lr_status_q) && dram_word_sel) begin
       if(mem_be[0])
         dram[dram_addr][39:32]  <= mem_wdata[7:0];
       if(mem_be[1])
@@ -215,7 +215,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
         dram[dram_addr][55:48] <= mem_wdata[23:16];
       if(mem_be[3])
         dram[dram_addr][63:56] <= mem_wdata[31:24];
-    end else if (dram_cs && mem_we) begin
+    end else if (dram_cs && mem_we && (~mem_amo_flag[1] | dram_lr_status_q)) begin
       if(mem_be[0])
         dram[dram_addr][7:0]  <= mem_wdata[7:0];
       if(mem_be[1])
@@ -498,7 +498,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
     .data_we        (1'b0),
     .data_be        (4'hf),
     .data_is_cap    (1'b0),
-    .data_is_lrsc   (1'b0),
+    .data_amo_flag  (4'h0),
     .data_addr      (instr_addr),
     .data_wdata     (64'h0),
     .data_flag      (8'h0),
@@ -510,7 +510,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
     .data_resp_info (),
     .mem_cs         (instr_mem_cs),
     .mem_is_cap     (),
-    .mem_is_lrsc    (),
+    .mem_amo_flag   (),
     .mem_we         (),
     .mem_be         (),
     .mem_flag       (),

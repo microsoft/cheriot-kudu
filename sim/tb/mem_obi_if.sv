@@ -18,7 +18,7 @@ module mem_obi_if import kudu_dv_pkg::*; #(
   input  logic          data_we,
   input  logic [3:0]    data_be,
   input  logic          data_is_cap,
-  input  logic          data_is_lrsc,
+  input  logic [3:0]    data_amo_flag,
   input  logic [31:0]   data_addr,
   input  logic [DW-1:0] data_wdata,
   input  logic [7:0]    data_flag,       // sideband signals (flow through)
@@ -32,7 +32,7 @@ module mem_obi_if import kudu_dv_pkg::*; #(
 
   output logic          mem_cs,
   output logic          mem_is_cap,
-  output logic          mem_is_lrsc,
+  output logic [3:0]    mem_amo_flag,
   output logic          mem_we,
   output logic [3:0]    mem_be,
   output logic [7:0]    mem_flag,     
@@ -78,13 +78,13 @@ module mem_obi_if import kudu_dv_pkg::*; #(
   assign cmd_fifo_empty = (cmd_wr_ptr_ext == cmd_rd_ptr_ext);
   assign cmd_avail      = cmd_fifo_wr || !cmd_fifo_empty;
 
-  assign cur_wr_cmd.is_cap  = data_is_cap;
-  assign cur_wr_cmd.is_lrsc = data_is_lrsc;
-  assign cur_wr_cmd.we      = data_we;
-  assign cur_wr_cmd.be      = data_be;
-  assign cur_wr_cmd.flag    = data_flag;
-  assign cur_wr_cmd.addr32  = data_addr[31:2];   // 32-bit addr
-  assign cur_wr_cmd.wdata   = data_wdata; 
+  assign cur_wr_cmd.is_cap   = data_is_cap;
+  assign cur_wr_cmd.amo_flag = data_amo_flag;
+  assign cur_wr_cmd.we       = data_we;
+  assign cur_wr_cmd.be       = data_be;
+  assign cur_wr_cmd.flag     = data_flag;
+  assign cur_wr_cmd.addr32   = data_addr[31:2];   // 32-bit addr
+  assign cur_wr_cmd.wdata    = data_wdata; 
 
   assign cur_rd_cmd    = mem_cmd_fifo[cmd_rd_ptr];
 
@@ -183,14 +183,14 @@ module mem_obi_if import kudu_dv_pkg::*; #(
   //
   // memory signals (sampled @posedge clk_i)
   //
-  assign mem_cs      = resp_valid;
-  assign mem_is_cap  = cur_rd_cmd.is_cap;
-  assign mem_is_lrsc = cur_rd_cmd.is_lrsc;
-  assign mem_we      = cur_rd_cmd.we;
-  assign mem_be      = cur_rd_cmd.be;
-  assign mem_flag    = cur_rd_cmd.flag;
-  assign mem_wdata   = cur_rd_cmd.wdata;
-  assign mem_addr32  = cur_rd_cmd.addr32;  
+  assign mem_cs       = resp_valid;
+  assign mem_is_cap   = cur_rd_cmd.is_cap;
+  assign mem_amo_flag = cur_rd_cmd.amo_flag;
+  assign mem_we       = cur_rd_cmd.we;
+  assign mem_be       = cur_rd_cmd.be;
+  assign mem_flag     = cur_rd_cmd.flag;
+  assign mem_wdata    = cur_rd_cmd.wdata;
+  assign mem_addr32   = cur_rd_cmd.addr32;  
 
   //
   // Interface protocol check

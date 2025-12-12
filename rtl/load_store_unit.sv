@@ -26,7 +26,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   // data memory interface       
   output logic            data_req_o,
   output logic            data_is_cap_o,
-  output logic            data_is_lrsc_o,
+  output logic [3:0]      data_amo_flag_o,
   input  logic            data_gnt_i,
   input  logic            data_rvalid_i,
   input  logic            data_err_i,
@@ -561,7 +561,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
 
   logic [31:0]  rdata_sc_muxed;
 
-  assign rdata_sc_muxed = lsu_req_info_q.sc ? {31'h0, data_sc_resp_i} : data_rdata_ext;
+  assign rdata_sc_muxed = lsu_req_info_q.amo_flag[1] ? {31'h0, data_sc_resp_i} : data_rdata_ext;
   
   if (CHERIoTEn) begin : gen_cap_rd
     assign lsu_rdata = lsu_req_info_q.is_cap ? mem2regcap(data_rdata_i, lsu_req_info_q.clrperm) : {33'h0, rdata_sc_muxed};
@@ -601,11 +601,11 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign data_addr_o    = data_addr_w_aligned;
 
   assign data_wdata_o   = data_wdata;
-  assign data_we_o      = ~lsu_req_info_i.rf_we || lsu_req_info_i.sc;
+  assign data_we_o      = ~lsu_req_info_i.rf_we || lsu_req_info_i.amo_flag[1];
   assign data_be_o      = data_be;
 
-  assign data_is_cap_o  = lsu_req_info_i.is_cap;
-  assign data_is_lrsc_o = lsu_req_info_i.lr | lsu_req_info_i.sc;
+  assign data_is_cap_o   = lsu_req_info_i.is_cap;
+  assign data_amo_flag_o = lsu_req_info_i.amo_flag;
 
   assign addr_last_o    = addr_last_q;
   assign busy_o = (ls_fsm_cs != IDLE);

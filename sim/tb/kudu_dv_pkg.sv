@@ -11,7 +11,7 @@ package kudu_dv_pkg;
   typedef struct packed {
     logic [7:0]    flag;
     logic          is_cap;
-    logic          is_lrsc;
+    logic [3:0]    amo_flag;
     logic          we;
     logic [3:0]    be;
     logic [29:0]   addr32;

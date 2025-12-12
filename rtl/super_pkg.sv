@@ -18,7 +18,7 @@ package super_pkg;
 `endif
 
   typedef enum logic [2:0] {
-    PL_BRANCH,
+    PL_LOCAL,
     PL_ALU,
     PL_LS,
     PL_MULT,
@@ -121,6 +121,7 @@ package super_pkg;
     sysctl_t     sysctl;
     logic        is_cheri;
     cheri_op_t   cheri_op;
+    logic        is_cmplx;
     logic        is_brkpt;
   } ir_dec_t;
 
@@ -179,8 +180,7 @@ package super_pkg;
 
   typedef struct packed {
     logic              rf_we;
-    logic              lr;         
-    logic              sc;         
+    logic [3:0]        amo_flag;  // amo1, amo0, sc, lr             
     logic              is_cap;
     logic              cheri_err;
     logic              align_err_only;
@@ -230,7 +230,7 @@ package super_pkg;
     OPCODE_OP_IMM   = 7'h13,
     OPCODE_AUIPC    = 7'h17,
     OPCODE_STORE    = 7'h23,
-    OPCODE_ATOMIC   = 7'h2f,
+    OPCODE_AMO      = 7'h2f,
     OPCODE_OP       = 7'h33,
     OPCODE_LUI      = 7'h37,
     OPCODE_BRANCH   = 7'h63,
@@ -346,16 +346,17 @@ package super_pkg;
     CSM_BOOT_SET       = 4'h1,
     CSM_DECODE         = 4'h2,
     CSM_CMT_FLUSH      = 4'h3,
+    CSM_WAIT_TRVK      = 4'h4,
     CSM_WAIT_CMT0      = 4'h5,
     CSM_ISSUE_SPECIAL  = 4'h6,
     CSM_WAIT_CMT1      = 4'h7,
-    CSM_WAIT_TRVK      = 4'h8,
+    CSM_WAIT_CMPLX     = 4'h9,
     CSM_SLEEP          = 4'hb,
     CSM_DBG_TAKEN_IF   = 4'hd,
     CSM_DBG_TAKEN_ID   = 4'he
   } ctrl_fsm_e;     
 
-  typedef enum logic [2:0] {NULL, EXEC, SYSCTL, IRQ, DEBUG} special_case_e;
+  typedef enum logic [2:0] {NULL, EXEC, SYSCTL, CMPLX, IRQ, DEBUG} special_case_e;
 
   typedef enum logic [2:0]  {
     IDLE, WAIT_GNT_MIS, WAIT_RVALID_MIS, WAIT_GNT,
