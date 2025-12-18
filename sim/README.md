@@ -36,4 +36,5 @@ Cheriot-Kudu simulations can be run either using compiled test code images or us
 1. cd run
 2. use ./vcscomp -dii to complile RTL and testbench for DII simulation
 3. ./simv +TEST=testname
-4. Compare kudu trace vs. sail trace for correctness
+   - optionally use +TIMEOUT=xxx to stop simulation (default timeout is 1 million cycles)
+5. Compare kudu trace vs. sail trace for correctness
