@@ -6,6 +6,10 @@
 //`define BOOT_ADDR 32'h8000_0000
 `define BOOT_ADDR 32'h8000_0000
 
+`ifdef DII_SIM
+import "DPI-C" function int instr_mem_init(string filename);
+`endif
+
 module tb_kudu_top; 
 `ifndef IBEX
   import super_pkg::*;
@@ -360,7 +364,7 @@ module tb_kudu_top;
   // simulation init
   //
   string test_name, vhx_path;
-  string dbgrom_name, dbg_vhx_path;
+  string dbgrom_name, dbg_vhx_path, instr_dii_path;
   
 
   initial begin
@@ -374,7 +378,11 @@ module tb_kudu_top;
     if (i == 0) $sformat(test_name, "hello_world");
     i = $value$plusargs("TIMEOUT=%d", timeout);
 
+`ifdef DII_SIM
+    $sformat(instr_dii_path, "./bin/%s.dii", test_name);
+`else
     $sformat(vhx_path, "./bin/%s.vhx", test_name);
+`endif
     $display("TB> Loading test %s", test_name);
     $display("TB> Test timeout = %d", timeout);
 
@@ -387,7 +395,9 @@ module tb_kudu_top;
     rst_n = 1'b1;
     #1;
     rst_n = 1'b0;
-
+`ifdef DII_SIM
+    instr_mem_init(instr_dii_path);
+`else
     //$readmemh(vhx_path, u_instr_mem.iram, 'h0);   // load main executable
     $readmemh(vhx_path, u_data_mem.dram, 'h0);   // load main executable
 
@@ -399,7 +409,7 @@ module tb_kudu_top;
       $readmemh(dbg_vhx_path, u_data_mem.dbgrom, 'h0);   // load main executable
       $readmemh(dbg_vhx_path, u_data_mem.dbgrom, 'h0);   // load main executable
     end  
-
+`endif
 
     repeat(10) @(posedge clk);
     rst_n = 1'b1;

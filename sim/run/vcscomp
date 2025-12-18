@@ -4,9 +4,11 @@ VlogDef1="+define+CHERIoT"
 VlogDef2="+define+KUDU_PPL_CFG=1"
 VlogDef3=""
 VlogDef4=""
+VlogDef5=""
 FileList="kudu.vcs.f"
 OutFile="./simv"
 CompDir="simv.daidir"
+RunDII="false"
 
 # Loop over args
 for arg in "$@"; do
@@ -20,10 +22,15 @@ for arg in "$@"; do
     -conf1) VlogDef2="+define+KUDU_PPL_CFG=1" ;;
     -conf2) VlogDef2="+define+KUDU_PPL_CFG=2" ;;
     -conf3) VlogDef2="+define+KUDU_PPL_CFG=3" ;;
-    -riscv_test) VlogDef4="+define+RISCV_TEST_SUITE" ;;
     -dw)
       VlogDef3="+define+KUDU_DW_MULT=1"
       FileList="kudu_dw.vcs.f" 
+      ;;
+    -riscv_test) VlogDef4="+define+RISCV_TEST_SUITE" ;;
+    -dii)
+      #VlogDef5="+define+DII_SIM -LDFLAGS \"-L. -lsparse_mem\""
+      VlogDef5="+define+DII_SIM"
+      RunDII="true"
       ;;
     *)
       echo "Warning: Unknown option $arg" >&2
@@ -31,7 +38,7 @@ for arg in "$@"; do
   esac
 done
 
-VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3 $VlogDef4"
+VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3 $VlogDef4 $VlogDef5"
 echo "VlogDefs=$VlogDefs  FileList=$FileList"
 
 
@@ -39,4 +46,10 @@ export rtlRoot=../../rtl
 export verifRoot=..
 export dwRoot=../../dw
 rm $CompDir/.vcs.timestamp
+
+if [[ "$RunDII" == "true" ]]; then
+  echo "Compling CPP models for DII sim"
+  g++ -std=c++17 -fPIC -shared  ../tb/sparse_mem.cpp -o libsparse_mem.so
+fi
+
 vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps -debug_acc+all -o $OutFile $VlogDefs -f $FileList

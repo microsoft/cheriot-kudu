@@ -2,6 +2,10 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
+`ifdef DII_SIM
+import "DPI-C" function longint unsigned instr_mem_read64( longint unsigned addr);
+`endif
+
 //
 // data interface/memory model
 //
@@ -484,7 +488,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
   logic          instr_mem_cs;
   logic [29:0]   instr_mem_addr32;
   logic [63:0]   instr_mem_rdata;
-
+  logic          instr_mem_err;
 
   mem_obi_if #(
     .DW         (64),
@@ -521,6 +525,19 @@ module data_mem_model import kudu_dv_pkg::*; # (
     .mem_sc_resp    (1'b0)
   );
 
+
+`ifdef DII_SIM
+  // DII sim uses a sparse memory model spanns the entire address range, thus address decoding needed
+  always @(posedge clk, negedge rst_n) begin
+    if (~rst_n) begin
+      instr_mem_rdata <= 0;
+    end else begin
+      instr_mem_rdata <= instr_mem_read64({instr_mem_addr32, 2'b00});
+    end
+  end
+
+  assign instr_mem_err = 1'b0;
+`else
   logic instr_dram_sel, instr_dbgrom_sel;
   logic instr_dram_sel_q, instr_dbgrom_sel_q;
 
@@ -566,7 +583,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
         instr_dbgrom_rdata <= {dbgrom[instr_dbgrom_addr+1][31:0], dbgrom[instr_dbgrom_addr][63:32]};
       
     end
-
   end
+`endif
 
 endmodule
