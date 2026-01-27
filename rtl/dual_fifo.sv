@@ -75,15 +75,6 @@ module dual_fifo # (
   assign rd_mem_addr[0] = rd_ptr_q[PtrW-2:0];
   assign rd_mem_addr[1] = rd_ptr_p1[PtrW-2:0];
 
-  // localparam logic [PtrW-1:0]  DepthM1 = Depth-1;
-  // localparam logic [PtrW-1:0]  DepthM2 = Depth-2;
-  // assign cur_wr_depth  = PplRead ? (wr_ptr_q - rd_ptr_nxt) : (wr_ptr_q - rd_ptr_q);  
-  // assign cur_rd_depth  = wr_ptr_q - rd_ptr_q;
-  // assign wr_rdy[1] = (cur_wr_depth <= DepthM2);
-  // assign wr_rdy[0] = (cur_wr_depth <= DepthM1);
-  // assign rd_valid[1] = (cur_rd_depth >= 2);
-  // assign rd_valid[0] = (cur_rd_depth >= 1);
-
   // output signals
   assign wr_rdy   = PplRead ? (room_status_q | rd_rdy_i) : room_status_q;
 
@@ -170,10 +161,18 @@ module dual_fifo # (
   logic               illegal_wr, illegal_rd;
   logic signed [31:0] wr_total, rd_total;
 
+  logic [Width-1:0]   ref_wr_data0, ref_wr_data1; 
+  logic [Width-1:0]   ref_rd_data0, ref_rd_data1; 
 
   assign wr_num = (wr_rdy_o[1] & wr_valid_i[1]) + (wr_rdy_o[0] & wr_valid_i[0]);
   assign rd_num = (rd_rdy_i[0] & rd_valid_o[0]) + (rd_rdy_i[1] & rd_valid_o[1]);
 
+  assign ref_wr_data0 = (wr_num >= 1) ? wr_total : 0;
+  assign ref_wr_data1 = (wr_num == 2) ? wr_total + 1 : 0;
+
+  assign ref_rd_data0 = (rd_num >= 1) ? rd_total : 0;
+  assign ref_rd_data1 = (rd_num == 2) ? rd_total + 1 : 0;
+ 
   always @(posedge clk_i, negedge rst_ni) begin
     if (~rst_ni) begin
       fifo_level <= 0;
@@ -189,7 +188,6 @@ module dual_fifo # (
         wr_total   <= wr_total + wr_num;
         rd_total   <= rd_total + rd_num;
       end
-     
     end
   end 
 
@@ -200,6 +198,9 @@ module dual_fifo # (
 `ifdef FORMAL
   AssumeWrInputLegal: assume property (@(posedge clk_i) wr_valid_i[1] |-> wr_valid_i[0]);
   AssumeRdInputLegal: assume property (@(posedge clk_i) rd_rdy_i[1] |-> rd_rdy_i[0]);
+
+  AssumeWrInputData0: assume property (@(posedge clk_i) wr_data0_i == ref_wr_data0);
+  AssumeRrInputData1: assume property (@(posedge clk_i) wr_data1_i == ref_wr_data1);
 //  AssumeFlushLegal:   assume property (@(posedge clk_i) flush_i |-> 
 //                                       ((rd_rdy_i == 2'b00) && (wr_valid_i == 2'b00)));
 
@@ -208,6 +209,11 @@ module dual_fifo # (
 
   AssertFifoUnderrun: assert property (@(posedge clk_i) (fifo_level >= 0));
   AssertFifoOverrun: assert property (@(posedge clk_i) (fifo_level <= Depth));
+
+  // this proves FIFO correctness (if input is an incremental pattern, output will be the same)
+
+  AssertFifoRdGood0: assert property (@(posedge clk_i) ((rd_num!=0) |-> (rd_data0_o == ref_rd_data0)));
+  AssertFifoRdGood1: assert property (@(posedge clk_i) ((rd_num==2) |-> (rd_data1_o == ref_rd_data1)));
   
 `endif
 

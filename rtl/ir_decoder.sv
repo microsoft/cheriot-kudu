@@ -365,7 +365,6 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
             {7'b000_0101, 3'b110}, // max
             {7'b000_0101, 3'b101}, // minu
             {7'b000_0101, 3'b111}, // maxu
-            {7'b000_0100, 3'b100}, // zexth 
             // RV32B zbs 
             {7'b010_0100, 3'b001}, // bclr
             {7'b001_0100, 3'b001}, // bset

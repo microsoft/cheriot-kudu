@@ -114,8 +114,14 @@ module wt_fifo # (
   logic signed [7:0]  fifo_level;
   logic signed [31:0] wr_total, rd_total;
 
+  logic [Width-1:0]   ref_wr_data, ref_rd_data; 
+
   assign wr_num = wr_rdy_o & wr_valid_i; 
   assign rd_num = rd_rdy_i & rd_valid_o;
+
+
+  assign ref_wr_data = (wr_num >= 1) ? wr_total : 0;
+  assign ref_rd_data = (rd_num >= 1) ? rd_total : 0;
 
   always @(posedge clk_i, negedge rst_ni) begin
     if (~rst_ni) begin
@@ -140,9 +146,13 @@ module wt_fifo # (
 
 `ifdef FORMAL
 
+  AssumeWrInputData: assume property (@(posedge clk_i) wr_data_i == ref_wr_data);
+
+
   AssertFifoUnderrun: assert property (@(posedge clk_i) (fifo_level >= 0));
   AssertFifoOverrun: assert property (@(posedge clk_i) (fifo_level <= Depth));
-  
+
+  AssertFifoRdGood0: assert property (@(posedge clk_i) ((rd_num!=0) |-> (rd_data_o == ref_rd_data)));
 `endif
 
 endmodule

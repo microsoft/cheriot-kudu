@@ -211,7 +211,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     return result;
   endfunction
 
-  logic [4:0]  ir0_pl_sel, ir0_pl_sel_raw, ir0_pl_sel_normal, ir1_pl_sel;
+  logic [4:0]  ir0_pl_sel, ir1_pl_sel;
   logic        ir0_issued, ir0_normal_issued, ir0_special_issued; 
   logic        ir1_issued;
   logic [4:0]  ex_rdy;
@@ -239,9 +239,9 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   // "normal" and "special" cases 
   // - "Normal" instructions are issued in DECODE state
-  //    -- dual issue, subject to hazards, 
+  //    -- dual issue, subject to hazards & pipeline backpressure
   // - "Special" instructions are issued in ISSUE_SPECIAL state
-  //    -- single issue (IR0 only), not subject to hazards
+  //    -- single issue (IR0 only), not subject to hazards or backpressure
   //    -- Traps, IRQ, debug request, etc. are also processed the same way
 
   assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
@@ -257,11 +257,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ex_rdy     = {multpl_rdy_i, lspl_rdy_i, alupl1_rdy_i, alupl0_rdy_i, 1'b1};
 
   assign ex_valid_o = ir0_pl_sel | ir1_pl_sel;
-  assign ir0_pl_sel_raw    = select_pl(cheri_pmode, 1'b1, ira_is0_i, ir0_dec.pl_type);
   assign pl_sel_enable[0]  = normal_ex_enable[0] | ir0_special_issued; 
-
-  assign ir0_pl_sel_normal = {5{normal_ex_enable[0]}} & ir0_pl_sel_raw;
-  assign ir0_pl_sel        = {5{pl_sel_enable[0]}} & ir0_pl_sel_raw;
+  assign ir0_pl_sel        = select_pl(cheri_pmode, pl_sel_enable[0], ira_is0_i, ir0_dec.pl_type);
 
   // ir1 can only be issued if ir0 is alredy issued and no conflict in ex pipeline selection
   //   The "local" resource is considered always ready 
@@ -269,16 +266,19 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   //   - branch unit is always ready (can take both issue)
   //   - only mispredicted branches/jal needs to use pc_set. 
   //      ir0 misprediction will preempt ir1 (pl_sel_enable[1]) anyway
+
   assign pl_sel_enable[1] = DualIssue & ir0_normal_issued & normal_ex_enable[1] & 
                             ~(branch_mispredict[0] | ir0_dec.is_jalr);
-  assign ir1_pl_sel       = {~ir0_pl_sel[4:1], 1'b1} & select_pl(cheri_pmode, pl_sel_enable[1], 
-                                                                 ~ira_is0_i, ir1_dec.pl_type);
+  assign ir1_pl_sel       = select_pl(cheri_pmode, pl_sel_enable[1], ~ira_is0_i, ir1_dec.pl_type);
 
   // issued == all ex pipeline involved must be ready (jal case needs 2)
-  assign ir0_normal_issued  = is_issued (ir0_pl_sel_normal, ex_rdy);
+  logic [4:0] ex_rdy_for_ir1;
+  assign ex_rdy_for_ir1 = {~ir0_pl_sel[4:1], 1'b1} & ex_rdy;
+
+  assign ir0_normal_issued = normal_ex_enable[0] & is_issued (ir0_pl_sel, ex_rdy);
 
   assign ir0_issued = ir0_normal_issued | ir0_special_issued;
-  assign ir1_issued = is_issued (ir1_pl_sel, ex_rdy);
+  assign ir1_issued = is_issued (ir1_pl_sel, ex_rdy_for_ir1);
 
   assign issuer_rdy_o[0] = ir0_issued;
 
@@ -289,9 +289,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic        ir1_enable_shadow;
   logic [4:0]  ir1_sel_shadow;
   assign ir1_enable_shadow = DualIssue & ir0_normal_issued & normal_ex_enable[1]; 
-  assign ir1_sel_shadow    = {~ir0_pl_sel[4:1], 1'b1} & select_pl(cheri_pmode, ir1_enable_shadow, 
-                                                                  ~ira_is0_i, ir1_dec.pl_type);
-  assign issuer_rdy_o[1]   = is_issued(ir1_sel_shadow, ex_rdy);
+  assign ir1_sel_shadow    = select_pl(cheri_pmode, ir1_enable_shadow, ~ira_is0_i, ir1_dec.pl_type);
+  assign issuer_rdy_o[1]   = is_issued(ir1_sel_shadow, ex_rdy_for_ir1);
  
   // choose EX pipeline inputs
   assign lspl_sel_ira_o = (ira_is0_i && (ira_dec_i.pl_type == PL_LS)) || 
@@ -308,7 +307,9 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign cmplx_sel_ira_o = ira_is0_i;
 
   // Scoreboard FIFO writes
-  //   -- branches don't go to commit stage
+  //   -- branches don't go to commit stage, so if IR0 is a correctly predicted branch,
+  //      fifo_wr[0] will be determined by IR1. 
+  //   -- per FIFO interface design, we can't issue fifo_wr[] if fifo_wr[0] == 0
   logic [1:0] ir_fifo_wr;
   assign ir_fifo_wr[0] = ir0_issued & (|ir0_pl_sel[4:1]);
   assign ir_fifo_wr[1] = ir1_issued & (|ir1_pl_sel[4:1]);
@@ -914,6 +915,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   ctrl_fsm_e   ctrl_fsm_cs_dec;
   logic        ctrl_fsm_err;
+  logic        pc_set_trap_event;
   logic        ir0_trap_event;
   logic        ir0_amo_issued;
 
@@ -946,6 +948,11 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   assign branch_mispredict_event = branch_mispredict & ex_bp_info_o.is_branch;
   assign jal_mispredict_event    = branch_mispredict & ex_bp_info_o.is_jal;
+
+  assign pc_set_trap_event =  (ctrl_fsm_cs_dec == CSM_CMT_FLUSH) || 
+                              ((ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && 
+                               ((special_case_q == EXEC) || (special_case_q == IRQ)  ||
+                                ((special_case_q == SYSCTL) & (sysctl_q.ebrk | sysctl_q.ecall))));
 
   assign ir0_trap_event = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && (special_case_q == EXEC);
   assign ir0_amo_issued = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && (special_case_q == CMPLX) &&

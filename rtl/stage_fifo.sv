@@ -189,10 +189,18 @@ module stage_fifo # (
   logic               illegal_wr, illegal_rd;
   logic signed [31:0] wr_total, rd_total;
 
+  logic [Width-1:0]   ref_wr_data0, ref_wr_data1; 
+  logic [Width-1:0]   ref_rd_data0, ref_rd_data1; 
 
   assign wr_num = (wr_rdy_o[1] & wr_valid_i[1]) + (wr_rdy_o[0] & wr_valid_i[0]);
   assign rd_num = (rd_rdy_i[0] & rd_valid_o[0]) + (rd_rdy_i[1] & rd_valid_o[1]);
 
+  assign ref_wr_data0 = (wr_num >= 1) ? wr_total : 0;
+  assign ref_wr_data1 = (wr_num == 2) ? wr_total + 1 : 0;
+
+  assign ref_rd_data0 = (rd_num >= 1) ? rd_total : 0;
+  assign ref_rd_data1 = (rd_num == 2) ? rd_total + 1 : 0;
+ 
   always @(posedge clk_i, negedge rst_ni) begin
     if (~rst_ni) begin
       fifo_level <= 0;
@@ -219,6 +227,10 @@ module stage_fifo # (
 `ifdef FORMAL
   AssumeWrInputLegal: assume property (@(posedge clk_i) wr_valid_i[1] |-> wr_valid_i[0]);
   AssumeRdInputLegal: assume property (@(posedge clk_i) rd_rdy_i[1] |-> rd_rdy_i[0]);
+
+  AssumeWrInputData0: assume property (@(posedge clk_i) wr_data0_i == ref_wr_data0);
+  AssumeRrInputData1: assume property (@(posedge clk_i) wr_data1_i == ref_wr_data1);
+
 //  AssumeFlushLegal:   assume property (@(posedge clk_i) flush_i |-> 
 //                                       ((rd_rdy_i == 2'b00) && (wr_valid_i == 2'b00)));
 
@@ -236,6 +248,9 @@ module stage_fifo # (
 
   AssertWriteNum2:  assert property (@(posedge clk_i) ((wr_data_en == 2'b11) == (wr_num == 2)));
   AssertWriteNum1:  assert property (@(posedge clk_i) ((wr_data_en == 2'b01) == (wr_num == 1)));
+
+  AssertFifoRdGood0: assert property (@(posedge clk_i) ((rd_num!=0) |-> (rd_data0_o == ref_rd_data0)));
+  AssertFifoRdGood1: assert property (@(posedge clk_i) ((rd_num==2) |-> (rd_data1_o == ref_rd_data1)));
   
 `endif
 
