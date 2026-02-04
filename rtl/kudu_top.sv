@@ -104,7 +104,7 @@ module kudu_top import super_pkg::*;  #(
   rf_raddr2_t     rf_raddr2_p0;
   rf_raddr2_t     rf_raddr2_p1;
 
-  op_data2_t      ira_op_rf_rdata2, irb_op_rf_rdata2;
+  op_data2_t      ira_op_rdata2, irb_op_rdata2;
 
   logic [RegW-1:0] rf_wdata0, rf_wdata1, rf_wdata2;
   logic [4:0]      rf_waddr0, rf_waddr1, rf_waddr2;
@@ -311,8 +311,8 @@ module kudu_top import super_pkg::*;  #(
     .ira_is0_o          (ira_is0         ),
     .ira_dec_o          (ira_dec         ),
     .irb_dec_o          (irb_dec         ),
-    .ira_op_rf_rdata2_o (ira_op_rf_rdata2),  
-    .irb_op_rf_rdata2_o (irb_op_rf_rdata2),
+    .ira_op_rdata2_o    (ira_op_rdata2),  
+    .irb_op_rdata2_o    (irb_op_rdata2),
     .trvk_en_i          (trvk_en         ), 
     .trvk_clrtag_i      (trvk_clrtag     ), 
     .trvk_addr_i        (trvk_addr       ),
@@ -337,8 +337,8 @@ module kudu_top import super_pkg::*;  #(
     .ira_is0_i                 (ira_is0                 ),
     .ir_valid_i                (ir_valid                ),
     .issuer_rdy_o              (issuer_rdy              ),
-    .ira_op_rf_rdata2_i        (ira_op_rf_rdata2        ),
-    .irb_op_rf_rdata2_i        (irb_op_rf_rdata2        ),
+    .ira_op_rdata2_i           (ira_op_rdata2           ),
+    .irb_op_rdata2_i           (irb_op_rdata2           ),
     .alupl0_rdy_i              (alupl0_rdy              ),
     .alupl0_fwd_info_i         (alupl0_fwd_info         ),
     .alupl1_rdy_i              (alupl1_rdy              ),

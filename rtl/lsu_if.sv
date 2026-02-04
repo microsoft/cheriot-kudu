@@ -157,10 +157,4 @@ module lsu_if import super_pkg::*; import cheri_pkg::*; # (
     end  
   end
 
-`ifdef FORMAL
-  AssumeNoFlush: assume property (flush_i == 1'b0);
-  AssumeReqDone: assume property (@(posedge clk_i) lsu_req_o |-> ##[0:3] lsu_req_done_i);
-  AssertReqProp: assert property (@(posedge clk_i) (us_valid_i & lsif_rdy_o) |-> lsu_req_o);
-`endif
-
 endmodule

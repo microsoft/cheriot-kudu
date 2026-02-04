@@ -91,7 +91,7 @@ module committer import super_pkg::*; # (
  
   // if two sbdfifo entries points the same pipeline, we can only read the 1st one
   // -- note JAL/JALR sets both bit 0 and bit1/2
-  assign sbd_same_pl    = |(sbdfifo_rdata0_i.pl & sbdfifo_rdata1_i.pl);
+  assign sbd_same_pl    = |(sbdfifo_rdata0_i.pl[4:1] & sbdfifo_rdata1_i.pl[4:1]);
   assign is_alu_mult[0] = pl_we_vec0[4] | pl_we_vec0[2] | pl_we_vec0[1];
   assign is_alu_mult[1] = pl_we_vec1[4] | pl_we_vec1[2] | pl_we_vec1[1];
 
@@ -99,7 +99,7 @@ module committer import super_pkg::*; # (
   // Read the scoreboard entry and PL even if the instr is erred in the current cycle
   // However stop further reads till flush
   assign sbd_deq[0] = instr_avail[0] & ~cmt_err_q;
-   assign sbd_deq[1] = sbd_deq[0] & instr_avail[1] & ~sbd_same_pl;
+  assign sbd_deq[1] = sbd_deq[0] & instr_avail[1] & ~sbd_same_pl;
 
   assign sbdfifo_rd_rdy_o = sbd_deq;
 

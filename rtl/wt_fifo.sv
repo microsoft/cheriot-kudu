@@ -19,7 +19,8 @@ module wt_fifo # (
 
   input  logic              wr_valid_i,
   input  logic [Width-1:0]  wr_data_i,
-  output logic              wr_rdy_o, 
+  output logic              wr_rdy_o,
+  output logic              wr_rdy2_o,
 
   input  logic              rd_rdy_i,
   output logic              rd_valid_o,
@@ -28,6 +29,7 @@ module wt_fifo # (
 
   localparam int unsigned      PtrW    = $clog2(Depth)+1;
   localparam logic [PtrW-1:0]  DepthM1 = Depth-1;
+  localparam logic [PtrW-1:0]  DepthM2 = Depth-2;
   
   logic [PtrW-1:0] wr_ptr_q, wr_ptr_p1, wr_ptr_nxt;
   logic [PtrW-1:0] rd_ptr_q, rd_ptr_p1, rd_ptr_nxt;
@@ -38,13 +40,14 @@ module wt_fifo # (
 
   logic [Width-1:0] fifo_mem[Depth];
 
-  logic wr_rdy, rd_valid;
+  logic wr_rdy, rd_valid, wr_rdy2;
   logic wr_data_en;
   logic fifo_empty;
 
   // I/O assigments
   assign wr_rdy_o   = wr_rdy;
   assign rd_valid_o = rd_valid;
+  assign wr_rdy2_o  = wr_rdy2;
 
   // pointer arithmetic
   assign wr_ptr_p1 = wr_ptr_q + 1;
@@ -62,6 +65,8 @@ module wt_fifo # (
   assign wr_rdy     = (cur_wr_depth <= DepthM1);
   assign rd_valid   = ~fifo_empty | wr_valid_i;
   assign rd_data_o  = fifo_empty ? wr_data_i : fifo_mem[rd_mem_addr];
+
+  assign wr_rdy2    = (cur_wr_depth <= DepthM2);
 
   // extended read and write pointers
   always_comb begin

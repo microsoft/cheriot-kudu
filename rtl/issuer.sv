@@ -29,8 +29,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   output logic [1:0]       issuer_rdy_o,
                          
   // Regfile             
-  input  op_data2_t        ira_op_rf_rdata2_i,
-  input  op_data2_t        irb_op_rf_rdata2_i,
+  input  op_data2_t        ira_op_rdata2_i,
+  input  op_data2_t        irb_op_rdata2_i,
 
   // EX pipeline interface 
   input  logic             alupl0_rdy_i,
@@ -336,8 +336,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign fwd_info[2] = lspl_fwd_info_i;
   assign fwd_info[3] = multpl_fwd_info_i;
 
-  assign ira_op_data2_fwd = get_fwd_rdata2 (ira_rf_raddr2, ira_op_rf_rdata2_i, fwd_info);
-  assign irb_op_data2_fwd = get_fwd_rdata2 (irb_rf_raddr2, irb_op_rf_rdata2_i, fwd_info);
+  assign ira_op_data2_fwd = get_fwd_rdata2 (ira_rf_raddr2, ira_op_rdata2_i, fwd_info);
+  assign irb_op_data2_fwd = get_fwd_rdata2 (irb_rf_raddr2, irb_op_rdata2_i, fwd_info);
 
   if (CHERIoTEn) begin
     assign ira_full_data2_fwd_o.d0 = op2fullcap(ira_op_data2_fwd.d0);

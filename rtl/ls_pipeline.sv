@@ -265,27 +265,34 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     .perf_store_o          ()
   );
 
-  // QQQ WB and WAW tracking FIFO should never overflow/underflow.
-  //     - assertions and possibly attack detection logic?
-
   // 
   // WB stage (output fifo)
+  //  - this FIFO should never get full (assertion/proof).
+  //  - use rdy2 (early full status) to backpressure LSU as there is a 
+  //    latency between lsu_req (throttle point) and lsu_resp (fifo_write)
   //
-  wt_fifo # (.Depth(2), .Width(WbFifoW)) wb_fifo_i (
-    .clk_i       (clk_i         ),
-    .rst_ni      (rst_ni        ),
-    .flush_i     (flush_i       ),     
-    .wr_valid_i  (lsu_resp_valid),
-    .wr_data_i   (lsu_resp_info ),
-    .wr_rdy_o    (wb_fifo_rdy   ), 
-    .rd_rdy_i    (ds_rdy_i      ),
-    .rd_valid_o  (lspl_valid    ),
-    .rd_data_o   (wb_fifo_rdata )
+
+  wt_fifo # (.Depth(4), .Width(WbFifoW)) wb_fifo_i (
+    .clk_i          (clk_i         ),
+    .rst_ni         (rst_ni        ),
+    .flush_i        (flush_i       ),     
+    .wr_valid_i     (lsu_resp_valid),
+    .wr_data_i      (lsu_resp_info ),
+    .wr_rdy_o       (              ), 
+    .wr_rdy2_o      (wb_fifo_rdy   ),
+    .rd_rdy_i       (ds_rdy_i      ),
+    .rd_valid_o     (lspl_valid    ),
+    .rd_data_o      (wb_fifo_rdata )
     );
 
   //
   // WAW status tracking FIFO 
-  //
+  // - this fifo can't get full but can become empty 
+  // - Read while empty is possible if load/store is caused by complex (AMO) operations
+  //   since we only write to the FIFO when normal LS instructions.
+  // - however it shouldn't cause problem since complex AMO are treated as special case and wait for
+  //   instructions before that to finish.
+  // - Read when empty won't corrupt FIFO pointers.
 
   assign waw_fifo_wvalid = us_valid_i & lspl_rdy_o;
   assign waw_fifo_wdata  = {1'b1, instr_dec.rd};
@@ -390,6 +397,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     .wr_valid_i  ((lsu_req & lsu_req_done)),
     .wr_data_i   ({lsu_req_info.wdata, lsu_req_info.addr}),
     .wr_rdy_o    (), 
+    .wr_rdy2_o   (),
     .rd_rdy_i    (ds_rdy_i       ),
     .rd_valid_o  (),
     .rd_data_o   (rvfi_fifo_rdata )

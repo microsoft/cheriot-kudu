@@ -144,8 +144,8 @@ module branch_predict import super_pkg::*; #(
   assign bht_index1_spec0 = instr1_pc_spec0_i[BhtHi:BhtLo];
   assign bht_index1_spec1 = instr1_pc_spec1_i[BhtHi:BhtLo];
 
-  assign is_branch[0] = fetch_instr0_i.is_branch;
-  assign is_branch[1] = fetch_instr1_i.is_branch;
+  assign is_branch[0] = fetch_instr0_i.is_branch & ~fetch_instr0_i.errs.fetch_err;
+  assign is_branch[1] = fetch_instr1_i.is_branch & ~fetch_instr1_i.errs.fetch_err;
 
   assign is_jal[0] = fetch_instr0_i.is_jal;
   assign is_jal[1] = fetch_instr1_i.is_jal;

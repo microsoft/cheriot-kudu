@@ -54,8 +54,8 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   output logic             ira_is0_o,
   output ir_dec_t          ira_dec_o,
   output ir_dec_t          irb_dec_o,
-  output op_data2_t        ira_op_rf_rdata2_o,       // cheri-expanded register
-  output op_data2_t        irb_op_rf_rdata2_o,
+  output op_data2_t        ira_op_rdata2_o,       // cheri-expanded register
+  output op_data2_t        irb_op_rdata2_o,
 
   // Revocation tag clearing interface
   input  logic             trvk_en_i,
@@ -128,6 +128,8 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
     logic            clrtag0, clrtag1;
     logic [RegW-1:0] clrtag_mask0, clrtag_mask1;
 
+    logic [RegW-1:0] rf_wdata2, rf_wdata1, rf_wdata0;
+
     rf_load = wr_mem[0] | wr_mem[1];
 
     clrtag0      = cheri_pmode & trvk_en_i & trvk_clrtag_i & 
@@ -142,17 +144,23 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
 
     result = cur_val;
 
+    // addr==0 logic is only needed for FV proof (verify this is equivalent to read RF)
+    // the FWD resolution logic in issuer will zeroout rdata if addr==0 anyway
+    rf_wdata2 = (rf_waddr2_i == 0) ? 0 : rf_wdata2_i;
+    rf_wdata1 = (rf_waddr1_i == 0) ? 0 : rf_wdata1_i;
+    rf_wdata0 = (rf_waddr0_i == 0) ? 0 : rf_wdata0_i;
+
     // initial write and regfile bypass
     //  - note, we choose not to mux a0 and a1 here to enablle pre-calcuation for timing
     if ((rf_load & rf_we2_i && (raddr2.a0 == rf_waddr2_i)) ||
         (~rf_load & rf_we2_i && (raddr2_q.a0 == rf_waddr2_i)))
-      result.d0 = rf_wdata2_i;
+      result.d0 = rf_wdata2;
     else if ((rf_load & rf_we1_i && (raddr2.a0 == rf_waddr1_i)) ||
              (~rf_load & rf_we1_i && (raddr2_q.a0 == rf_waddr1_i)))
-      result.d0 = rf_wdata1_i;
+      result.d0 = rf_wdata1;
     else if ((rf_load & rf_we0_i && (raddr2.a0 == rf_waddr0_i)) ||
              (~rf_load & rf_we0_i && (raddr2_q.a0 == rf_waddr0_i)))
-      result.d0 = rf_wdata0_i;
+      result.d0 = rf_wdata0;
     else if (wr_mem[0])
       result.d0 = rf_rdata2_p0_i.d0;
     else if (wr_mem[1])
@@ -162,13 +170,13 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
 
     if ((rf_load & rf_we2_i && (raddr2.a1 == rf_waddr2_i)) ||
         (~rf_load & rf_we2_i && (raddr2_q.a1 == rf_waddr2_i)))
-      result.d1 = rf_wdata2_i;
+      result.d1 = rf_wdata2;
     else if ((rf_load & rf_we1_i && (raddr2.a1 == rf_waddr1_i)) ||
              (~rf_load & rf_we1_i && (raddr2_q.a1 == rf_waddr1_i)))
-      result.d1 = rf_wdata1_i;
+      result.d1 = rf_wdata1;
     else if ((rf_load & rf_we0_i && (raddr2.a1 == rf_waddr0_i)) ||
              (~rf_load & rf_we0_i && (raddr2_q.a1 == rf_waddr0_i)))
-      result.d1 = rf_wdata0_i;
+      result.d1 = rf_wdata0;
     else if (wr_mem[0])
       result.d1 = rf_rdata2_p0_i.d1;
     else if (wr_mem[1])
@@ -370,15 +378,15 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
                .trvk_addr_i    (trvk_addr_i   ) 
                );
 
-      assign ira_op_rf_rdata2_o.d0 = reg2opcap(tmp_rdata2_a.d0);
-      assign ira_op_rf_rdata2_o.d1 = reg2opcap(tmp_rdata2_a.d1); 
-      assign irb_op_rf_rdata2_o.d0 = reg2opcap(tmp_rdata2_b.d0);
-      assign irb_op_rf_rdata2_o.d1 = reg2opcap(tmp_rdata2_b.d1);
+      assign ira_op_rdata2_o.d0 = reg2opcap(tmp_rdata2_a.d0);
+      assign ira_op_rdata2_o.d1 = reg2opcap(tmp_rdata2_a.d1); 
+      assign irb_op_rdata2_o.d0 = reg2opcap(tmp_rdata2_b.d0);
+      assign irb_op_rdata2_o.d1 = reg2opcap(tmp_rdata2_b.d1);
     end else begin
-      assign ira_op_rf_rdata2_o.d0 = rf_rdata2_p0_i.d0;
-      assign ira_op_rf_rdata2_o.d1 = rf_rdata2_p0_i.d1;
-      assign irb_op_rf_rdata2_o.d0 = rf_rdata2_p1_i.d0;
-      assign irb_op_rf_rdata2_o.d1 = rf_rdata2_p1_i.d1;
+      assign ira_op_rdata2_o.d0 = rf_rdata2_p0_i.d0;
+      assign ira_op_rdata2_o.d1 = rf_rdata2_p0_i.d1;
+      assign irb_op_rdata2_o.d0 = rf_rdata2_p1_i.d0;
+      assign irb_op_rdata2_o.d1 = rf_rdata2_p1_i.d1;
     end
 
   end else begin : gen_stage1
@@ -484,15 +492,15 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
     end
 
     if (CHERIoTEn) begin
-      assign ira_op_rf_rdata2_o.d0 = reg2opcap(ira_rf_rdata2_q.d0);
-      assign ira_op_rf_rdata2_o.d1 = reg2opcap(ira_rf_rdata2_q.d1); 
-      assign irb_op_rf_rdata2_o.d0 = reg2opcap(irb_rf_rdata2_q.d0);
-      assign irb_op_rf_rdata2_o.d1 = reg2opcap(irb_rf_rdata2_q.d1);
+      assign ira_op_rdata2_o.d0 = reg2opcap(ira_rf_rdata2_q.d0);
+      assign ira_op_rdata2_o.d1 = reg2opcap(ira_rf_rdata2_q.d1); 
+      assign irb_op_rdata2_o.d0 = reg2opcap(irb_rf_rdata2_q.d0);
+      assign irb_op_rdata2_o.d1 = reg2opcap(irb_rf_rdata2_q.d1);
     end else begin
-      assign ira_op_rf_rdata2_o.d0 = ira_rf_rdata2_q.d0;
-      assign ira_op_rf_rdata2_o.d1 = ira_rf_rdata2_q.d1;
-      assign irb_op_rf_rdata2_o.d0 = irb_rf_rdata2_q.d0;
-      assign irb_op_rf_rdata2_o.d1 = irb_rf_rdata2_q.d1;
+      assign ira_op_rdata2_o.d0 = ira_rf_rdata2_q.d0;
+      assign ira_op_rdata2_o.d1 = ira_rf_rdata2_q.d1;
+      assign irb_op_rdata2_o.d0 = irb_rf_rdata2_q.d0;
+      assign irb_op_rdata2_o.d1 = irb_rf_rdata2_q.d1;
     end
   end // gen_stage1
 

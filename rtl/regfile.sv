@@ -36,8 +36,8 @@ module regfile import super_pkg::*; import cheri_pkg::*; #(
   input  logic [4:0]       trvk_addr_i
 );
 
-  logic [RegW-1:0] rf_reg   [NRegs-1:0];
-  logic [RegW-1:0] rf_reg_q [NRegs-1:1];
+  logic [NRegs-1:0][RegW-1:0] rf_reg;
+  logic [NRegs-1:1][RegW-1:0] rf_reg_q;
   
   logic [NRegs-1:1] we0_dec, we1_dec, we2_dec, trvk_clrtag_dec;
 
@@ -72,9 +72,18 @@ module regfile import super_pkg::*; import cheri_pkg::*; #(
     assign rf_reg[i] = rf_reg_q[i];         
   end
 
+`ifndef KUDU_FORMAL_L1
+  // for some reason Jasper doesn't like this syntax and assumes output as all 1s
   assign rdata2_p0_o.d0 =  rf_reg[raddr2_p0_i.a0];
   assign rdata2_p0_o.d1 =  rf_reg[raddr2_p0_i.a1];
   assign rdata2_p1_o.d0 =  rf_reg[raddr2_p1_i.a0];
   assign rdata2_p1_o.d1 =  rf_reg[raddr2_p1_i.a1];
+`else
+  assign rdata2_p0_o.d0 =  (raddr2_p0_i.a0 == 0) ? 0 : rf_reg_q[raddr2_p0_i.a0];
+  assign rdata2_p0_o.d1 =  (raddr2_p0_i.a1 == 0) ? 0 : rf_reg_q[raddr2_p0_i.a1];
+  assign rdata2_p1_o.d0 =  (raddr2_p1_i.a0 == 0) ? 0 : rf_reg_q[raddr2_p1_i.a0];
+  assign rdata2_p1_o.d1 =  (raddr2_p1_i.a1 == 0) ? 0 : rf_reg_q[raddr2_p1_i.a1];
+
+`endif
 
 endmodule
