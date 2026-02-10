@@ -15,62 +15,74 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   parameter int unsigned HeapBase  = 32'h2001_0000,
   parameter int unsigned TSMapSize = 1024
 ) (
-  input  logic            clk_i,
-  input  logic            rst_ni,
-
-  input  logic            cheri_pmode_i,
-  input  logic            debug_mode_i,
+  input  logic             clk_i,
+  input  logic             rst_ni,
+                         
+  input  logic             cheri_pmode_i,
+  input  logic             tsafe_en_i,
+  input  logic             debug_mode_i,
 
   // upstream (issuer) side interface
-  input  logic            flush_i,
-  input  logic            us_valid_i,
-  output logic            lspl_rdy_o,
-  input  logic            sel_ira_i,
-  input  ir_dec_t         ira_dec_i,
-  input  ir_dec_t         irb_dec_i,
-  input  full_data2_t     ira_full_data2_i,
-  input  full_data2_t     irb_full_data2_i,
+  input  logic             flush_i,
+  input  logic             us_valid_i,
+  output logic             lspl_rdy_o,
+  input  logic             sel_ira_i,
+  input  ir_dec_t          ira_dec_i,
+  input  ir_dec_t          irb_dec_i,
+  input  full_data2_t      ira_full_data2_i,
+  input  full_data2_t      irb_full_data2_i,
 
   // cmplx unit interface
-  input logic             cmplx_lsu_req_valid_i,
-  input lsu_req_info_t    cmplx_lsu_req_info_i,
+  input logic              cmplx_lsu_req_valid_i,
+  input lsu_req_info_t     cmplx_lsu_req_info_i,
 
   // downstream (commit) side interface
-  input  logic            ds_rdy_i,
-  output logic            lspl_valid_o,
-  output pl_out_t         lspl_output_o,
+  input  logic             ds_rdy_i,
+  output logic             lspl_valid_o,
+  output pl_out_t          lspl_output_o,
 
   // data memory interface
-  output logic            data_req_o,
-  output logic            data_we_o,
-  output logic [3:0]      data_be_o,
-  output logic            data_is_cap_o,
-  output logic [3:0]      data_amo_flag_o,
-  output logic [31:0]     data_addr_o,
-  output logic [MemW-1:0] data_wdata_o,
-  input  logic            data_gnt_i,
-  input  logic            data_rvalid_i,
-  input  logic            data_err_i,
-  input  logic            data_sc_resp_i,
-  input  logic [MemW-1:0] data_rdata_i,
-  input  logic            data_pmp_err_i,
-
-  // data fwd interface
-  input  waw_act_t        waw_act_i,
-  output logic [31:0]     fwd_act_o,
-  output pl_fwd_t         fwd_info_o,
+  output logic             data_req_o,
+  output logic             data_we_o,
+  output logic [3:0]       data_be_o,
+  output logic             data_is_cap_o,
+  output logic [3:0]       data_amo_flag_o,
+  output logic [31:0]      data_addr_o,
+  output logic [MemW-1:0]  data_wdata_o,
+  input  logic             data_gnt_i,
+  input  logic             data_rvalid_i,
+  input  logic             data_err_i,
+  input  logic             data_sc_resp_i,
+  input  logic [MemW-1:0]  data_rdata_i,
+  input  logic             data_pmp_err_i,
+                           
+  // data fwd interface    
+  input  waw_act_t         waw_act_i,
+  output logic [31:0]      fwd_act_o,
+  output pl_fwd_t          fwd_info_o,
 
   // trvk and tsmap interface
-  output logic [4:0]      trvk_addr_o,
-  output logic            trvk_en_o,
-  output logic            trvk_clrtag_o,
-  output logic            trvk_outstanding_o,
-                          
-  output logic            tsmap_cs_o,
-  output logic [15:0]     tsmap_addr_o,
-  input  logic [31:0]     tsmap_rdata_i,
-  output logic            csr_lsu_wr_req_o,
-  output logic [31:0]     csr_lsu_addr_o
+  output logic [4:0]       trvk_addr_o,
+  output logic             trvk_en_o,
+  output logic             trvk_clrtag_o,
+  output logic             trvk_outstanding_o,
+                           
+  output logic             tsmap_cs_o,
+  output logic [15:0]      tsmap_addr_o,
+  input  logic [31:0]      tsmap_rdata_i,
+
+  input  logic             pcc_asr_i,
+  output logic             csr_access_o,
+  output logic             csr_cheri_o,
+  output logic             csr_op_en_o,
+  output csr_op_e          csr_op_o,
+  output csr_num_e         csr_addr_o,
+  output logic [FullW-1:0] csr_wdata_o,
+  input  logic [RegW-1:0]  csr_rdata_i,
+  input  logic             illegal_csr_insn_i,      // access to non-existent CSR,
+ 
+  output logic             csr_lsu_wr_req_o,
+  output logic [31:0]      csr_lsu_addr_o
 );
 
   localparam WbFifoW = $bits(pl_out_t);
@@ -155,18 +167,35 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     is_cap    = instr_dec.cheri_op.clc | instr_dec.cheri_op.csc;
     is_load   = (opcode == OPCODE_LOAD); 
 
-    if (~cmplx_lsu_req_valid_i) begin
-      lsu_req_dec = NULL_LSU_REQ_INFO;
-      lsu_req_dec.rf_we      = is_load || is_lr || is_sc;
-      lsu_req_dec.amo_flag   = {2'b00, is_sc, is_lr};
+    lsu_req_dec = NULL_LSU_REQ_INFO;
+
+    if (cmplx_lsu_req_valid_i) begin
+      lsu_req_dec = cmplx_lsu_req_info_i;
+    end else if (instr_dec.is_csr) begin
+      lsu_req_dec.is_csr     = 1'b1;
+      lsu_req_dec.rf_we      = instr_dec.rf_we;
+      lsu_req_dec.pc         = instr_dec.pc;
+      lsu_req_dec.insn       = instr_dec.insn;
+      lsu_req_dec.rs1        = instr_dec.rs1;
+      lsu_req_dec.rd         = instr_dec.rd;
+      lsu_req_dec.cs1_fcap   = cs1_fcap;
+      lsu_req_dec.cs2_valid  = cs2_fcap.valid;
+      lsu_req_dec.cs2_perms  = cs2_fcap.perms;
+      // wdata is derived from cs1_fcap for csr accesses
+    end else begin
+      lsu_req_dec.is_load    = is_load || is_lr;
       lsu_req_dec.is_cap     = is_cap;
+      // lsu_req_dec.rf_we      = is_load || is_lr || is_sc;
+      lsu_req_dec.rf_we      = instr_dec.rf_we;
+      lsu_req_dec.amo_flag   = {2'b00, is_sc, is_lr};
       lsu_req_dec.data_type  = data_type;
       lsu_req_dec.wdata      = (cheri_pmode & is_cap) ? op2memcap(full_data2.d1[OpW-1:0]) : 
-                                                      full_data2.d1[MemW-1:0];   
+                                                        full_data2.d1[MemW-1:0];   
       lsu_req_dec.clrperm    = debug_mode_i ? 4'h0 : {lc_ctag, 1'b0, lc_csdlm, lc_cglg};
       lsu_req_dec.sign_ext   = ~instr_dec.insn[14]; 
       lsu_req_dec.addr       = sel_ira_i ? ira_ls_addr : irb_ls_addr;
       lsu_req_dec.pc         = instr_dec.pc;
+      lsu_req_dec.insn       = instr_dec.insn;
       lsu_req_dec.rs1        = instr_dec.rs1;
       lsu_req_dec.rd         = instr_dec.rd;
 
@@ -174,12 +203,11 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
       // don't do early load for lr/sc
       lsu_req_dec.early_load = is_load && (lsu_req_dec.addr[31:24] == 8'h80);
       lsu_req_dec.cache_ok   = (lsu_req_dec.addr[31:24] == 8'h80) && ~is_lr && ~is_sc;
-    end else begin
-      lsu_req_dec = cmplx_lsu_req_info_i;
+      lsu_req_dec.cs1_fcap   = cs1_fcap;
+      lsu_req_dec.cs2_valid  = cs2_fcap.valid;
+      lsu_req_dec.cs2_perms  = cs2_fcap.perms;
     end
 
-    // for complex instructions, load/store capability is still in cs1
-    if (cheri_pmode) lsu_req_dec.lschk_info =  build_lschk_info(cs1_fcap, cs2_fcap);
   end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -260,6 +288,15 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     .lsu_resp_valid_o      (lsu_resp_valid    ),
     .lsu_resp_err_o        (lsu_resp_err      ),
     .lsu_resp_info_o       (lsu_resp_info     ),
+    .pcc_asr_i             (pcc_asr_i         ),
+    .csr_access_o          (csr_access_o      ),
+    .csr_cheri_o           (csr_cheri_o       ),
+    .csr_op_en_o           (csr_op_en_o       ),
+    .csr_op_o              (csr_op_o          ),
+    .csr_addr_o            (csr_addr_o        ),
+    .csr_wdata_o           (csr_wdata_o       ),
+    .csr_rdata_i           (csr_rdata_i       ),
+    .illegal_csr_insn_i    (illegal_csr_insn_i),
     .busy_o                (),
     .perf_load_o           (),
     .perf_store_o          ()
@@ -350,7 +387,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     logic [4:0]   clc_rd;
     reg_cap_t     clc_rcap;
 
-    assign clc_valid = lspl_valid_o & ds_rdy_i & lspl_output_o.is_cap & lspl_output_o.we;
+    assign clc_valid = lspl_valid_o & ds_rdy_i & lspl_output_o.is_cap & lspl_output_o.we & tsafe_en_i;
     assign clc_err   = lspl_output_o.err;
     assign clc_rd    = lspl_output_o.waddr;
     assign clc_rcap  = reg_cap_t'(lspl_output_o.wdata);

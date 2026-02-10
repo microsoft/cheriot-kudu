@@ -94,10 +94,11 @@ module kudu_top import super_pkg::*;  #(
   localparam bit          EarlyLoad      = 1'b1;
   localparam bit          UnalignedFetch = 1'b0;
   localparam bit          NoMult         = 1'b0;
-  localparam bit          LoadFiltEn     = 1'b1;
+  localparam bit          LoadFiltEn     = CHERIoTEn;
   localparam bit          RV32M          = 1'b1;
   localparam bit          RV32B          = 1'b1;
   localparam bit          RV32A          = 1'b1;
+  localparam bit          CsrUseLSU      = 1'b1;
 
   rf_rdata2_t     rf_rdata2_p0;
   rf_rdata2_t     rf_rdata2_p1;
@@ -159,14 +160,14 @@ module kudu_top import super_pkg::*;  #(
   branch_info_t   branch_info;
   logic [2:0]     ir0_cjalr_err, ir1_cjalr_err;
 
-
-  logic            csr_access;
-  csr_num_e        csr_addr;
-  logic [RegW-1:0] csr_wdata;
-  csr_op_e         csr_op;
-  logic            csr_op_en;
-  logic [RegW-1:0] csr_rdata;
-  logic            illegal_csr_insn;
+  logic             csr_op_en, csr_op_en_a, csr_op_en_b;
+  csr_op_e          csr_op, csr_op_a, csr_op_b;
+  logic             csr_access, csr_access_a, csr_access_b;
+  csr_num_e         csr_addr, csr_addr_a, csr_addr_b;
+  logic [FullW-1:0] csr_wdata, csr_wdata_a, csr_wdata_b;
+  logic             csr_cheri, csr_cheri_a, csr_cheri_b;
+  logic [RegW-1:0]  csr_rdata;
+  logic             illegal_csr_insn;
 
   logic            csr_set_mie;
   logic            csr_clr_mie;
@@ -187,7 +188,6 @@ module kudu_top import super_pkg::*;  #(
   logic            csr_mepcc_clrtag;
   exc_cause_e      csr_exc_cause;
   logic [31:0]     csr_mtval;
-  logic            csr_cheri;
   logic            csr_lsu_wr_req;
   logic [31:0]     csr_lsu_addr;
                    
@@ -215,6 +215,10 @@ module kudu_top import super_pkg::*;  #(
   sbd_fifo_t        cmplx_sbd_wdata;
   logic             cmplx_lsu_req_valid;
   lsu_req_info_t    cmplx_lsu_req_info;
+
+  logic             cheri_tsafe_en;
+
+  assign cheri_tsafe_en = 1'b1;   // QQQ for now - tie to an input or CSR?
 
   regfile #(.NRegs(32)) regfile_i (
      // Clock and Reset
@@ -280,6 +284,7 @@ module kudu_top import super_pkg::*;  #(
     .RV32M        (RV32M),
     .RV32B        (RV32B),
     .RV32A        (RV32A),
+    .CsrUseLSU    (CsrUseLSU),
     .DbgTriggerEn (DbgTriggerEn),
     .BrkptNum     (BrkptNum)    
   ) ir_stage_i (
@@ -332,6 +337,7 @@ module kudu_top import super_pkg::*;  #(
     .rst_ni                    (rst_ni                  ),
     .boot_addr_i               (boot_addr_i             ),
     .cheri_pmode_i             (cheri_pmode_i           ),
+    .tsafe_en_i                (cheri_tsafe_en    ),
     .ira_dec_i                 (ira_dec                 ),
     .irb_dec_i                 (irb_dec                 ),      
     .ira_is0_i                 (ira_is0                 ),
@@ -492,6 +498,7 @@ module kudu_top import super_pkg::*;  #(
     .rst_ni                (rst_ni            ),
     .flush_i               (cmt_flush         ),
     .cheri_pmode_i         (cheri_pmode_i     ),
+    .tsafe_en_i            (cheri_tsafe_en    ),
     .debug_mode_i          (debug_mode        ),
     .us_valid_i            (ex_valid[3]       ),
     .lspl_rdy_o            (lspl_rdy          ),
@@ -528,6 +535,15 @@ module kudu_top import super_pkg::*;  #(
     .tsmap_cs_o            (tsmap_cs_o        ),
     .tsmap_addr_o          (tsmap_addr_o      ),
     .tsmap_rdata_i         (tsmap_rdata_i     ),   
+    .pcc_asr_i             (pcc_cap_r.perms[PERM_SR]),
+    .csr_access_o          (csr_access_a      ),
+    .csr_cheri_o           (csr_cheri_a       ),
+    .csr_op_en_o           (csr_op_en_a       ),
+    .csr_op_o              (csr_op_a          ),
+    .csr_addr_o            (csr_addr_a        ),
+    .csr_wdata_o           (csr_wdata_a       ),
+    .csr_rdata_i           (csr_rdata         ),
+    .illegal_csr_insn_i    (illegal_csr_insn  ),
     .csr_lsu_wr_req_o      (csr_lsu_wr_req    ),
     .csr_lsu_addr_o        (csr_lsu_addr      )
   );
@@ -557,12 +573,12 @@ module kudu_top import super_pkg::*;  #(
     .ds_rdy_i           (cmt_multpl_rdy   ),
     .multpl_valid_o     (multpl_valid     ),
     .multpl_output_o    (multpl_output    ),
-    .csr_access_o       (csr_access       ),
-    .csr_cheri_o        (csr_cheri        ),
-    .csr_op_en_o        (csr_op_en        ),
-    .csr_op_o           (csr_op           ),
-    .csr_addr_o         (csr_addr         ),
-    .csr_wdata_o        (csr_wdata        ),
+    .csr_access_o       (csr_access_b     ),
+    .csr_cheri_o        (csr_cheri_b      ),
+    .csr_op_en_o        (csr_op_en_b      ),
+    .csr_op_o           (csr_op_b         ),
+    .csr_addr_o         (csr_addr_b       ),
+    .csr_wdata_o        (csr_wdata_b      ),
     .csr_rdata_i        (csr_rdata        ),
     .illegal_csr_insn_i (illegal_csr_insn ),
     .csr_mstatus_mie_i  (csr_mstatus_mie  ),
@@ -606,8 +622,16 @@ module kudu_top import super_pkg::*;  #(
     .rf_waddr2_o        (rf_waddr2          ),
     .rf_wdata2_o        (rf_wdata2          ),
     .rf_we2_o           (rf_we2             )
-  );                    
-    
+  );                  
+  
+  // Select which pipeline handles CSR/SCR read/write
+  assign csr_access = CsrUseLSU ? csr_access_a : csr_access_b;
+  assign csr_cheri  = CsrUseLSU ? csr_cheri_a  : csr_cheri_b;
+  assign csr_op_en  = CsrUseLSU ? csr_op_en_a  : csr_op_en_b;
+  assign csr_op     = CsrUseLSU ? csr_op_a     : csr_op_b;   
+  assign csr_addr   = CsrUseLSU ? csr_addr_a   : csr_addr_b; 
+  assign csr_wdata  = CsrUseLSU ? csr_wdata_a  : csr_wdata_b;
+
   cs_registers #(
     .CHERIoTEn    (CHERIoTEn),
     .DbgTriggerEn (DbgTriggerEn),

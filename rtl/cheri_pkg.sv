@@ -956,33 +956,8 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
   //
   // new stuff..
   //
-  typedef struct packed {
-    logic               cs1_valid;
-    logic [32:0]        cs1_top33;
-    logic [31:0]        cs1_base32;
-    logic [PERMS_W-1:0] cs1_perms;
-    logic [OTYPE_W-1:0] cs1_otype;
-    logic               cs2_valid;
-    logic [PERMS_W-1:0] cs2_perms;
-  } cheri_lschk_info_t;
- 
-  parameter cheri_lschk_info_t NULL_LSCHK_INFO = '{0, 0, 0, 0, 0, 0, 0};
-
-  function automatic cheri_lschk_info_t build_lschk_info (full_cap_t cs1_fcap, full_cap_t cs2_fcap);
-    cheri_lschk_info_t result;
-
-    result.cs1_valid  = cs1_fcap.valid;
-    result.cs1_top33  = cs1_fcap.top33;
-    result.cs1_base32 = cs1_fcap.base32;
-    result.cs1_perms  = cs1_fcap.perms;
-    result.cs1_otype  = cs1_fcap.otype;
-    result.cs2_valid  = cs2_fcap.valid;
-    result.cs2_perms  = cs2_fcap.perms;
-    
-    return result;
-  endfunction
-
-  function automatic logic [7:0] cheri_ls_check (cheri_lschk_info_t lschk_info, 
+  function automatic logic [7:0] cheri_ls_check (full_cap_t cs1_fcap, logic cs2_valid,
+                                                 logic [PERMS_W-1:0] cs2_perms,
                                                  logic [31:0] mem_addr, logic is_load, 
                                                  logic is_cap, logic [1:0] data_type);   
     logic [7:0]  result;    
@@ -1013,28 +988,28 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
     else 
       top_chkaddr = {1'b0, base_chkaddr};
 
-    base_bound = lschk_info.cs1_base32;
+    base_bound = cs1_fcap.base32;
 
     if (is_cap) begin // CLC/CSC
-      top_bound   = {lschk_info.cs1_top33[32:3], 3'b000};       // 8-byte aligned access only
+      top_bound   = {cs1_fcap.top33[32:3], 3'b000};       // 8-byte aligned access only
       top_size_ok = 1'b1;
     end else begin
       case (data_type)
         2'b00: begin
             top_offset  = 32'h4;
-            top_size_ok = |lschk_info.cs1_top33[32:2];     // at least 4 bytes
+            top_size_ok = |cs1_fcap.top33[32:2];     // at least 4 bytes
           end
         2'b01: begin
             top_offset  = 32'h2;
-            top_size_ok = |lschk_info.cs1_top33[32:1];
+            top_size_ok = |cs1_fcap.top33[32:1];
           end
         default: begin
             top_offset  = 32'h1;
-            top_size_ok = |lschk_info.cs1_top33[32:0];
+            top_size_ok = |cs1_fcap.top33[32:0];
           end
       endcase
 
-      top_bound = lschk_info.cs1_top33 - top_offset;
+      top_bound = cs1_fcap.top33 - top_offset;
     end
 
     top_vio   = (top_chkaddr  > top_bound) || ~top_size_ok;
@@ -1054,35 +1029,56 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
     perm_vio_slc = 1'b0;
 
     if (is_load_cap) begin
-      perm_vio_vec[PVIO_TAG]   = ~lschk_info.cs1_valid;
-      perm_vio_vec[PVIO_SEAL]  = (lschk_info.cs1_otype != OTYPE_UNSEALED);
-      perm_vio_vec[PVIO_LD]    = ~(lschk_info.cs1_perms[PERM_LD]);
+      perm_vio_vec[PVIO_TAG]   = ~cs1_fcap.valid;
+      perm_vio_vec[PVIO_SEAL]  = (cs1_fcap.otype != OTYPE_UNSEALED);
+      perm_vio_vec[PVIO_LD]    = ~(cs1_fcap.perms[PERM_LD]);
       perm_vio_vec[PVIO_ALIGN] = (mem_addr[2:0] != 0);
     end else if (is_store_cap) begin
-      perm_vio_vec[PVIO_TAG]   = (~lschk_info.cs1_valid);
-      perm_vio_vec[PVIO_SEAL]  = (lschk_info.cs1_otype != OTYPE_UNSEALED);
-      perm_vio_vec[PVIO_SD]    = ~lschk_info.cs1_perms[PERM_SD];
-      perm_vio_vec[PVIO_SC]    = (~lschk_info.cs1_perms[PERM_MC] && lschk_info.cs2_valid);
+      perm_vio_vec[PVIO_TAG]   = (~cs1_fcap.valid);
+      perm_vio_vec[PVIO_SEAL]  = (cs1_fcap.otype != OTYPE_UNSEALED);
+      perm_vio_vec[PVIO_SD]    = ~cs1_fcap.perms[PERM_SD];
+      perm_vio_vec[PVIO_SC]    = (~cs1_fcap.perms[PERM_MC] && cs2_valid);
       perm_vio_vec[PVIO_ALIGN] = (mem_addr[2:0] != 0);
-      perm_vio_slc             = ~lschk_info.cs1_perms[PERM_SL] && lschk_info.cs2_valid &&
-                                 ~lschk_info.cs2_perms[PERM_GL] ;
+      perm_vio_slc             = ~cs1_fcap.perms[PERM_SL] && cs2_valid &&
+                                 ~cs2_perms[PERM_GL] ;
     end else begin  // RV32 accesses
-      perm_vio_vec[PVIO_TAG]   = ~lschk_info.cs1_valid;
-      perm_vio_vec[PVIO_SEAL]  = (lschk_info.cs1_otype != OTYPE_UNSEALED);
-      perm_vio_vec[PVIO_LD]    = is_load & ~lschk_info.cs1_perms[PERM_LD];
-      perm_vio_vec[PVIO_SD]    = ~is_load && ~lschk_info.cs1_perms[PERM_SD];
+      perm_vio_vec[PVIO_TAG]   = ~cs1_fcap.valid;
+      perm_vio_vec[PVIO_SEAL]  = (cs1_fcap.otype != OTYPE_UNSEALED);
+      perm_vio_vec[PVIO_LD]    = is_load & ~cs1_fcap.perms[PERM_LD];
+      perm_vio_vec[PVIO_SD]    = ~is_load && ~cs1_fcap.perms[PERM_SD];
     end
 
     cheri_perm_vio  = | perm_vio_vec;
 
     cheri_top_chkaddr_ext = mem_addr + 8;   // extend to 33 bit for compare
-    addr_bound_vio_ext = is_cap ? cheri_bound_vio | (cheri_top_chkaddr_ext > lschk_info.cs1_top33) :
+    addr_bound_vio_ext = is_cap ? cheri_bound_vio | (cheri_top_chkaddr_ext > cs1_fcap.top33) :
                                   cheri_bound_vio;
 
     cheri_vio_cause = vio_cause_enc(addr_bound_vio_ext, perm_vio_vec);
     align_err_only = perm_vio_vec[PVIO_ALIGN] &  (perm_vio_vec[PVIO_ALIGN-1:0] == 0) && ~addr_bound_vio_ext;
 
     result = {cheri_vio_cause, align_err_only, perm_vio_slc, (cheri_bound_vio|cheri_perm_vio)};
+    return result;
+  endfunction
+
+  function automatic full_cap_t legalize_scr (logic [4:0] scr_addr, full_cap_t cs1_fcap);
+    full_cap_t result;
+    result = cs1_fcap;
+
+    if (scr_addr == CHERI_SCR_MTCC) begin
+      // MTVEC/MTCC legalization (clear tag if checking fails)
+      // note we don't reall need set_address checks here - it's only used to update temp fields
+      //   so that RTL behavior would match sail
+      result.addr    = {cs1_fcap.addr[31:2], 2'b00};
+      if ((cs1_fcap.addr[1:0] != 2'b00) || ~cs1_fcap.perms[PERM_EX] || (cs1_fcap.otype != 0))
+        result.valid = 1'b0;
+    end else if (scr_addr == CHERI_SCR_MEPCC) begin
+      // MEPCC legalization (clear tag if checking fails)
+      result.addr    = {cs1_fcap.addr[31:1], 1'b0};
+      if ((cs1_fcap.addr[0] != 1'b0) || ~cs1_fcap.perms[PERM_EX] || (cs1_fcap.otype != 0))
+        result.valid = 1'b0;
+    end
+
     return result;
   endfunction
 

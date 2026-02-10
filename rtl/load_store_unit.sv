@@ -18,93 +18,105 @@
 module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg ::*; #(
   parameter bit          CHERIoTEn = 1'b0      
 )(
-  input  logic            clk_i,
-  input  logic            rst_ni,
-  input  logic            cheri_pmode_i,
-  input  logic            debug_mode_i,
-                          
+  input  logic             clk_i,
+  input  logic             rst_ni,
+  input  logic             cheri_pmode_i,
+  input  logic             debug_mode_i,
+                           
   // data memory interface       
-  output logic            data_req_o,
-  output logic            data_is_cap_o,
-  output logic [3:0]      data_amo_flag_o,
-  input  logic            data_gnt_i,
-  input  logic            data_rvalid_i,
-  input  logic            data_err_i,
-  input  logic            data_pmp_err_i,
-  input  logic            data_sc_resp_i,
-                          
-  output logic [31:0]     data_addr_o,
-  output logic            data_we_o,
-                          
-  output logic [3:0]      data_be_o,
-  output logic [MemW-1:0] data_wdata_o,
-  input  logic [MemW-1:0] data_rdata_i,
+  output logic             data_req_o,
+  output logic             data_is_cap_o,
+  output logic [3:0]       data_amo_flag_o,
+  input  logic             data_gnt_i,
+  input  logic             data_rvalid_i,
+  input  logic             data_err_i,
+  input  logic             data_pmp_err_i,
+  input  logic             data_sc_resp_i,
+                           
+  output logic [31:0]      data_addr_o,
+  output logic             data_we_o,
+                           
+  output logic [3:0]       data_be_o,
+  output logic [MemW-1:0]  data_wdata_o,
+  input  logic [MemW-1:0]  data_rdata_i,
 
   // signals to/from EX stage
-  input  logic            lsu_req_i,    
-  input  lsu_req_info_t   lsu_req_info_i,
-
-  output logic            lsu_req_done_o,
-                          
-  output logic            lsu_resp_valid_o,
-  output logic            lsu_resp_err_o,
-  output pl_out_t         lsu_resp_info_o,
-  output logic [31:0]     addr_last_o,    
+  input  logic             lsu_req_i,    
+  input  lsu_req_info_t    lsu_req_info_i,
+                           
+  output logic             lsu_req_done_o,
+                           
+  output logic             lsu_resp_valid_o,
+  output logic             lsu_resp_err_o,
+  output pl_out_t          lsu_resp_info_o,
+  output logic [31:0]      addr_last_o,    
   
   // downstream backpressure input
-  input  logic            ds_rdy_i,
+  input  logic             ds_rdy_i,
 
-  // exception signals    
-                          
-  output logic            busy_o,
-  output logic            perf_load_o,
-  output logic            perf_store_o
+  // CSR interface
+  input  logic             pcc_asr_i,
+  output logic             csr_access_o,
+  output logic             csr_cheri_o,
+  output logic             csr_op_en_o,
+  output csr_op_e          csr_op_o,
+  output csr_num_e         csr_addr_o,
+  output logic [FullW-1:0] csr_wdata_o,
+  input  logic [RegW-1:0]  csr_rdata_i,
+  input  logic             illegal_csr_insn_i,      // access to non-existent CSR,
+
+  // Performance counter signals    
+  output logic             busy_o,
+  output logic             perf_load_o,
+  output logic             perf_store_o
 );
 
 
-  logic [31:0]  data_addr;
-  logic [31:0]  data_addr_w_aligned;
-  logic [31:0]  addr_last_q, addr_last_d;
-
-  logic         addr_update;
-  logic         ctrl_update;
-  logic         rdata_update;
-  logic [31:8]  rdata_q;
-  logic [1:0]   rdata_offset_q;
-
-  logic [1:0]   data_offset;   // mux control for data to be written to memory
-
-  logic [3:0]   data_be;
+  logic [31:0]     data_addr;
+  logic [31:0]     data_addr_w_aligned;
+  logic [31:0]     addr_last_q, addr_last_d;
+                   
+  logic            addr_update;
+  logic            ctrl_update;
+  logic            rdata_update;
+  logic [31:8]     rdata_q;
+  logic [1:0]      rdata_offset_q;
+                   
+  logic [1:0]      data_offset;   // mux control for data to be written to memory
+                   
+  logic [3:0]      data_be;
   logic [MemW-1:0] data_wdata;
 
-  logic [31:0]  data_rdata_ext;
-
-  logic [32:0]  rdata_w_ext; // word realignment for misaligned loads
-  logic [31:0]  rdata_h_ext; // sign extension for half words
-  logic [31:0]  rdata_b_ext; // sign extension for bytes
-
-  logic         split_misaligned_access;
-  logic         handle_misaligned_q, handle_misaligned_d; // high after receiving grant for first
-                                                          // part of a misaligned access
-  logic         pmp_err_q, pmp_err_d;
-  logic         lsu_err_q, lsu_err_d;
-  logic         data_or_pmp_err;
-  logic         cheri_err_d, cheri_err_q;
-
-  logic         outstanding_resp_q, resp_wait;
-  logic         lsu_resp_valid;
-  logic         lsu_go;
-  logic         addr_incr_req;
-  logic         cheri_pmode;
+  logic [31:0]     data_rdata_ext;
+                   
+  logic [32:0]     rdata_w_ext; // word realignment for misaligned loads
+  logic [31:0]     rdata_h_ext; // sign extension for half words
+  logic [31:0]     rdata_b_ext; // sign extension for bytes
+                   
+  logic            split_misaligned_access;
+  logic            handle_misaligned_q, handle_misaligned_d; // high after receiving grant for first
+                                                             // part of a misaligned access
+  logic            pmp_err_q, pmp_err_d;
+  logic            lsu_err_q, lsu_err_d;
+  logic            data_or_pmp_err;
+  logic            cheri_err_d, cheri_err_q;
+                   
+  logic            outstanding_resp_q, resp_wait;
+  logic            lsu_resp_valid;
+  logic            ls_go;
+  logic            csr_go, csr_go_q;
+  logic            csr_err;
+  logic            addr_incr_req;
+  logic            cheri_pmode;
 
   lsu_req_info_t   lsu_req_info_q;
   pl_out_t         lsu_resp_info;
   logic [5:0]      lsu_err_mcause;
   logic [31:0]     lsu_err_mtval;
   logic [RegW-1:0] lsu_rdata;    
- 
 
-  ls_fsm_e ls_fsm_cs, ls_fsm_ns;
+  ls_fsm_e         ls_fsm_cs, ls_fsm_ns;
+
 
   assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
 
@@ -192,7 +204,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
    end
 
   if (CHERIoTEn) begin
-    assign data_wdata = lsu_req_info_i.is_cap ? lsu_req_info_i.wdata: {33'h0, wdata_int[31:0]};
+    assign data_wdata = lsu_req_info_i.is_cap ? lsu_req_info_i.wdata[MemW-1:0]: {33'h0, wdata_int[31:0]};
   end else begin
     assign data_wdata = wdata_int[31:0];
   end
@@ -364,20 +376,23 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     perf_load_o         = 1'b0;
     perf_store_o        = 1'b0;
 
-    lsu_go              = 1'b0;
+    ls_go               = 1'b0;
+    csr_go              = 1'b0;
 
     unique case (ls_fsm_cs)
 
       IDLE: begin
         pmp_err_d   = 1'b0;
 
-        if (lsu_req_i & ~resp_wait & ds_rdy_i) begin
+        if (lsu_req_i & ~resp_wait & ds_rdy_i & lsu_req_info_i.is_csr) begin
+          csr_go = 1'b1;
+        end else if (lsu_req_i & ~resp_wait & ds_rdy_i) begin
           data_req_o     = ~lsu_req_info_i.cheri_err;
           pmp_err_d      = data_pmp_err_i;
           lsu_err_d      = 1'b0;
-          perf_load_o    = lsu_req_info_i.rf_we;
-          perf_store_o   = ~lsu_req_info_i.rf_we;
-          lsu_go         = 1'b1;         // decision to move forward with a request
+          perf_load_o    = lsu_req_info_i.is_load;
+          perf_store_o   = ~lsu_req_info_i.is_load;
+          ls_go          = 1'b1;         // decision to move forward with a request
 
           if (lsu_req_info_i.cheri_err) begin
             ls_fsm_ns           = IDLE;
@@ -420,7 +435,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
           // Record the error status of the first part
           lsu_err_d = data_err_i | pmp_err_q;
           // Capture the first rdata for loads
-          rdata_update = lsu_req_info_q.rf_we;
+          rdata_update = lsu_req_info_q.is_load;
           // If already granted, wait for second rvalid
           ls_fsm_ns = data_gnt_i ? IDLE : WAIT_GNT;
           // Update the address for the second part, if no error
@@ -463,7 +478,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
           // Now we can update the address for the second part if no error
           addr_update = ~data_err_i;
           // Capture the first rdata for loads
-          rdata_update = lsu_req_info_q.rf_we;
+          rdata_update = lsu_req_info_q.is_load;
           // Wait for second rvalid
           ls_fsm_ns = IDLE;
         end
@@ -482,7 +497,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   // (once req captured in IDLE, it can be deasserted)
   logic lsu_req_done;
 
-  assign lsu_req_done    = (lsu_go | (ls_fsm_cs != IDLE)) & (ls_fsm_ns == IDLE);
+  assign lsu_req_done    = (ls_go | csr_go | (ls_fsm_cs != IDLE)) & (ls_fsm_ns == IDLE);
   assign lsu_req_done_o  = lsu_req_done;
 
   // registers for FSM
@@ -495,6 +510,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
       cheri_err_q         <= 1'b0;
       outstanding_resp_q  <= 1'b0;
       lsu_req_info_q      <= NULL_LSU_REQ_INFO;
+      csr_go_q            <= 1'b0;
     end else begin
       ls_fsm_cs           <= ls_fsm_ns;
       handle_misaligned_q <= handle_misaligned_d;
@@ -502,13 +518,15 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
       lsu_err_q           <= lsu_err_d;
       cheri_err_q         <= cheri_err_d;
 
-      if (lsu_go)
+      if (ls_go | csr_go)
         lsu_req_info_q  <= lsu_req_info_i;
 
-      if (lsu_go)
+      if (ls_go | csr_go)
         outstanding_resp_q <= 1'b1;
       else if (lsu_resp_valid)
         outstanding_resp_q <= 1'b0;
+
+      csr_go_q <= csr_go;
 
     end
   end
@@ -520,14 +538,18 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
 
   if (CHERIoTEn) begin : gen_resp_chk
     always_comb begin
-      logic [7:0] cheri_check_result;
+      logic [7:0] cheri_check_raw, cheri_check_result;
+      cheri_check_raw = cheri_ls_check (.cs1_fcap  (lsu_req_info_q.cs1_fcap),
+                                        .cs2_valid (lsu_req_info_q.cs2_valid), 
+                                        .cs2_perms (lsu_req_info_q.cs2_perms), 
+                                        .mem_addr  (lsu_req_info_q.addr),
+                                        .is_load   (lsu_req_info_q.is_load), 
+                                        .is_cap    (lsu_req_info_q.is_cap), 
+                                        .data_type (lsu_req_info_q.data_type));
 
-      cheri_check_result = (~cheri_pmode | debug_mode_i) ? 7'h0 : 
-                           cheri_ls_check (lsu_req_info_q.lschk_info, lsu_req_info_q.addr,
-                                           lsu_req_info_q.rf_we, lsu_req_info_q.is_cap, 
-                                           lsu_req_info_q.data_type);
+      cheri_check_result = (~cheri_pmode | debug_mode_i) ? 7'h0 : cheri_check_raw;
       ls_align_err_only  = cheri_check_result[2] & (~lsu_req_info_q.cheri_err | lsu_req_info_q.align_err_only);
-      cheri_ls_err       = cheri_check_result[0] | lsu_req_info_q.cheri_err; 
+      cheri_ls_err       = ~lsu_req_info_q.is_csr & (cheri_check_result[0] | lsu_req_info_q.cheri_err); 
 
       if (lsu_req_info_q.cheri_err) 
         cheri_err_cause = lsu_req_info_q.cheri_cause;
@@ -539,20 +561,69 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     assign cheri_err_cause = 5'h0;
   end
 
-  // load/store error mcause/mtval encoding
+  // CSR r/w operations
+  logic [4:0]  scr_addr;
+  logic [11:0] csr_addr;
+  logic [31:0] csr_insn;
+  logic        csr_cheri;
+  logic        csr_cheri_asr_err, csr_cheri_always_ok; 
+
+  assign csr_insn  = lsu_req_info_q.insn;
+  assign csr_cheri = cheri_pmode & lsu_req_info_q.is_csr && (csr_insn[6:0] == OPCODE_CHERI);
+
+  assign csr_op_en_o  = csr_go_q & lsu_req_info_q.is_csr & ~csr_cheri_asr_err;
+  assign csr_access_o = lsu_req_info_q.is_csr;
+  assign csr_cheri_o  = csr_cheri;
+  assign csr_wdata_o  = csr_cheri ? lsu_req_info_q.cs1_fcap : 
+                        (csr_insn[14] ? csr_insn[19:15] : lsu_req_info_q.cs1_fcap[31:0]);
+
+  assign scr_addr   = csr_insn[24:20];
+  assign csr_addr   = csr_insn[31:20];
+  assign csr_addr_o = csr_cheri ? csr_num_e'({7'h0, scr_addr}) : csr_num_e'(csr_addr);
+
+  assign csr_cheri_always_ok = ~csr_cheri & 
+                              (((csr_insn[31:28] == 4'hb) || (csr_insn[31:28] == 4'hc)) &&
+                               ((csr_insn[27] == 1'b0) || (csr_insn[26:25] == 2'b00)));
+  assign csr_cheri_asr_err   = cheri_pmode & csr_go_q & ~pcc_asr_i & ~csr_cheri_always_ok;
+
+  assign csr_err  = ~debug_mode_i & lsu_req_info_q.is_csr & (illegal_csr_insn_i | csr_cheri_asr_err);
+
+  always_comb begin
+    logic        rs1_is_zero;
+ 
+    rs1_is_zero = (csr_insn[19:15] == '0);
+
+    if (csr_cheri) begin
+      csr_op_o = rs1_is_zero ? CSR_OP_READ : CSR_OP_WRITE;
+    end else begin
+      case (csr_insn[13:12])
+        2'b01:   csr_op_o = CSR_OP_WRITE;
+        2'b10:   csr_op_o = rs1_is_zero ? CSR_OP_READ : CSR_OP_SET;
+        2'b11:   csr_op_o = rs1_is_zero ? CSR_OP_READ : CSR_OP_CLEAR;
+        default: csr_op_o = CSR_OP_READ;       // don't care case
+      endcase
+    end
+  end
+  
+  // load/store/csr error mcause/mtval encoding
   always_comb begin
     lsu_err_mcause = 6'h0;
     lsu_err_mtval  = 32'h0;
 
-    if (cheri_ls_err) begin
-      if (ls_align_err_only) begin
-        lsu_err_mcause = EXC_CAUSE_LOAD_ADDR_MISALIGN;
-        lsu_err_mtval  = addr_last_q;
-      end else begin
-        // CHERIoT requires rs1 as part of MTVAL info for cheri faults
-        lsu_err_mcause = EXC_CAUSE_CHERI_FAULT;
-        lsu_err_mtval  = {22'h0, lsu_req_info_q.rs1, cheri_err_cause};
-      end
+    if (cheri_ls_err & ls_align_err_only) begin
+      lsu_err_mcause = EXC_CAUSE_LOAD_ADDR_MISALIGN;
+      lsu_err_mtval  = addr_last_q;
+    end else if (cheri_ls_err) begin
+      // CHERIoT requires rs1 as part of MTVAL info for cheri faults
+      lsu_err_mcause = EXC_CAUSE_CHERI_FAULT;
+      lsu_err_mtval  = {22'h0, lsu_req_info_q.rs1, cheri_err_cause};
+    end else if (csr_err & illegal_csr_insn_i) begin
+      lsu_err_mcause = EXC_CAUSE_ILLEGAL_INSN;
+      lsu_err_mtval  = 32'h0;
+    end else if (csr_err & csr_cheri_asr_err) begin
+      //  ASR error for SCR access: fill in scr address. ASR error for CSR: use zero
+      lsu_err_mcause = EXC_CAUSE_CHERI_FAULT;
+      lsu_err_mtval  = {21'h0, 1'b1, scr_addr & {5{csr_cheri}}, 5'h18};
     end else if (data_or_pmp_err) begin
       lsu_err_mcause = EXC_CAUSE_LOAD_ACCESS_FAULT;
       lsu_err_mtval  = addr_last_q;
@@ -573,14 +644,15 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   // Outputs //
   /////////////
 
-  logic all_resp;
-  assign data_or_pmp_err    = lsu_err_q | data_err_i | pmp_err_q | cheri_ls_err ;
+  logic all_resp, lsu_resp_err;
+  assign data_or_pmp_err    = lsu_err_q | data_err_i | pmp_err_q | cheri_ls_err;
+  assign lsu_resp_err       = csr_go_q ?  csr_err : data_or_pmp_err;
 
-  assign all_resp           = data_rvalid_i | pmp_err_q | (cheri_pmode & cheri_err_q);
+  assign all_resp           = data_rvalid_i | pmp_err_q | (cheri_pmode & cheri_err_q) | csr_go_q;
   assign lsu_resp_valid     = all_resp & (ls_fsm_cs == IDLE) ;
   assign lsu_resp_valid_o   = lsu_resp_valid;
   
-  assign lsu_resp_err_o     = data_or_pmp_err & lsu_resp_valid;
+  assign lsu_resp_err_o     =  lsu_resp_err & lsu_resp_valid;
   assign lsu_resp_info_o    =  lsu_resp_info;
 
   // output to register file
@@ -588,8 +660,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign lsu_resp_info.wrsv   = lsu_req_info_q.rf_we;
   assign lsu_resp_info.waddr  = lsu_req_info_q.rd;
   assign lsu_resp_info.pc     = lsu_req_info_q.pc;
-  assign lsu_resp_info.wdata  = lsu_rdata;
-  assign lsu_resp_info.err    = data_or_pmp_err;
+  assign lsu_resp_info.wdata  = csr_go_q ? csr_rdata_i : lsu_rdata;
+  assign lsu_resp_info.err    = lsu_resp_err;
   assign lsu_resp_info.mcause = lsu_err_mcause;
   assign lsu_resp_info.mtval  = lsu_err_mtval;
   assign lsu_resp_info.is_cap = lsu_req_info_q.is_cap;
@@ -601,7 +673,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign data_addr_o    = data_addr_w_aligned;
 
   assign data_wdata_o   = data_wdata;
-  assign data_we_o      = ~lsu_req_info_i.rf_we || lsu_req_info_i.amo_flag[1];
+  assign data_we_o      = ~lsu_req_info_i.is_load;
   assign data_be_o      = data_be;
 
   assign data_is_cap_o   = lsu_req_info_i.is_cap;

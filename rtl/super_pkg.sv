@@ -179,23 +179,28 @@ package super_pkg;
   } waw_act_t;
 
   typedef struct packed {
-    logic              rf_we;
-    logic [3:0]        amo_flag;  // amo1, amo0, sc, lr             
-    logic              is_cap;
-    logic              cheri_err;
-    logic              align_err_only;
-    logic [4:0]        cheri_cause;    
-    logic [1:0]        data_type;    
-    logic [3:0]        clrperm;
-    logic              sign_ext;
-    logic [MemW-1:0]   wdata;  
-    logic [31:0]       addr;
-    logic [4:0]        rs1;
-    logic [4:0]        rd;
-    logic [31:0]       pc;
-    logic              early_load;
-    logic              cache_ok;
-    cheri_lschk_info_t lschk_info;
+    logic               is_csr;
+    logic               is_load;
+    logic               is_cap;
+    logic [3:0]         amo_flag;  // amo1, amo0, sc, lr             
+    logic               cheri_err;
+    logic               align_err_only;
+    logic [4:0]         cheri_cause;    
+    logic [1:0]         data_type;    
+    logic [3:0]         clrperm;
+    logic               sign_ext;
+    logic [MemW-1:0]    wdata;     // only used in LS case
+    logic [31:0]        addr;
+    logic               rf_we;
+    logic [4:0]         rs1;
+    logic [4:0]         rd;
+    logic [31:0]        insn;          
+    logic [31:0]        pc;
+    logic               early_load;
+    logic               cache_ok;
+    logic               cs2_valid;
+    logic [PERMS_W-1:0] cs2_perms;
+    logic [FullW-1:0]   cs1_fcap;
   } lsu_req_info_t;
 
   parameter lsu_req_info_t NULL_LSU_REQ_INFO = lsu_req_info_t'(0);

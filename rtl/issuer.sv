@@ -19,6 +19,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   input  logic             rst_ni,
                            
   input  logic             cheri_pmode_i,
+  input  logic             tsafe_en_i,
   input  logic [31:0]      boot_addr_i,
                            
   // IF/IR interface       
@@ -438,9 +439,9 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         end else begin 
           if (cmt_flush_o)     // controller staemachine will wait for trsv pipeline to drain
             reg_cheri_trsv_q[i] <= 1'b0;
-          else if (ir0_normal_issued && ir0_dec.cheri_op.clc && (ir0_dec.rd == i))
+          else if (tsafe_en_i && ir0_normal_issued && ir0_dec.cheri_op.clc && (ir0_dec.rd == i))
             reg_cheri_trsv_q[i] <= 1'b1;
-          else if (ir1_issued && ir1_dec.cheri_op.clc && (ir1_dec.rd == i))
+          else if (tsafe_en_i && ir1_issued && ir1_dec.cheri_op.clc && (ir1_dec.rd == i))
             reg_cheri_trsv_q[i] <= 1'b1;
           else if (trvk_en_i && (trvk_addr_i == i))
             reg_cheri_trsv_q[i] <= 1'b0;
@@ -468,7 +469,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic [15:0]     ctrl_fsm_ns, ctrl_fsm_cs;
   logic [1:0]      ir_any_err, ir_sysctl, ir_cmplx;
   logic            handle_special, handle_err, handle_irq, handle_debug, handle_sysctl, handle_cmplx;
-  sysctl_t         sysclt_d, sysctl_q;
+  sysctl_t         sysctl_q;
   logic [31:0]     special_pc_q, last_set_pc_q;
   special_case_e   special_case_q;
   logic            special_setpc_q;

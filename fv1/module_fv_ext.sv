@@ -11,7 +11,6 @@ module bindfiles;
   bind kudu_top            kudu_top_fv_ext        kudo_top_fv_ext_i (.*);
 endmodule
 
-
 ////////////////////////////////////////////////////////////////
 // issuer
 ////////////////////////////////////////////////////////////////
@@ -22,13 +21,22 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   input  logic [1:0]     ir_valid_i,
   input  logic           ir0_issued,
   input  logic           ir1_issued,
+  input  logic           irq_pending_i,
+  input  logic           csr_mstatus_mie_i,
+  input  logic           cmt_err_i,
+  input  logic           debug_req_i,
   input  logic           handle_special,
+  input  logic           handle_irq,
+  input  special_case_e  special_case_q,
   input  logic [15:0]    ctrl_fsm_cs,
   input  logic [15:0]    ctrl_fsm_ns,
   input  logic [1:0]     sbdfifo_wr_valid_o,
   input  sbd_fifo_t      sbdfifo_wdata0_o,
   input  sbd_fifo_t      sbdfifo_wdata1_o,
+  input  logic [1:0]     sbdfifo_rd_valid_i,
+  input  logic           trvk_outstanding_i,
   input  logic [1:0]     issuer_rdy_o,
+  input  logic [2:0]     ir0_cjalr_err_i,
   input  logic [4:0]     ir0_pl_sel,
   input  logic [4:0]     ir1_pl_sel,
   input  logic [4:0]     ex_rdy,
@@ -39,7 +47,8 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   input  logic [31:0]    ir0_reg_wr_req, 
   input  logic [31:0]    ir1_reg_rd_req, 
   input  logic [31:0]    ir1_reg_wr_req,
-  input  logic [1:0]     branch_mispredict
+  input  logic [1:0]     branch_mispredict,
+  input  logic           debug_ebreak
 );
 
 `ifdef KUDU_FORMAL_G1
@@ -122,6 +131,45 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   AssertIssueSpecial0: assert property (@(posedge clk_i) 
     (ir0_issued_special  |-> issuer_rdy_o[0]  ));
+
+`endif
+
+`ifdef KUDU_FORMAL_G1
+  //
+  // Interrupt handling
+  //
+  AssumeNoDebug: assume property (@(posedge clk_i) 
+    ((debug_req_i == 1'b0)  && (debug_ebreak == 1'b0) && ~ir0_dec.sysctl.ebrk &&
+     ~ir0_dec.sysctl.dret ));
+  AssumeNoCMTErr: assume property (@(posedge clk_i) 
+    (cmt_err_i == 1'b0) );
+  AssumeNoCJALRErr: assume property (@(posedge clk_i) 
+    (ir0_cjalr_err_i == 3'b000));
+  // if ir_valid becomes 1 while in wait_cmt0, we may still go to EXEC
+  AssumeNoNewInstr: assume property (@(posedge clk_i) 
+    ((ctrl_fsm_cs[CSM_WAIT_CMT0]) |-> ($stable (ir_valid_i) && $stable(ir0_dec)) ));
+
+  // note in KUDU, impossible for csr_mstatus_mie_i to change while in DECODE or WAIT_CMT0, since
+  // the CSR operations are treated as "special"
+  AssumeIRQStable: assume property (@(posedge clk_i) 
+    ((ctrl_fsm_cs[CSM_WAIT_CMT0]) |-> $stable (irq_pending_i) ));
+
+  AssumeSBDEmpty: assume property (@(posedge clk_i) 
+    ((ctrl_fsm_cs[CSM_DECODE] & handle_special) |-> 
+      ##[0:2] ((sbdfifo_rd_valid_i == 2'b00) && ~trvk_outstanding_i) ));
+
+  //
+  // Pending tnterrupt will be handled if there is no instruction in IR or no fetch errors
+  //
+  logic irq_case0, irq_case1;
+  assign irq_case0 = ctrl_fsm_cs[CSM_DECODE] & irq_pending_i & csr_mstatus_mie_i & ~ir_valid_i[0]; 
+  assign irq_case1 = ctrl_fsm_cs[CSM_DECODE] & irq_pending_i & csr_mstatus_mie_i & ir_valid_i[0] &
+                     ~ir0_dec.any_err;
+
+  AssertIssueIRQ0: assert property (@(posedge clk_i) 
+    (irq_case0  |-> (##[1:5] ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == IRQ) ) ));
+  AssertIssueIRQ1: assert property (@(posedge clk_i) 
+    (irq_case1  |-> (##[1:5] ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == IRQ) ) ));
 
 `endif
 endmodule
@@ -322,7 +370,7 @@ module committer_fv_ext import super_pkg::*; (
   
 
   //
-  // RF We generation only for valid requests
+  // RF We generation only for valid requests (no error)
   //
   logic  [1:0] sbd_req_valid_nonls, sbd_req_valid_ls;
   assign sbd_req_valid_nonls[0] = sbd_req[0].valid && (sbd_req[0].pl != LSPL) && sbd_req[0].pl_valid && 
@@ -345,16 +393,24 @@ module committer_fv_ext import super_pkg::*; (
     (rf_we2_o |-> (|sbd_req_valid_ls) ));
 
   // 
-  // Only dequeues the EX pipelines if they hold valid data
+  // Only dequeues the EX pipelines if SBD requests are valid and in order
   //
+  
+  logic [3:0] req_valid_pl_vec;
+
+  for (genvar i=0; i<4; i++) begin
+    assign req_valid_pl_vec[i] = (sbd_req[0].valid && (sbd_req[0].pl == i)) ||  
+                                 (sbd_req[0].valid && sbd_req[0].pl_valid && sbd_req[1].valid);
+  end
+
   AssertALU0Read: assert property (@(posedge clk_i) 
-    (alupl0_rdy_o |-> alupl0_valid_i));
+    (alupl0_rdy_o |-> req_valid_pl_vec[ALUPL0]));
   AssertALU1Read: assert property (@(posedge clk_i) 
-    (alupl1_rdy_o |-> alupl1_valid_i));
+    (alupl1_rdy_o |-> req_valid_pl_vec[ALUPL1]));
   AssertLSRead: assert property (@(posedge clk_i) 
-    (lspl_rdy_o |-> lspl_valid_i));
+    (lspl_rdy_o |-> req_valid_pl_vec[LSPL]));
   AssertMultRead: assert property (@(posedge clk_i) 
-    (multpl_rdy_o |-> multpl_valid_i));
+    (multpl_rdy_o |-> req_valid_pl_vec[MULTPL]));
 
 `endif
 endmodule
@@ -557,6 +613,7 @@ endmodule
 module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; (
   input  logic            clk_i,
   input  logic            rst_ni,
+  input  logic            debug_mode_i,
 
   input  logic            flush_i,
   input  logic            us_valid_i,
@@ -585,12 +642,13 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   input  logic            cmplx_lsu_req_valid_i,
   input  logic            lsu_req,
   input  logic            lsu_req_done,
+  input  lsu_req_info_t   lsu_req_info,
   input  logic            lsu_resp_valid,
   input  logic            resp_err_latched,
-  input  lsu_req_info_t   lsu_req_info
+  input  logic            lsu_err_active
 );
 
-`ifdef KUDU_FORMAL_G3
+`ifdef KUDU_FORMAL_G3_0
   //
   // handshaking and sequence
   //
@@ -702,6 +760,32 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   //
 
 `endif
+
+`ifdef KUDU_FORMAL_G3_1
+  AssumeNoDebug:    assume property (debug_mode_i == 1'b0);
+
+  //
+  // Execution-stage error handling
+  // - if an execution-time exception (CSR access or load/store error) occurs, all 
+  //   subsequent instructions will be cancelled (no CSR write, memory r/w or register
+  //   writes), until the exception handler starts execution
+  //
+
+  // this runs too long in Jasper..
+  // AssertTrapPendingAll: assert property (@(posedge clk_i) 
+  //   (trap_pending |-> (~cs_registers_i.csr_op_en_i & ~data_req_o) ));
+
+  AssertLsuTrapLatched: assert property (@(posedge clk_i) 
+    ($fell(resp_err_latched) |-> $past(flush_i,1) ));
+
+  AssertLsuTrapPending1: assert property (@(posedge clk_i) 
+    (lsu_err_active |-> (~load_store_unit_i.ls_go) ));
+  AssertLsuTrapPending2: assert property (@(posedge clk_i) 
+    (lsu_err_active |-> (~load_store_unit_i.csr_go) ));
+
+`endif
+
+
 endmodule
 
 ////////////////////////////////////////////////////////////////
@@ -933,7 +1017,16 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   input  logic           clk_i,
   input  logic           rst_ni,
   input  logic           cheri_pmode_i,
-  input  logic [31:0]    boot_addr_i
+  input  logic [31:0]    boot_addr_i,
+  input  logic           data_req_o,
+  input  logic           data_gnt_i,
+  input  logic           data_rvalid_i,
+  input  logic           data_err_i,
+  input  logic           cmt_err,
+  input  logic           cmt_flush,
+  input  logic           cmt_lspl_rdy,
+  input  logic           lspl_valid,
+  input  pl_out_t        lspl_output
 );
 
  AssumeKTopCfgCheriMode:   assume property (cheri_pmode_i == 1'b1);
@@ -988,9 +1081,17 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
     (irb_rs1_valid |-> (irb_rs1_rdata == rf_irb_rs1_val) ));
   AssertIrbRs2Rdata: assert property (@(posedge clk_i) 
     (irb_rs2_valid |-> (irb_rs2_rdata == rf_irb_rs2_val) ));
+  
+  //
+  // Error handling
+  //
+  AssertErrMustFlush0: assert property (@(posedge clk_i) 
+    ((lspl_valid & lspl_output.err & cmt_lspl_rdy) |-> ##[0:2] cmt_err ));
+
+  AssertErrMustFlush1: assert property (@(posedge clk_i) 
+    (cmt_err |-> ##[0:3] cmt_flush));
 
 `endif
-
 
 endmodule
 

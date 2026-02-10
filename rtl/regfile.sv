@@ -72,7 +72,7 @@ module regfile import super_pkg::*; import cheri_pkg::*; #(
     assign rf_reg[i] = rf_reg_q[i];         
   end
 
-`ifndef KUDU_FORMAL_L1
+`ifndef KUDU_FORMAL_RTL
   // for some reason Jasper doesn't like this syntax and assumes output as all 1s
   assign rdata2_p0_o.d0 =  rf_reg[raddr2_p0_i.a0];
   assign rdata2_p0_o.d1 =  rf_reg[raddr2_p0_i.a1];

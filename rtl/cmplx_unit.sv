@@ -6,7 +6,7 @@
 // Dual-issue instruction issuer
 //
 //  ir0 is always the 1st (earlier) instruction. Fifo logic handles switching.
-module cmplx_unit import super_pkg::*; import csr_pkg::*; # (
+module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   parameter bit          RV32A      = 1'b1
 ) (
   input  logic             clk_i,
@@ -45,9 +45,14 @@ module cmplx_unit import super_pkg::*; import csr_pkg::*; # (
 
   full_data2_t ir_full_data2_q;
   ir_dec_t     ir_dec_q;
+  full_cap_t   cs1_fcap, cs2_fcap;
 
   logic        instr_is_amo;
   logic [31:0] amo_rdata_q, amo_wdata;
+
+
+  assign cs1_fcap     = full_cap_t'(ir_full_data2_q.d0);
+  assign cs2_fcap     = full_cap_t'(ir_full_data2_q.d1);
 
   assign instr_is_amo = (ir_dec_q.insn[6:0] == OPCODE_AMO);  // LR/SC are not considered cmplx
 
@@ -60,7 +65,7 @@ module cmplx_unit import super_pkg::*; import csr_pkg::*; # (
   assign cmplx_sbd_wdata_o = '{5'h1 << 3, ir_dec_q.pc};
   assign cmplx_sbd_wr_o    = cmplx_lsu_req_valid_o & lspl_rdy_i;
 
-  assign cmplx_instr_pc_o    = ir_dec_q.pc;
+  assign cmplx_instr_pc_o  = ir_dec_q.pc;
 
   always_comb begin 
     cmplx_fsm_ns   = cmplx_fsm_cs;
@@ -143,7 +148,7 @@ module cmplx_unit import super_pkg::*; import csr_pkg::*; # (
 
   always_comb begin
     cmplx_lsu_req_info_o = NULL_LSU_REQ_INFO;
-
+    cmplx_lsu_req_info_o.is_load   = ~(cmplx_fsm_cs == AMO_WRITE);
     cmplx_lsu_req_info_o.rf_we     = ~(cmplx_fsm_cs == AMO_WRITE);
     cmplx_lsu_req_info_o.pc        = ir_dec_q.pc;
     cmplx_lsu_req_info_o.data_type = 2'b00;
@@ -152,7 +157,9 @@ module cmplx_unit import super_pkg::*; import csr_pkg::*; # (
     cmplx_lsu_req_info_o.wdata     = amo_wdata;
     cmplx_lsu_req_info_o.rs1       = ir_dec_q.rs1;
     cmplx_lsu_req_info_o.rd        = ir_dec_q.rd;
-
+    cmplx_lsu_req_info_o.cs1_fcap  = cs1_fcap;
+    cmplx_lsu_req_info_o.cs2_valid = cs2_fcap.valid;
+    cmplx_lsu_req_info_o.cs2_perms = cs2_fcap.perms;
   end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin 

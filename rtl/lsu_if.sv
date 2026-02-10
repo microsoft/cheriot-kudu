@@ -50,11 +50,17 @@ module lsu_if import super_pkg::*; import cheri_pkg::*; # (
   assign is_early_load = us_valid_i & lsu_req_dec_i.early_load;
 
   if (CHERIoTEn) begin : gen_req_check
-    logic [7:0] cheri_check_result;
+    logic [7:0] cheri_check_raw, cheri_check_result;
     always_comb begin
-      cheri_check_result = (~cheri_pmode | debug_mode_i) ? 7'h0 : 
-                           cheri_ls_check (req_dly_q.lschk_info, req_dly_q.addr,
-                                           req_dly_q.rf_we, req_dly_q.is_cap, req_dly_q.data_type);
+      cheri_check_raw = cheri_ls_check (.cs1_fcap  (req_dly_q.cs1_fcap),
+                                        .cs2_valid (req_dly_q.cs2_valid), 
+                                        .cs2_perms (req_dly_q.cs2_perms), 
+                                        .mem_addr  (req_dly_q.addr),
+                                        .is_load   (req_dly_q.is_load), 
+                                        .is_cap    (req_dly_q.is_cap), 
+                                        .data_type (req_dly_q.data_type));
+
+      cheri_check_result = (~cheri_pmode | debug_mode_i) ? 7'h0 : cheri_check_raw;
         
       req_dly_tmp                 = req_dly_q;
       req_dly_tmp.cheri_err       = cheri_check_result[0];

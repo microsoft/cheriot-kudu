@@ -48,7 +48,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   output logic                 csr_op_en_o,
   output csr_op_e              csr_op_o,
   output csr_num_e             csr_addr_o,
-  output logic [RegW-1:0]      csr_wdata_o,
+  output logic [FullW-1:0]     csr_wdata_o,
   input  logic [RegW-1:0]      csr_rdata_i,
   input  logic                 illegal_csr_insn_i,      // access to non-existent CSR,
   input  logic                 csr_mstatus_mie_i,
@@ -80,27 +80,6 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   localparam multpl_reg_t DEF_PL_REG = multpl_reg_t'(0);
 
-  function automatic full_cap_t legalize_scr (logic is_scr, logic [4:0] scr_addr, full_cap_t cs1_fcap);
-    full_cap_t result;
-    result = cs1_fcap;
-
-    if (scr_addr == CHERI_SCR_MTCC) begin
-      // MTVEC/MTCC legalization (clear tag if checking fails)
-      // note we don't reall need set_address checks here - it's only used to update temp fields
-      //   so that RTL behavior would match sail
-      result.addr    = {cs1_fcap.addr[31:2], 2'b00};
-      if ((cs1_fcap.addr[1:0] != 2'b00) || ~cs1_fcap.perms[PERM_EX] || (cs1_fcap.otype != 0))
-        result.valid = 1'b0;
-    end else if (scr_addr == CHERI_SCR_MEPCC) begin
-      // MEPCC legalization (clear tag if checking fails)
-      result.addr    = {cs1_fcap.addr[31:1], 1'b0};
-      if ((cs1_fcap.addr[0] != 1'b0) || ~cs1_fcap.perms[PERM_EX] || (cs1_fcap.otype != 0))
-        result.valid = 1'b0;
-    end
-
-    return result;
-  endfunction
-
   ir_dec_t     instr_dec;
   full_data2_t full_data2;     
   logic        ex2_valid, ex2_rdy;
@@ -126,8 +105,8 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   logic [4:0]  wb_fwd_rd;
   logic        cheri_pmode;
 
-  logic [OpW-1:0]  ex1_result,  ex2_result;
-  logic [RegW-1:0] ex1_csr_wdata;
+  logic [OpW-1:0] ex1_result,  ex2_result;
+  logic [31:0]    ex1_csr_wdata;
 
   assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
 
@@ -177,7 +156,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   assign ex1_is_csr    = instr_dec.is_csr;
   assign ex1_is_cjalr  = cheri_pmode & instr_dec.is_jalr;
-  assign ex1_csr_wdata = instr_dec.insn[14] ? instr_dec.insn[19:15] : full_data2.d0[RegW-1:0];
+  assign ex1_csr_wdata = instr_dec.insn[14] ? instr_dec.insn[19:15] : full_data2.d0[31:0];
 
   assign ex1_result    = ex1_csr_wdata; // only used by RV32 CSR instructions
 
@@ -389,9 +368,8 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   setbounds_out_t ex2_bounds;
   full_cap_t      ex2_tfcap; 
   full_cap_t      ex2_sa_fcap_in, ex2_sa_fcap_out;
-  full_cap_t      scr_wcap_legalized;
   
-  assign ex2_sa_fcap_in  = ex2_reg.flags.is_csr ? scr_wcap_legalized : ex1_tfcap_q;
+  assign ex2_sa_fcap_in  = ex1_tfcap_q;
   assign ex2_sa_fcap_out = set_address(ex2_sa_fcap_in, ex2_sa_fcap_in.addr); 
 
   // muxing the results from EX2
@@ -438,7 +416,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   assign csr_op_en_o  = ex2_valid & ex2_reg.flags.is_csr;
   assign csr_access_o = csr_op_en_o; 
-  assign csr_wdata_o  = csr_cheri ? ex2_sa_fcap_out[RegW-1:0] : ex2_reg.wdata;
+  assign csr_wdata_o  = csr_cheri ? ex2_sa_fcap_out : ex2_reg.wdata;
   assign csr_cheri    = ex2_reg.cheri_op.cscrrw;
   assign csr_cheri_o  = csr_cheri;
 
@@ -446,9 +424,6 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   assign csr_addr   = ex2_insn[31:20]; 
   assign ex2_insn   = ex2_reg.insn;
   assign csr_addr_o = csr_cheri ? csr_num_e'({7'h0, scr_addr}) : csr_num_e'(csr_addr); 
-
-  // legalize SCR write value
-  assign scr_wcap_legalized = legalize_scr(csr_cheri, scr_addr, ex1_tfcap_q);
 
   // check CHERIoT CSR/SCR access permission
   assign csr_cheri_always_ok = ~csr_cheri & (((ex2_insn[31:28] == 4'hb) || (ex2_insn[31:28] == 4'hc)) && 

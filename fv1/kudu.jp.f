@@ -1,4 +1,5 @@
 +define+CHERIoT
++define+KUDU_FORMAL_RTL
 +incdir+$rtlRoot
 $rtlRoot/cheri_pkg.sv
 $rtlRoot/csr_pkg.sv

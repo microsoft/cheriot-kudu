@@ -18,7 +18,8 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   parameter bit        RV32M      = 1'b1,
   parameter bit        RV32B      = 1'b1,
   parameter bit        RV32A      = 1'b1,
-  parameter bit        IbexCmpt   = 1'b1 
+  parameter bit        IbexCmpt   = 1'b1,
+  parameter bit        CsrUseLSU  = 1'b0 
 ) (
   input  logic         clk_i,
   input  logic         rst_ni,
@@ -52,6 +53,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   logic        cheri_clc_en;
   logic        cheri_pmode;
   logic        cheri_perm_vio, cheri_bound_vio;
+  logic        is_csr, is_csr_wr;
   logic        csr_wr, cscr_wr;
 
   assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
@@ -73,6 +75,8 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   assign rf_we_final      = IbexCmpt ? rf_we & ~illegal_reg_cheri : rf_we;
 
   assign reg_addr_mask    = IbexCmpt ?  {~cheri_pmode, 4'hf} : 5'h1f;
+  assign is_csr           = csr_insn || cheri_op.cscrrw;
+  assign is_csr_wr        = csr_wr || cscr_wr;
 
   assign ir_dec_o.rs1     = (~IbexCmpt | rf_ren_a_final) ? (rs1 & reg_addr_mask) : 0;  
   assign ir_dec_o.rs2     = (~IbexCmpt | rf_ren_b_final) ? (rs2 & reg_addr_mask) : 0;
@@ -96,7 +100,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   assign ir_dec_o.is_branch = (opcode == OPCODE_BRANCH);
   assign ir_dec_o.is_jal    = (opcode == OPCODE_JAL);
   assign ir_dec_o.is_jalr   = (opcode == OPCODE_JALR);
-  assign ir_dec_o.is_csr    = csr_insn || cheri_op.cscrrw;
+  assign ir_dec_o.is_csr    = is_csr;
   assign ir_dec_o.sysctl    = sysctl;
   assign ir_dec_o.is_cmplx  = amo_insn; 
   assign ir_dec_o.is_cheri  = (opcode == OPCODE_JAL) || (opcode == OPCODE_JALR) || (|cheri_op);
@@ -113,9 +117,11 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   assign ir_dec_o.pc_nxt  = ir_reg_i.pc + (ir_reg_i.is_comp ? 2 : 4);
 
   // this determines the "special case" path for the issuer controller state machine (ctrl_fsm)
-  assign sysctl.valid  = (csr_wr | cscr_wr | wfi_insn | ebrk_insn | ecall_insn | dret_insn | 
+  assign sysctl.valid  = ((~CsrUseLSU & is_csr) | wfi_insn | ebrk_insn | ecall_insn | dret_insn | 
                          mret_insn | cjalr_insn | fencei_insn | brkpt_match_i);
-  assign sysctl.csrw   = csr_wr || cscr_wr;
+
+  // assign sysctl.csrw   = is_csr_wr;
+  assign sysctl.csrw   = ~CsrUseLSU & is_csr;
   assign sysctl.mret   = mret_insn; 
   assign sysctl.dret   = dret_insn; 
   assign sysctl.wfi    = wfi_insn; 
@@ -451,18 +457,19 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
           // instruction to read/modify CSR
           csr_insn     = 1'b1;
           csr_wr       = ~(instr[13] && (rs1 == 0));  
-          pl_type      = PL_MULT;
+          pl_type      = CsrUseLSU ? PL_LS : PL_MULT;
           rf_ren_a     = ~instr[14];
-          rf_we        = 1'b1;
+          rf_we        = 1'b1;   // CSR instructions use rd==0 for read-only
           illegal_insn = (instr[13:12] == 2'b00);
         end
       end
 
       OPCODE_CHERI: begin
-        logic cheri_go_mult;
-        cheri_go_mult   = cheri_op.cscrrw | cheri_op.csetbounds | cheri_op.csetboundsex |
+        logic cheri_go_mult, cheri_go_ls;
+        cheri_go_ls     = CsrUseLSU & cheri_op.cscrrw; 
+        cheri_go_mult   = (~CsrUseLSU & cheri_op.cscrrw) | cheri_op.csetbounds | cheri_op.csetboundsex |
                           cheri_op.csetboundsimm | cheri_op.csetboundsrndn | cheri_op.crrl | cheri_op.cram;
-        pl_type         = cheri_go_mult ? PL_MULT : PL_ALU;   
+        pl_type         = cheri_go_ls ? PL_LS : (cheri_go_mult ? PL_MULT : PL_ALU);   
         rf_ren_a        = 1'b1;
         rf_ren_b        = (instr[14:12] == 0) && (instr[31:25] != 7'h7f) && (instr[31:25] != 7'h01);
         rf_we           = 1'b1;

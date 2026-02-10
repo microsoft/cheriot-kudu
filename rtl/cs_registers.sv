@@ -52,7 +52,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   input  logic                 csr_access_i,
   input  logic                 csr_cheri_i,
   input  csr_num_e             csr_addr_i,
-  input  logic [RegW-1:0]      csr_wdata_i,
+  input  logic [FullW-1:0]     csr_wdata_i,
   input  csr_op_e              csr_op_i,
   input                        csr_op_en_i,
   output logic [RegW-1:0]      csr_rdata_o,
@@ -253,6 +253,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   // CSR update logic
   logic [31:0]     csr_wdata32;
   logic [31:0]     csr_rdata32;
+  logic [RegW-1:0] csr_wdata_cheri;
   logic [RegW-1:0] csr_rdata_cheri;
   logic            csr_we_int;
   logic            csr_wr;
@@ -1550,7 +1551,14 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     end
   end
 
- 
+  // legalize CSR wdata values for MTTC/MVTVEC and MEPCC
+  full_cap_t scr_wfcap1, scr_wfcap2, scr_wfcap3;
+  assign scr_wfcap1  = full_cap_t'(csr_wdata_i);
+  assign scr_wfcap2  = legalize_scr(scr_addr, scr_wfcap1);
+  assign scr_wfcap3  = set_address(scr_wfcap2, scr_wfcap2.addr);
+
+  assign csr_wdata_cheri = scr_wfcap3[RegW-1:0];
+  
   //
   //  MEPC/MEPCC
   // 
@@ -1561,7 +1569,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       mepc_d  = {csr_wdata32[31:1], 1'b0};
     end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && (pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
       mepc_en = 1'b1;
-      mepc_d  = {csr_wdata_i[RegW-1:1], 1'b0};
+      mepc_d  = csr_wdata_cheri;
     end else if (CHERIoTEn & cheri_pmode_i & csr_save_cause_i & ~debug_mode_i) begin
       mepc_en = 1'b1;
       mepc_d  = pcc_exc_cap;
@@ -1599,7 +1607,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       mtvec_d  = {csr_wdata32[31:2], 2'b00};
     end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MTCC) && (pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
       mtvec_en = 1'b1;
-      mtvec_d  = {csr_wdata_i[RegW-1:2], 2'b00};
+      mtvec_d  = csr_wdata_cheri;
     end else if (CHERIoTEn & csr_mtvec_init_i) begin
       mtvec_en = 1'b1;
       mtvec_d  = mtvec_q;
@@ -1637,7 +1645,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       depc_d  = {csr_wdata32[31:1], 1'b0};
     end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && debug_mode_i) begin
       depc_en = 1'b1;
-      depc_d  = {csr_wdata_i[RegW-1:1], 1'b0};
+      depc_d  = {csr_wdata_cheri[RegW-1:1], 1'b0};
     end else if (CHERIoTEn & cheri_pmode_i & csr_save_cause_i & debug_csr_save_i) begin
       depc_en = 1'b1;
       depc_d  = pcc_exc_cap;
@@ -1654,7 +1662,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       dscratch0_d  = csr_wdata32;
     end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC0) && debug_mode_i) begin
       dscratch0_en = 1'b1;
-      dscratch0_d  = csr_wdata_i;
+      dscratch0_d  = csr_wdata_cheri;
     end else begin
       dscratch0_en = 1'b0;
       dscratch0_d  = dscratch0_q;
@@ -1665,7 +1673,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       dscratch1_d  = csr_wdata32;
     end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC1) && debug_mode_i) begin
       dscratch1_en = 1'b1;
-      dscratch1_d  = csr_wdata_i;
+      dscratch1_d  = csr_wdata_cheri;
     end else begin
       dscratch1_en = 1'b0;
       dscratch1_d  = dscratch1_q;
@@ -1777,7 +1785,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     always_comb begin
       if (csr_wr_cheri && (scr_addr == CHERI_SCR_MTDC) && (pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
         mtdc_en = 1'b1;
-        mtdc_d  = csr_wdata_i;
+        mtdc_d  = csr_wdata_cheri;
       end else begin
         mtdc_en = 1'b0;
         mtdc_d  = mtdc_q;
@@ -1785,7 +1793,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
       if (csr_wr_cheri && (scr_addr == CHERI_SCR_MSCRATCHC) && (pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
         mscratchc_en = 1'b1;
-        mscratchc_d  = csr_wdata_i;
+        mscratchc_d  = csr_wdata_cheri;
       end else begin
         mscratchc_en = 1'b0;
         mscratchc_d  = mscratchc_q;
