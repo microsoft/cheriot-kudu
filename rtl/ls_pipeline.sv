@@ -181,6 +181,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
       lsu_req_dec.cs1_fcap   = cs1_fcap;
       lsu_req_dec.cs2_valid  = cs2_fcap.valid;
       lsu_req_dec.cs2_perms  = cs2_fcap.perms;
+      lsu_req_dec.early_load = 1'b1;  // we are doing CSR access on the response side already
       // wdata is derived from cs1_fcap for csr accesses
     end else begin
       lsu_req_dec.is_load    = is_load || is_lr;

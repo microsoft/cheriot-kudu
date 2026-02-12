@@ -41,6 +41,7 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   input  logic [4:0]     ir1_pl_sel,
   input  logic [4:0]     ex_rdy,
   input  logic           pc_set_o,
+  input  logic           csr_save_cause_o,
   input  ir_dec_t        ir0_dec, 
   input  ir_dec_t        ir1_dec, 
   input  logic [31:0]    ir0_reg_rd_req, 
@@ -51,7 +52,7 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   input  logic           debug_ebreak
 );
 
-`ifdef KUDU_FORMAL_G1
+`ifdef KUDU_FORMAL_G1_0
   // we only issue actual instructions (not interrurpts or traps)
   AssertIssue0Valid: assert property (@(posedge clk_i) 
     (ir0_issued  |-> ir_valid_i[0] ));
@@ -134,7 +135,7 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
 `endif
 
-`ifdef KUDU_FORMAL_G1
+`ifdef KUDU_FORMAL_G1_1
   //
   // Interrupt handling
   //
@@ -162,14 +163,21 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   // Pending tnterrupt will be handled if there is no instruction in IR or no fetch errors
   //
   logic irq_case0, irq_case1;
+  logic irq_handled_or_disabled;
+
   assign irq_case0 = ctrl_fsm_cs[CSM_DECODE] & irq_pending_i & csr_mstatus_mie_i & ~ir_valid_i[0]; 
   assign irq_case1 = ctrl_fsm_cs[CSM_DECODE] & irq_pending_i & csr_mstatus_mie_i & ir_valid_i[0] &
-                     ~ir0_dec.any_err;
+                     ~ir0_dec.any_err &  ~ir0_dec.sysctl.valid & ~ir0_dec.is_cmplx;
+
+  assign irq_handled_or_disabled = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && 
+                                   ((special_case_q == IRQ) || (special_case_q == NULL)); 
 
   AssertIssueIRQ0: assert property (@(posedge clk_i) 
-    (irq_case0  |-> (##[1:5] ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == IRQ) ) ));
+    (irq_case0  |-> (##[1:5] irq_handled_or_disabled) ));
   AssertIssueIRQ1: assert property (@(posedge clk_i) 
-    (irq_case1  |-> (##[1:5] ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == IRQ) ) ));
+    (irq_case1  |-> (##[1:5] irq_handled_or_disabled) ));
+  AssertIssueIRQNull: assert property (@(posedge clk_i) 
+    ( (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == NULL)) |-> (~pc_set_o && ~csr_save_cause_o) ));
 
 `endif
 endmodule
@@ -214,7 +222,7 @@ module committer_fv_ext import super_pkg::*; (
   input  logic              cmt_err_q
   );
 
-`ifdef KUDU_FORMAL_G1
+`ifdef KUDU_FORMAL_G1_2
   typedef enum logic [1:0] {
     ALUPL0,
     ALUPL1,
@@ -795,6 +803,7 @@ endmodule
 module mult_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; (
   input  logic            clk_i,
   input  logic            rst_ni,
+  input  logic            cheri_pmode,
 
   input  logic            flush_i,
   input  logic            us_valid_i,
@@ -807,6 +816,7 @@ module mult_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr
   input  pl_out_t         multpl_output_o,
 
   input  ir_dec_t         instr_dec,
+  input  full_data2_t     full_data2,
   input  logic            div_sel,
   input  logic            ex2_valid,
   input  logic            wb_rdy,
@@ -848,6 +858,8 @@ module mult_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr
   // so we can check things like whether FWD and WRSV are canceled at the right time
   //
   typedef struct packed {
+    full_data2_t full_data2;
+    ir_dec_t     instr;
     logic        fwd; 
     logic [7:0]  pc; 
     logic [4:0]  rd;
@@ -863,7 +875,8 @@ module mult_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr
       case (mult_instr.state) 
         0: begin
           if (us_valid_i & multpl_rdy_o)
-            mult_instr <= '{(instr_dec.rf_we & (instr_dec.rd!=0)), instr_dec.pc, instr_dec.rd, 3'h1};
+            mult_instr <= '{full_data2, instr_dec, (instr_dec.rf_we & (instr_dec.rd!=0)), 
+                           instr_dec.pc, instr_dec.rd, 3'h1};
         end
         
         1, 2: begin   // in WB stage of MULT pipeline
@@ -892,6 +905,23 @@ module mult_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr
 
   AssertMultFwdOK1: assert property (@(posedge clk_i) 
     ((mult_instr.state == 2) |-> (mult_instr.fwd == multpl_output_o.wrsv) ));
+
+  //
+  // Check that other than CJALR
+  // We can only set the tag bit of Cd if Cs1 tag is set.
+  // 
+
+  logic cd_tag_valid, cs1_tag_valid;
+
+  assign cs1_tag_valid = mult_instr.full_data2.d0[REG_TAG];
+  assign cd_tag_valid  = (mult_instr.state == 2) && 
+                         ~(mult_instr.instr.is_jalr & cheri_pmode)  && 
+                         multpl_valid_o && multpl_output_o.we && (multpl_output_o.waddr != 0) &&
+                         multpl_output_o.wdata[REG_TAG];
+
+  AssertMultCheriTag0: assert property (@(posedge clk_i) 
+    (cd_tag_valid |-> cs1_tag_valid));
+
 
   //
   // check fwd_info and fwd_act are consistent
@@ -948,10 +978,12 @@ module alu_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; (
   // so we can check things like whether FWD and WRSV are canceled at the right time
   //
   typedef struct packed {
-    logic        fwd; 
-    logic [7:0]  pc; 
-    logic [4:0]  rd;
-    logic [2:0]  state;   // which pipelime stage the instruction is in
+    full_data2_t      full_data2;
+    ir_dec_t          instr;
+    logic             fwd; 
+    logic [7:0]       pc; 
+    logic [4:0]       rd;
+    logic [2:0]       state;   // which pipelime stage the instruction is in
   } instr_tracking_t;
 
   instr_tracking_t alu_instr;  
@@ -963,7 +995,8 @@ module alu_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; (
       case (alu_instr.state) 
         0: begin
           if (us_valid_i & alupl_rdy_o)
-            alu_instr <= '{(instr_i.rf_we & (instr_i.rd!=0)), instr_i.pc, instr_i.rd, 3'h1};
+            alu_instr <= '{full_data2_i, instr_i, (instr_i.rf_we & (instr_i.rd!=0)), 
+                           instr_i.pc, instr_i.rd, 3'h1};
         end
         1: begin   // in WB stage of ALU pipeline
           if (flush_i) begin 
@@ -989,6 +1022,22 @@ module alu_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; (
 
   AssertALUFwdOK1: assert property (@(posedge clk_i) 
     ((alu_instr.state == 1) |-> (alu_instr.fwd == alupl_output_o.wrsv) ));
+
+  //
+  // Check that other than JAL and AUIPCC (where PCC is the operand),
+  // We can only set the tag bit of Cd if Cs1 tag is set.
+  // 
+
+  logic cd_tag_valid, cs1_tag_valid;
+
+  assign cs1_tag_valid = alu_instr.full_data2.d0[REG_TAG];
+  assign cd_tag_valid  = (alu_instr.state == 1) && 
+                         ~alu_instr.instr.cheri_op.auipcc && ~alu_instr.instr.is_jal &&
+                         alupl_valid_o && alupl_output_o.we && (alupl_output_o.waddr != 0) &&
+                         alupl_output_o.wdata[REG_TAG];
+
+  AssertALUCheriTag0: assert property (@(posedge clk_i) 
+    (cd_tag_valid |-> cs1_tag_valid) );
 
   //
   // check fwd_info and fwd_act are consistent
@@ -1026,7 +1075,12 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   input  logic           cmt_flush,
   input  logic           cmt_lspl_rdy,
   input  logic           lspl_valid,
-  input  pl_out_t        lspl_output
+  input  pl_out_t        lspl_output,
+  input  logic           csr_restore_mret,
+  input  logic           csr_save_cause,                
+  input  logic           cheri_pcc_set,
+  input  logic           ex_pc_set,
+  input  logic [1:0]     sbdfifo_rd_valid
 );
 
  AssumeKTopCfgCheriMode:   assume property (cheri_pmode_i == 1'b1);
@@ -1091,6 +1145,18 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   AssertErrMustFlush1: assert property (@(posedge clk_i) 
     (cmt_err |-> ##[0:3] cmt_flush));
 
+  //
+  // Cheriot checks
+  //
+
+  // All instructions in fetch or EX stages must be flushed when PCC changes 
+  logic pcc_change;
+  assign pcc_change = csr_save_cause | csr_restore_mret | cheri_pcc_set;
+
+  AssertPccChange: assert property (@(posedge clk_i) 
+    (pcc_change |-> (((sbdfifo_rd_valid == 2'b00) || cmt_flush) && ex_pc_set) ));
+  
+  
 `endif
 
 endmodule
