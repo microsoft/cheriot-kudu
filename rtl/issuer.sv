@@ -28,6 +28,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   input  logic             ira_is0_i,
   input  logic [1:0]       ir_valid_i,
   output logic [1:0]       issuer_rdy_o,
+  output logic             ir_hold_o,
+  output logic             ir_flush_o,
                          
   // Regfile             
   input  op_data2_t        ira_op_rdata2_i,
@@ -233,6 +235,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   logic        debug_mode_q, single_step_trap_q;
   logic        debug_ebreak;
+  logic [1:0]  ir_rdy_special_q;
 
   //
   //  Dual-issue instruction dispatcher
@@ -269,7 +272,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   //      ir0 misprediction will preempt ir1 (pl_sel_enable[1]) anyway
 
   assign pl_sel_enable[1] = DualIssue & ir0_normal_issued & normal_ex_enable[1] & 
-                            ~(branch_mispredict[0] | ir0_dec.is_jalr);
+                            ~(branch_mispredict[0] | (~CHERIoTEn & ir0_dec.is_jalr));
   assign ir1_pl_sel       = select_pl(cheri_pmode, pl_sel_enable[1], ~ira_is0_i, ir1_dec.pl_type);
 
   // issued == all ex pipeline involved must be ready (jal case needs 2)
@@ -281,7 +284,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ir0_issued = ir0_normal_issued | ir0_special_issued;
   assign ir1_issued = is_issued (ir1_pl_sel, ex_rdy_for_ir1);
 
-  assign issuer_rdy_o[0] = ir0_issued;
+  assign issuer_rdy_o[0] = ir0_issued | ir_rdy_special_q[0];
 
   // issuer_rdy_o[1] really should be a don't care when branch_mispredict[0] == 1
   // since we will flush the IR regs. 
@@ -291,7 +294,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic [4:0]  ir1_sel_shadow;
   assign ir1_enable_shadow = DualIssue & ir0_normal_issued & normal_ex_enable[1]; 
   assign ir1_sel_shadow    = select_pl(cheri_pmode, ir1_enable_shadow, ~ira_is0_i, ir1_dec.pl_type);
-  assign issuer_rdy_o[1]   = is_issued(ir1_sel_shadow, ex_rdy_for_ir1);
+  assign issuer_rdy_o[1]   = is_issued(ir1_sel_shadow, ex_rdy_for_ir1) | ir_rdy_special_q[1];
  
   // choose EX pipeline inputs
   assign lspl_sel_ira_o = (ira_is0_i && (ira_dec_i.pl_type == PL_LS)) || 
@@ -471,8 +474,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic            handle_special, handle_err, handle_irq, handle_debug, handle_sysctl, handle_cmplx;
   sysctl_t         sysctl_q;
   logic [31:0]     special_pc_q, last_set_pc_q;
-  special_case_e   special_case_q;
-  logic            special_setpc_q;
+  special_case_e   special_case_comb, special_case_q;
+  logic            special_setpc_q, cjalr_spec_fetch_q;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin 
     if (!rst_ni) begin
@@ -498,7 +501,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         if (cmt_err_i) 
           ctrl_fsm_ns = 1 << CSM_CMT_FLUSH; 
         else if (handle_special)
-          ctrl_fsm_ns = 1 << CSM_WAIT_CMT0; 
+          ctrl_fsm_ns = 1 << CSM_GO_SPECIAL; 
       end
 
       ctrl_fsm_cs[CSM_CMT_FLUSH]: begin
@@ -510,13 +513,29 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
           ctrl_fsm_ns = 1 << CSM_DECODE; 
       end
 
+      ctrl_fsm_cs[CSM_GO_SPECIAL]: begin
+        if (cmt_err_i) 
+          ctrl_fsm_ns = 1 << CSM_CMT_FLUSH;
+        else 
+          ctrl_fsm_ns = 1 << CSM_WAIT_CMT0;  
+      end
+
       ctrl_fsm_cs[CSM_WAIT_CMT0]: begin
         // Defer processing issuer-side special cases till
         //  - all previously issued instruction are commited
         //  - and operands are ready if the special case is caused by an instruction.
-        //  - all outstanding trvk requests are completed
         //  Processing specail cases may require changing CSR context which may impact those pending 
         //  instructions if they are not completed first.
+        if (cmt_err_i) 
+          ctrl_fsm_ns = 1 << CSM_CMT_FLUSH;
+        else if (~sbdfifo_rd_valid_i[0] & ~ir_hazard[0] && (special_case_comb == ICJALR))
+          ctrl_fsm_ns = 1 << CSM_ISSUE_SPECIAL;  
+        else if (~sbdfifo_rd_valid_i[0])
+          ctrl_fsm_ns = 1 << CSM_WAIT_CMT1;  
+      end
+
+      ctrl_fsm_cs[CSM_WAIT_CMT1]: begin
+        //  - extra wait: all outstanding trvk requests are completed
         if (cmt_err_i) 
           ctrl_fsm_ns = 1 << CSM_CMT_FLUSH;
         else if (~sbdfifo_rd_valid_i[0] & ~trvk_outstanding_i)
@@ -524,17 +543,17 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       end
 
       ctrl_fsm_cs[CSM_ISSUE_SPECIAL]: begin 
-        if ((special_case_q == SYSCTL) && (sysctl_q.csrw | sysctl_q.cjalr))
-          ctrl_fsm_ns = 1 << CSM_WAIT_CMT1;
+        if (special_case_q == ICJALR)
+          ctrl_fsm_ns = 1 << CSM_DECODE;
         else if ((special_case_q == SYSCTL) && sysctl_q.wfi) 
           ctrl_fsm_ns = 1 << CSM_SLEEP;
         else if  (special_case_q == CMPLX)
           ctrl_fsm_ns = 1 << CSM_WAIT_CMPLX;  
         else 
-          ctrl_fsm_ns = 1 << CSM_DECODE;
+          ctrl_fsm_ns = 1 << CSM_WAIT_FINAL;
       end
 
-      ctrl_fsm_cs[CSM_WAIT_CMT1]: begin
+      ctrl_fsm_cs[CSM_WAIT_FINAL]: begin
         if (cmt_err_i) 
           ctrl_fsm_ns = 1 << CSM_CMT_FLUSH;
         else if (~sbdfifo_rd_valid_i[0] & ~trvk_outstanding_i)
@@ -545,7 +564,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         if (cmt_err_i) 
           ctrl_fsm_ns = 1 << CSM_CMT_FLUSH;
         else if (cmplx_instr_done_i) 
-          ctrl_fsm_ns = 1 << CSM_WAIT_CMT1;
+          ctrl_fsm_ns = 1 << CSM_WAIT_FINAL;
       end
 
       ctrl_fsm_cs[CSM_SLEEP]: begin
@@ -560,7 +579,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   end
 
   //
-  // PC set logic
+  // IF/IR control logic
   //
   assign branch_mispredict = branch_info_i.mispredict_taken | branch_info_i.mispredict_not_taken;
 
@@ -569,27 +588,36 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     unique case (1'b1)
       ctrl_fsm_cs[CSM_BOOT_SET] : begin
         pc_set_o    = 1'b1;
-        pc_target_o = { boot_addr_i[31:8], 8'h80 };
+        // pc_target_o = { boot_addr_i[31:8], 8'h80 };
+        pc_target_o = special_pc_q;
+        ir_hold_o   = 1'b0;
+        ir_flush_o  = 1'b0;
       end 
       ctrl_fsm_cs[CSM_DECODE] : begin
-        if (ir0_dec.is_jalr & ir0_issued)
+        if (~CHERIoTEn & ir0_dec.is_jalr & ir0_issued) begin
           pc_set_o    = 1'b1;
-        else if (branch_mispredict[0] && ir0_issued)
+          ir_flush_o  = 1'b1;
+        end else if (branch_mispredict[0] && ir0_issued) begin 
           pc_set_o    = 1'b1;
-        else if (ir1_dec.is_jalr & ir1_issued)
+          ir_flush_o  = 1'b1;
+        end else if (~CHERIoTEn & ir1_dec.is_jalr & ir1_issued) begin
           pc_set_o    = 1'b1;
-        else if (branch_mispredict[1] && ir1_issued) 
+          ir_flush_o  = 1'b1;
+        end else if (branch_mispredict[1] && ir1_issued) begin
           pc_set_o    = 1'b1;
-        else 
+          ir_flush_o  = 1'b1;
+        end else begin
           pc_set_o    = 1'b0;
+          ir_flush_o  = 1'b0;
+        end
 
-        if (~cheri_pmode & ir0_dec.is_jalr)
+        if (~CHERIoTEn & ir0_dec.is_jalr)
           pc_target_o = ir0_jalr_target_i;
         else if (branch_info_i.mispredict_taken[0])
           pc_target_o = ir0_dec.btarget;
         else if (branch_info_i.mispredict_not_taken[0])
           pc_target_o = ir0_dec.pc_nxt;
-        else if (ir1_dec.is_jalr)
+        else if (~CHERIoTEn & ir1_dec.is_jalr)
           pc_target_o = ir1_jalr_target_i;
         else if (branch_info_i.mispredict_taken[1])
           pc_target_o = ir1_dec.btarget;
@@ -597,22 +625,41 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
           pc_target_o = ir1_dec.pc_nxt;
         else
           pc_target_o = ir0_dec.btarget;
+
+        ir_hold_o   = 1'b0;
       end
       ctrl_fsm_cs[CSM_CMT_FLUSH] : begin
         pc_set_o    = 1'b1;
         pc_target_o = special_pc_q;
+        ir_hold_o   = 1'b0;
+        ir_flush_o  = 1'b1;
+      end
+      ctrl_fsm_cs[CSM_GO_SPECIAL]: begin
+        pc_set_o    = cjalr_spec_fetch_q;   // speculative fetch for CJALR
+        pc_target_o = special_pc_q;
+        ir_hold_o   = 1'b1;                 // hold stage_fifo while flushing the earlier stages
+        ir_flush_o  = 1'b0;
+      end
+      ctrl_fsm_cs[CSM_WAIT_CMT0], ctrl_fsm_cs[CSM_WAIT_CMT1]: begin
+        pc_set_o    = 1'b0;
+        pc_target_o = special_pc_q;
+        ir_hold_o   = 1'b1;
+        ir_flush_o  = 1'b0;
       end
       ctrl_fsm_cs[CSM_ISSUE_SPECIAL] :  begin
-        pc_set_o     = special_setpc_q;
-        pc_target_o  = special_pc_q;
+        pc_set_o    = special_setpc_q;      
+        pc_target_o = special_pc_q;
+        ir_hold_o   = 1'b0;
+        ir_flush_o  = special_setpc_q;       
       end
       default : begin
-        pc_set_o = 1'b0;
+        pc_set_o    = 1'b0;
         pc_target_o = { boot_addr_i[31:8], 8'h80 };
+        ir_hold_o   = 1'b0;
+        ir_flush_o  = 1'b0;
       end
     endcase
 
-    // if (ctrl_fsm_cs[CSM_BOOT_SET] || ctrl_fsm_cs[CSM_DECODE])
     if (~ctrl_fsm_cs[CSM_RESET] && ~ctrl_fsm_cs[CSM_SLEEP])
       fetch_req_o = 1'b1;
     else
@@ -657,8 +704,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
                                ~(handle_special | cmt_err_i | debug_single_step_i) & 
                                ~(ir_any_err[1] | ir_sysctl[1] | ir_cmplx[1] | ir1_dec.is_brkpt);
 
-  assign ir0_special_issued = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & 
-                              ((special_case_q == SYSCTL) || (special_case_q == CMPLX));
+  assign ir0_special_issued = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] &  ((special_case_q == SYSCTL) || 
+                              (special_case_q == ICJALR) || (special_case_q == CMPLX));
 
   assign debug_mode_o = debug_mode_q;
 
@@ -673,16 +720,35 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
                         priv_mode_i == PRIV_LVL_U ? debug_ebreaku_i : 1'b0;
 
   // special case action (PC, save cause, etc)
-  // decision is made at ISSUE_SPICAL (after WAIT_CMT0))
+  // decision is made at after WAIT_CMT0 (previous instructions committed)
   // - settle error conditions from the committer side first
-  // - csr values won't be settled till CMT0 completes, so special_pc_q can't resolve till then.
+  // - settle csr values (MIE, mtvec, etc)
   // - requiring all special conditions including handle_irq and debug_req to hold till CMT0 wait done
   //
-  // - corner case: if a complx instruction is erred, we allow set_pc_q to be sampled again before CSM_ISSUE_SPECIAL
-  logic [1:0] sample_special_case;
- 
-  assign sample_special_case[0] = ctrl_fsm_ns[CSM_CMT_FLUSH];  
-  assign sample_special_case[1] = ctrl_fsm_ns[CSM_ISSUE_SPECIAL];
+  
+  logic ir0_sysctl_setpc;
+  assign ir0_sysctl_setpc = (ir0_dec.sysctl.ebrk | ir0_dec.sysctl.ecall | ir0_dec.sysctl.mret | 
+                             ir0_dec.sysctl.dret | ir0_dec.sysctl.cjalr | ir0_dec.sysctl.fencei);
+
+  always_comb begin
+    if (cmt_err_i) 
+      special_case_comb = EXEC;
+    else if (handle_debug | (ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.sysctl.ebrk & debug_ebreak))
+      special_case_comb = DEBUG;
+    else if (ir_valid_i[0] & (ir_any_err[0] | (ir0_dec.sysctl.cjalr & (|ir0_cjalr_err_i)) |
+                              (ir0_dec.sysctl.dret & ~debug_mode_q)) )  
+      special_case_comb = EXEC;
+    else if (handle_irq)
+      special_case_comb = IRQ;
+    else if (handle_sysctl & ir0_dec.sysctl.cjalr)
+      special_case_comb = ICJALR;
+    else if (handle_sysctl)
+      special_case_comb = SYSCTL;
+    else if (handle_cmplx)
+      special_case_comb = CMPLX;
+    else 
+      special_case_comb = NULL;
+  end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (~rst_ni) begin
@@ -690,56 +756,77 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       special_case_q      <= NULL;
       special_setpc_q     <= 1'b0;
       special_pc_q        <= RegW'(0);
-      last_set_pc_q       <= 32'h0; 
     end else begin
-      if (sample_special_case[0]) begin
+      if (ctrl_fsm_ns[CSM_BOOT_SET]) begin
+         special_pc_q <= { boot_addr_i[31:8], 8'h80 };
+      end else if (ctrl_fsm_ns[CSM_CMT_FLUSH]) begin
         special_case_q  <= EXEC;
         special_setpc_q <= 1'b1;  // really don't care in this case
         special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};
-      end else if (sample_special_case[1] & 
-                   (handle_debug | (ir_valid_i[0] & ir0_dec.sysctl.ebrk & debug_ebreak))) begin
-        special_case_q  <= DEBUG; // debug timing is "before" execution, so takes priority
-        special_setpc_q <= 1'b1;
-        sysctl_q        <= ir0_dec.sysctl;
-        special_pc_q    <= DmHaltAddr; 
-      end else if (sample_special_case[1]  & ir_valid_i[0] &
-                  (ir_any_err[0] | (ir0_dec.sysctl.cjalr & (|ir0_cjalr_err_i)) |
-                   (ir0_dec.sysctl.dret & ~debug_mode_q) )) begin
-        special_case_q  <= EXEC;
-        special_setpc_q <= 1'b1;
-        sysctl_q        <= ir0_dec.sysctl;
-        special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};
-      end else if (sample_special_case[1] & handle_irq) begin
-        special_case_q  <= IRQ;
-        special_setpc_q <= 1'b1;
-        sysctl_q        <= ir0_dec.sysctl;
-        special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};    // only support single-vector IRQ for now
-      end else if (sample_special_case[1] & handle_sysctl) begin
-        // wait till oprands are ready for sysctl instructions (especially cjalr)
-        // till its operands are resolved to compute target PC
-        special_case_q  <= SYSCTL;
-        special_setpc_q <= (ir0_dec.sysctl.ebrk | ir0_dec.sysctl.ecall | ir0_dec.sysctl.mret | 
-                            ir0_dec.sysctl.dret | ir0_dec.sysctl.cjalr | ir0_dec.sysctl.fencei);
-        sysctl_q        <= ir0_dec.sysctl;
-        unique case (1'b1)
-          ir0_dec.sysctl.ebrk:   special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
-          ir0_dec.sysctl.ecall:  special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
-          ir0_dec.sysctl.mret:   special_pc_q <= csr_mepc_i;
-          ir0_dec.sysctl.cjalr:  special_pc_q <= ir0_jalr_target_i;
-          ir0_dec.sysctl.dret:   special_pc_q <= csr_depc_i;
-          ir0_dec.sysctl.fencei: special_pc_q <= ir0_dec.pc_nxt;
-          default:;
+      end else if (ctrl_fsm_ns[CSM_GO_SPECIAL]) begin
+        special_pc_q <=  ir0_jalr_target_i;
+      end else if (ctrl_fsm_cs[CSM_WAIT_CMT0] & ~ctrl_fsm_ns[CSM_WAIT_CMT0]) begin
+        case (special_case_comb) 
+          DEBUG: begin
+            special_case_q  <= DEBUG; // debug timing is "before" execution, so takes priority
+            special_setpc_q <= 1'b1;
+            sysctl_q        <= ir0_dec.sysctl;
+            special_pc_q    <= DmHaltAddr; 
+          end
+          EXEC: begin
+            special_case_q  <= EXEC;
+            special_setpc_q <= 1'b1;
+            sysctl_q        <= ir0_dec.sysctl;
+            special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};
+          end
+          IRQ: begin
+            special_case_q  <= IRQ;
+            special_setpc_q <= 1'b1;
+            sysctl_q        <= ir0_dec.sysctl;
+            special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};    // only support single-vector IRQ for now
+          end
+          ICJALR: begin
+            special_case_q  <= ICJALR;
+            special_setpc_q <= ~cjalr_spec_fetch_q;   // if CJALR and previously fetched, don't set_pc
+            sysctl_q        <= ir0_dec.sysctl;   // don't care
+            special_pc_q    <= ir0_jalr_target_i;
+          end
+          SYSCTL: begin
+            special_case_q  <= SYSCTL;
+            special_setpc_q <= ir0_sysctl_setpc;
+            sysctl_q        <= ir0_dec.sysctl;
+            unique case (1'b1)
+              ir0_dec.sysctl.ebrk:   special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
+              ir0_dec.sysctl.ecall:  special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
+              ir0_dec.sysctl.mret:   special_pc_q <= csr_mepc_i;
+              ir0_dec.sysctl.dret:   special_pc_q <= csr_depc_i;
+              ir0_dec.sysctl.fencei: special_pc_q <= ir0_dec.pc_nxt;
+              default:;
+            endcase
+          end
+          CMPLX: begin
+            special_case_q  <= CMPLX;
+            special_setpc_q <= 1'b0;             // AMO only for now
+            sysctl_q        <= ir0_dec.sysctl;   // don't care
+            special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};
+          end
+          NULL: begin    
+            special_case_q  <= NULL;
+            special_setpc_q <= 1'b0;
+          end
+          default: ;
         endcase
-      end else if (sample_special_case[1] & handle_cmplx) begin
-        special_case_q  <= CMPLX;
-        special_setpc_q <= 1'b0;             // AMO only for now
-        sysctl_q        <= ir0_dec.sysctl;   // don't care
-        special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};    
-      end else if (sample_special_case[1]) begin
-        special_case_q  <= NULL;
-        special_setpc_q <= 1'b0;
       end
 
+    end   // posedge clk
+  end
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (~rst_ni) begin
+      last_set_pc_q       <= 32'h0; 
+      cjalr_spec_fetch_q  <= 1'b0;
+      ir_rdy_special_q    <= 2'b00;
+    end else begin
       // if there is IRQ when current IR.pc is not valid (b/c pc_set causing the IR/IF to be flushed),
       // use the last pc_set target value as the return address from ISR
       if (ctrl_fsm_cs[CSM_BOOT_SET])
@@ -747,9 +834,26 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       else if (pc_set_o)
         last_set_pc_q <= pc_target_o;
 
-    end   // posedge clk
-  end
+      // if no hazard (operands resolved), CJALR takes a speculative fetch before issued
+      if (ctrl_fsm_ns[CSM_GO_SPECIAL] & ~ir_hazard[0] && (special_case_comb == ICJALR))
+        cjalr_spec_fetch_q <= 1'b1;
+      else if (ctrl_fsm_ns[CSM_GO_SPECIAL]) 
+        cjalr_spec_fetch_q <= 1'b0;
 
+      // CMPLX is a single instruction, IR1 is still valid, don't dequeue
+      // some sysctl are the same way
+      // all other special cases will require a IR flush or discard IR1
+      if (ctrl_fsm_ns[CSM_ISSUE_SPECIAL] && (special_case_comb == CMPLX))
+        ir_rdy_special_q <= 2'b01;
+      else if (ctrl_fsm_ns[CSM_ISSUE_SPECIAL] && (special_case_comb == SYSCTL) && ~ir0_sysctl_setpc)
+        ir_rdy_special_q <= 2'b01;
+      else if (ctrl_fsm_ns[CSM_ISSUE_SPECIAL] && ((special_case_comb == SYSCTL) || (special_case_comb == ICJALR)))
+        ir_rdy_special_q <= ir_valid_i;
+      else 
+        ir_rdy_special_q <= 2'b00;
+    end
+  end
+  
   // debug mode & single-stepping control
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -757,7 +861,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       debug_mode_q       <= 1'b0;
       single_step_trap_q <= 1'b0;
     end else begin
-      if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & handle_debug)
+      if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == DEBUG))
         debug_mode_q <= 1'b1;
       else if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == SYSCTL) & sysctl_q.dret)
         debug_mode_q <= 1'b0;
@@ -919,6 +1023,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic        pc_set_trap_event;
   logic        ir0_trap_event;
   logic        ir0_amo_issued;
+  logic        ir0_cjalr_issued;
 
   function automatic ctrl_fsm_e ctrl_fsm_dec(logic[15:0] ctrl_fsm);
     ctrl_fsm_e result;
@@ -958,6 +1063,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ir0_trap_event = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && (special_case_q == EXEC);
   assign ir0_amo_issued = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && (special_case_q == CMPLX) &&
                           (ir0_dec.insn[6:0] == OPCODE_AMO);
+  assign ir0_cjalr_issued = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && (special_case_q == ICJALR);
   
   // ir1 ready to be issued otherwise, but blocked by ir0
   assign ir1_pl_sel_enable_ooo = DualIssue & ~branch_mispredict[0] & normal_ex_enable[1]; 

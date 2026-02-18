@@ -127,6 +127,7 @@ module kudu_top import super_pkg::*;  #(
   logic [1:0]     ir_valid;
   logic [1:0]     if_rdy;
   ir_dec_t        ira_dec, irb_dec;
+  logic           ex_ir_flush, ex_ir_hold;
                   
   logic [1:0]     issuer_rdy;
   logic           alupl0_rdy;
@@ -310,7 +311,9 @@ module kudu_top import super_pkg::*;  #(
     .rf_waddr2_i        (rf_waddr2       ),
     .rf_wdata2_i        (rf_wdata2       ),
     .rf_we2_i           (rf_we2          ),   
-    .ir_flush_i         (ex_pc_set       ),
+    .ir_flush_i         (ex_ir_flush     ),
+    .ir_flush_s0_i      (ex_pc_set       ),
+    .ir_hold_i          (ex_ir_hold      ),
     .ds_rdy_i           (issuer_rdy      ),
     .ir_valid_o         (ir_valid        ),
     .ira_is0_o          (ira_is0         ),
@@ -343,6 +346,8 @@ module kudu_top import super_pkg::*;  #(
     .ira_is0_i                 (ira_is0                 ),
     .ir_valid_i                (ir_valid                ),
     .issuer_rdy_o              (issuer_rdy              ),
+    .ir_flush_o                (ex_ir_flush             ),
+    .ir_hold_o                 (ex_ir_hold              ),
     .ira_op_rdata2_i           (ira_op_rdata2           ),
     .irb_op_rdata2_i           (irb_op_rdata2           ),
     .alupl0_rdy_i              (alupl0_rdy              ),

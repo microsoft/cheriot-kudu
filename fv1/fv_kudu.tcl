@@ -19,10 +19,10 @@ proc run_all {} {
   redirect -file jp_out.log -force  {run_fv  "+define+KUDU_FORMAL_G0"}
   redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G1_0"}
   redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G1_1"}
-  redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G1_2"}
   redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G2"}
-  redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G3_0"}
-  redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G3_1"}
-  redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G4"}
+  redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G3"}
+  redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G4_0"}
+  redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G4_1"}
   redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G5"}
+  redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G6"}
 }

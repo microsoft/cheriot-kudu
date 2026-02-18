@@ -180,7 +180,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
         rf_ren_a      = 1'b1;
         rf_we         = 1'b1;
         illegal_insn  = (instr[14:12] != 3'b0);
-        cjalr_insn    = cheri_pmode;
+        cjalr_insn    = CHERIoTEn;
       end
 
       OPCODE_BRANCH: begin // Branch

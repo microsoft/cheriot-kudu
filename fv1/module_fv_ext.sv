@@ -41,6 +41,8 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   input  logic [4:0]     ir1_pl_sel,
   input  logic [4:0]     ex_rdy,
   input  logic           pc_set_o,
+  input  logic           ir_flush_o,
+  input  logic           ir_hold_o,
   input  logic           csr_save_cause_o,
   input  ir_dec_t        ir0_dec, 
   input  ir_dec_t        ir1_dec, 
@@ -68,9 +70,16 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     (ir1_issued |-> (ir0_issued && ~handle_special && ctrl_fsm_cs[CSM_DECODE]
                     && ~branch_mispredict[0]) ));
 
-  // if pc_set (from ir0 misprediction, etc), issuer_rdy_o[1] is a don't care
+  // if pc_set & ir_flush (from ir0 misprediction, etc), issuer_rdy_o[1] is a don't care
   AssertDequeueIR1: assert property (@(posedge clk_i) 
-    (issuer_rdy_o[1] |-> (ir1_issued | pc_set_o) ));
+    (issuer_rdy_o[1] |-> (ctrl_fsm_cs[CSM_DECODE] | ctrl_fsm_cs[CSM_CMT_FLUSH] | ctrl_fsm_cs[CSM_ISSUE_SPECIAL]) ));
+
+  AssertDequeueIR1Normal: assert property (@(posedge clk_i) 
+    ((issuer_rdy_o[1] & ctrl_fsm_cs[CSM_DECODE]) |-> (ir1_issued | (pc_set_o & ir_flush_o)) ));
+
+  AssertDequeueIR1Special: assert property (@(posedge clk_i) 
+    ((issuer_rdy_o[1] & ~ir_flush_o & ctrl_fsm_cs[CSM_ISSUE_SPECIAL]) |-> 
+     (ir_valid_i[1] & (special_case_q == ICJALR)) ));
 
   // IR1 is only issued if no RAW or WAW hazard with IR0
   AssertIR1Hazard0: assert property (@(posedge clk_i) 
@@ -128,10 +137,33 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   // hold the IR registers while waiting for cmt fifo to clear
   AssertIssueSpecialWait0: assert property (@(posedge clk_i) 
-    (ctrl_fsm_cs[CSM_WAIT_CMT0]  |-> ((issuer_rdy_o == 2'b00) && ~pc_set_o) ));
+    (ctrl_fsm_cs[CSM_GO_SPECIAL]  |-> ((issuer_rdy_o == 2'b00) && ir_hold_o) ));
+
+  AssertIssueSpecialWait1: assert property (@(posedge clk_i) 
+    ((ctrl_fsm_cs[CSM_WAIT_CMT0] | ctrl_fsm_cs[CSM_WAIT_CMT1]) |-> 
+    ((issuer_rdy_o == 2'b00) && ir_hold_o && ~pc_set_o) ));
 
   AssertIssueSpecial0: assert property (@(posedge clk_i) 
     (ir0_issued_special  |-> issuer_rdy_o[0]  ));
+
+  AssertIssueSpecial1: assert property (@(posedge clk_i) 
+    (ir0_issued_special  |-> ((special_case_q == ICJALR)||(special_case_q == SYSCTL)||(special_case_q == CMPLX)) ));
+
+  logic [1:0] pc_set_cnt;
+  always @(posedge clk_i, negedge rst_ni) begin
+    if (~rst_ni) begin
+      pc_set_cnt <= 0;
+    end else begin
+      if (ctrl_fsm_cs[CSM_DECODE] || ctrl_fsm_cs[CSM_CMT_FLUSH])
+        pc_set_cnt <= 0;
+      else if (pc_set_o)
+        pc_set_cnt <= pc_set_cnt + 1;
+    end
+  end
+
+  // if CJALR did the speculative pc_set earlier then it can't do pc_set again at issue-time
+  AssertPCSetCJALR: assert property (@(posedge clk_i) ((special_case_q == ICJALR) |-> (pc_set_cnt <= 1)));
+
 
 `endif
 
@@ -148,12 +180,12 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     (ir0_cjalr_err_i == 3'b000));
   // if ir_valid becomes 1 while in wait_cmt0, we may still go to EXEC
   AssumeNoNewInstr: assume property (@(posedge clk_i) 
-    ((ctrl_fsm_cs[CSM_WAIT_CMT0]) |-> ($stable (ir_valid_i) && $stable(ir0_dec)) ));
+    ((ctrl_fsm_cs[CSM_WAIT_CMT0] | ctrl_fsm_cs[CSM_GO_SPECIAL]) |-> ($stable (ir_valid_i) && $stable(ir0_dec)) ));
 
   // note in KUDU, impossible for csr_mstatus_mie_i to change while in DECODE or WAIT_CMT0, since
   // the CSR operations are treated as "special"
   AssumeIRQStable: assume property (@(posedge clk_i) 
-    ((ctrl_fsm_cs[CSM_WAIT_CMT0]) |-> $stable (irq_pending_i) ));
+    ((ctrl_fsm_cs[CSM_WAIT_CMT0] | ctrl_fsm_cs[CSM_GO_SPECIAL])  |-> $stable (irq_pending_i) ));
 
   AssumeSBDEmpty: assume property (@(posedge clk_i) 
     ((ctrl_fsm_cs[CSM_DECODE] & handle_special) |-> 
@@ -178,6 +210,8 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     (irq_case1  |-> (##[1:5] irq_handled_or_disabled) ));
   AssertIssueIRQNull: assert property (@(posedge clk_i) 
     ( (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == NULL)) |-> (~pc_set_o && ~csr_save_cause_o) ));
+
+
 
 `endif
 endmodule
@@ -222,7 +256,7 @@ module committer_fv_ext import super_pkg::*; (
   input  logic              cmt_err_q
   );
 
-`ifdef KUDU_FORMAL_G1_2
+`ifdef KUDU_FORMAL_G2
   typedef enum logic [1:0] {
     ALUPL0,
     ALUPL1,
@@ -452,7 +486,7 @@ module prefetch_fv_ext import super_pkg::*; (
   input  logic        instr_rvalid_i
 );
 
-`ifdef KUDU_FORMAL_G2
+`ifdef KUDU_FORMAL_G3
   //
   // Memory interface I/O assumptions
   //
@@ -656,7 +690,7 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   input  logic            lsu_err_active
 );
 
-`ifdef KUDU_FORMAL_G3_0
+`ifdef KUDU_FORMAL_G4_0
   //
   // handshaking and sequence
   //
@@ -769,7 +803,7 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
 
 `endif
 
-`ifdef KUDU_FORMAL_G3_1
+`ifdef KUDU_FORMAL_G4_1
   AssumeNoDebug:    assume property (debug_mode_i == 1'b0);
 
   //
@@ -823,7 +857,7 @@ module mult_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr
   input  logic            wb_valid
 );
 
-`ifdef KUDU_FORMAL_G4
+`ifdef KUDU_FORMAL_G5
 
   //
   // Pipelines shoudl work like FIFO's (guaratee ordering)
@@ -971,7 +1005,7 @@ module alu_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; (
   input  logic                 wb_valid
 );
 
-`ifdef KUDU_FORMAL_G5
+`ifdef KUDU_FORMAL_G6
 
   //
   // this models the life cycle of a single instruction as it is passed through pipeline stages
@@ -1149,12 +1183,18 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   // Cheriot checks
   //
 
-  // All instructions in fetch or EX stages must be flushed when PCC changes 
-  logic pcc_change;
-  assign pcc_change = csr_save_cause | csr_restore_mret | cheri_pcc_set;
+  // All instructions in EX stages must be flushed when PCC changes 
+  logic pcc_change_all, pcc_change_cjalr, pcc_change_other;
+  assign pcc_change_all   = csr_save_cause | csr_restore_mret | cheri_pcc_set;
+  assign pcc_change_cjalr = cheri_pcc_set;
+  assign pcc_change_other = csr_save_cause | csr_restore_mret;
 
-  AssertPccChange: assert property (@(posedge clk_i) 
-    (pcc_change |-> (((sbdfifo_rd_valid == 2'b00) || cmt_flush) && ex_pc_set) ));
+  AssertPccChange0: assert property (@(posedge clk_i) 
+    (pcc_change_all |-> ((sbdfifo_rd_valid == 2'b00) || cmt_flush) ));
+  AssertPccChange1: assert property (@(posedge clk_i) 
+    (pcc_change_cjalr |-> (sbdfifo_rd_valid == 2'b00)));
+  AssertPccChange2: assert property (@(posedge clk_i) 
+    (pcc_change_other |-> (((sbdfifo_rd_valid == 2'b00) || cmt_flush) & ex_pc_set) ));
   
   
 `endif

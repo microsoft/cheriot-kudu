@@ -49,7 +49,9 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   input  logic             rf_we2_i,    
 
   // Issuer interface
-  input  logic             ir_flush_i,
+  input  logic             ir_flush_i,       // flush both s0 and s1 FIFOs
+  input  logic             ir_flush_s0_i,    // only flush s0 FIFO (dual_fifo if not bypassed)
+  input  logic             ir_hold_i,
   input  logic  [1:0]      ds_rdy_i,
   output logic [1:0]       ir_valid_o,
   output logic             ira_is0_o,
@@ -215,12 +217,16 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   rf_raddr2_t  ira_raddr2_q, irb_raddr2_q;
 
   logic [1:0]  brkpt_match;
+  logic        flush_s0;
+
+  assign       flush_s0 = ir_flush_i | ir_flush_s0_i;
 
   if (StageBypass[1]) begin : gen_stage0_direct
     stage_fifo # (.Width(irRegW), .PeekMem(1)) s0_fifo (
       .clk_i      (clk_i),
       .rst_ni     (rst_ni),
       .flush_i    (ir_flush_i),
+      .wr_hold_i  (ir_hold_i),
       .wr_valid_i (us_valid_i),
       .wr_data0_i (us_instr0_i),  
       .wr_data1_i (us_instr1_i), 
@@ -251,17 +257,17 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
       .PplRead(1'b1), 
       .WrThrough(StageBypass[0])
     ) s0_fifo (
-      .clk_i      (clk_i),
-      .rst_ni     (rst_ni),
-      .flush_i    (ir_flush_i),
-      .wr_valid_i (us_valid_i),
-      .wr_data0_i (us_instr0_i),  
-      .wr_data1_i (us_instr1_i), 
-      .wr_rdy_o   (ir_rdy_o), 
-      .rd_rdy_i   (s0_rd_rdy),
-      .rd_valid_o (s0_rd_valid),
-      .rd_data0_o (s0_rdata0),
-      .rd_data1_o (s0_rdata1)
+      .clk_i       (clk_i),
+      .rst_ni      (rst_ni),
+      .flush_i     (flush_s0),
+      .wr_valid_i  (us_valid_i),
+      .wr_data0_i  (us_instr0_i),  
+      .wr_data1_i  (us_instr1_i), 
+      .wr_rdy_o    (ir_rdy_o), 
+      .rd_rdy_i    (s0_rd_rdy),
+      .rd_valid_o  (s0_rd_valid),
+      .rd_data0_o  (s0_rdata0),
+      .rd_data1_o  (s0_rdata1)
     );
   end
 
@@ -401,6 +407,7 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
       .clk_i      (clk_i),
       .rst_ni     (rst_ni),
       .flush_i    (ir_flush_i),
+      .wr_hold_i  (ir_hold_i),
       .wr_valid_i (s1_wr_valid),
       .wr_data0_i (dec_out0),  
       .wr_data1_i (dec_out1), 

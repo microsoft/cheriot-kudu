@@ -27,6 +27,7 @@ module stage_fifo # (
   input  logic              rst_ni,
 
   input  logic              flush_i,
+  input  logic              wr_hold_i,
 
   input  logic [1:0]        wr_valid_i,
   input  logic [Width-1:0]  wr_data0_i,    // 1st sequential data input
@@ -62,11 +63,12 @@ module stage_fifo # (
 
   logic [Width-1:0] fifo_mem[2];
 
-  logic [1:0] wr_rdy, rd_valid;
+  logic [1:0] wr_rdy, wr_valid, rd_valid;
   logic [1:0] wr_data_en;
 
   // I/O assigments
-  assign wr_rdy_o   = wr_rdy;
+  assign wr_valid   = wr_valid_i & {2{~wr_hold_i}};
+  assign wr_rdy_o   = wr_rdy & {2{~wr_hold_i}};
   assign rd_valid_o = rd_valid;
   assign wr_ptr_o   = wr_ptr_q;
 
@@ -85,10 +87,10 @@ module stage_fifo # (
   assign read2    = (rd_rdy_i == 2'b11);
   assign read1or2 = rd_rdy_i[0];
 
-  assign write0    = (wr_valid_i == 2'b00);
-  assign write1    = (wr_valid_i == 2'b01);
-  assign write2    = (wr_valid_i == 2'b11);
-  assign write1or2 = wr_valid_i[0];
+  assign write0    = (wr_valid == 2'b00);
+  assign write1    = (wr_valid == 2'b01);
+  assign write2    = (wr_valid == 2'b11);
+  assign write1or2 = wr_valid[0];
 
   assign have0    = ~full_stat_q & (wr_ptr_q == rd_ptr_q);
   assign have1    = (wr_ptr_q != rd_ptr_q);
@@ -192,7 +194,7 @@ module stage_fifo # (
   logic [Width-1:0]   ref_wr_data0, ref_wr_data1; 
   logic [Width-1:0]   ref_rd_data0, ref_rd_data1; 
 
-  assign wr_num = (wr_rdy_o[1] & wr_valid_i[1]) + (wr_rdy_o[0] & wr_valid_i[0]);
+  assign wr_num = (wr_rdy_o[1] & wr_valid[1]) + (wr_rdy_o[0] & wr_valid[0]);
   assign rd_num = (rd_rdy_i[0] & rd_valid_o[0]) + (rd_rdy_i[1] & rd_valid_o[1]);
 
   assign ref_wr_data0 = (wr_num >= 1) ? wr_total : 0;
@@ -220,7 +222,7 @@ module stage_fifo # (
     end
   end 
 
-  assign illegal_wr = wr_valid_i[1] & ~wr_valid_i[0];
+  assign illegal_wr = wr_valid[1] & ~wr_valid[0];
   assign illegal_rd = rd_rdy_i[1] & ~rd_rdy_i[0];
 `endif
 

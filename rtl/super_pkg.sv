@@ -352,16 +352,16 @@ package super_pkg;
     CSM_DECODE         = 4'h2,
     CSM_CMT_FLUSH      = 4'h3,
     CSM_WAIT_TRVK      = 4'h4,
-    CSM_WAIT_CMT0      = 4'h5,
-    CSM_ISSUE_SPECIAL  = 4'h6,
+    CSM_GO_SPECIAL     = 4'h5,
+    CSM_WAIT_CMT0      = 4'h6,
     CSM_WAIT_CMT1      = 4'h7,
-    CSM_WAIT_CMPLX     = 4'h9,
-    CSM_SLEEP          = 4'hb,
-    CSM_DBG_TAKEN_IF   = 4'hd,
-    CSM_DBG_TAKEN_ID   = 4'he
+    CSM_ISSUE_SPECIAL  = 4'h8,
+    CSM_WAIT_FINAL     = 4'h9,
+    CSM_WAIT_CMPLX     = 4'ha,
+    CSM_SLEEP          = 4'hb
   } ctrl_fsm_e;     
 
-  typedef enum logic [2:0] {NULL, EXEC, SYSCTL, CMPLX, IRQ, DEBUG} special_case_e;
+  typedef enum logic [2:0] {NULL, EXEC, SYSCTL, ICJALR, CMPLX, IRQ, DEBUG} special_case_e;
 
   typedef enum logic [2:0]  {
     IDLE, WAIT_GNT_MIS, WAIT_RVALID_MIS, WAIT_GNT,
