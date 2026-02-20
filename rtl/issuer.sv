@@ -475,7 +475,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   sysctl_t         sysctl_q;
   logic [31:0]     special_pc_q, last_set_pc_q;
   special_case_e   special_case_comb, special_case_q;
-  logic            special_setpc_q, cjalr_spec_fetch_q;
+  logic            special_setpc_q;
+  logic            cjalr_spec_fetch_go, cjalr_spec_fetch_q;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin 
     if (!rst_ni) begin
@@ -501,7 +502,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         if (cmt_err_i) 
           ctrl_fsm_ns = 1 << CSM_CMT_FLUSH; 
         else if (handle_special)
-          ctrl_fsm_ns = 1 << CSM_GO_SPECIAL; 
+          ctrl_fsm_ns = 1 << CSM_WAIT_CMT0; 
       end
 
       ctrl_fsm_cs[CSM_CMT_FLUSH]: begin
@@ -511,13 +512,6 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       ctrl_fsm_cs[CSM_WAIT_TRVK]: begin
         if (~trvk_outstanding_i)
           ctrl_fsm_ns = 1 << CSM_DECODE; 
-      end
-
-      ctrl_fsm_cs[CSM_GO_SPECIAL]: begin
-        if (cmt_err_i) 
-          ctrl_fsm_ns = 1 << CSM_CMT_FLUSH;
-        else 
-          ctrl_fsm_ns = 1 << CSM_WAIT_CMT0;  
       end
 
       ctrl_fsm_cs[CSM_WAIT_CMT0]: begin
@@ -634,13 +628,13 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         ir_hold_o   = 1'b0;
         ir_flush_o  = 1'b1;
       end
-      ctrl_fsm_cs[CSM_GO_SPECIAL]: begin
-        pc_set_o    = cjalr_spec_fetch_q;   // speculative fetch for CJALR
+      ctrl_fsm_cs[CSM_WAIT_CMT0]: begin
+        pc_set_o    = cjalr_spec_fetch_go;   // speculative fetch for CJALR
         pc_target_o = special_pc_q;
         ir_hold_o   = 1'b1;                 // hold stage_fifo while flushing the earlier stages
         ir_flush_o  = 1'b0;
       end
-      ctrl_fsm_cs[CSM_WAIT_CMT0], ctrl_fsm_cs[CSM_WAIT_CMT1]: begin
+      ctrl_fsm_cs[CSM_WAIT_CMT1]: begin
         pc_set_o    = 1'b0;
         pc_target_o = special_pc_q;
         ir_hold_o   = 1'b1;
@@ -763,7 +757,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         special_case_q  <= EXEC;
         special_setpc_q <= 1'b1;  // really don't care in this case
         special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};
-      end else if (ctrl_fsm_ns[CSM_GO_SPECIAL]) begin
+      end else if (ctrl_fsm_cs[CSM_DECODE] & ctrl_fsm_ns[CSM_WAIT_CMT0]) begin
         special_pc_q <=  ir0_jalr_target_i;
       end else if (ctrl_fsm_cs[CSM_WAIT_CMT0] & ~ctrl_fsm_ns[CSM_WAIT_CMT0]) begin
         case (special_case_comb) 
@@ -825,6 +819,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     if (~rst_ni) begin
       last_set_pc_q       <= 32'h0; 
       cjalr_spec_fetch_q  <= 1'b0;
+      cjalr_spec_fetch_go <= 1'b0;
       ir_rdy_special_q    <= 2'b00;
     end else begin
       // if there is IRQ when current IR.pc is not valid (b/c pc_set causing the IR/IF to be flushed),
@@ -835,10 +830,18 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         last_set_pc_q <= pc_target_o;
 
       // if no hazard (operands resolved), CJALR takes a speculative fetch before issued
-      if (ctrl_fsm_ns[CSM_GO_SPECIAL] & ~ir_hazard[0] && (special_case_comb == ICJALR))
-        cjalr_spec_fetch_q <= 1'b1;
-      else if (ctrl_fsm_ns[CSM_GO_SPECIAL]) 
-        cjalr_spec_fetch_q <= 1'b0;
+
+      if (ctrl_fsm_cs[CSM_DECODE] & ctrl_fsm_ns[CSM_WAIT_CMT0] & ~ir_hazard[0] && 
+          (special_case_comb == ICJALR)) begin
+        cjalr_spec_fetch_q  <= 1'b1;
+        cjalr_spec_fetch_go <= 1'b1;
+      end else if (ctrl_fsm_cs[CSM_DECODE] & ctrl_fsm_ns[CSM_WAIT_CMT0]) begin
+        cjalr_spec_fetch_q  <= 1'b0;
+        cjalr_spec_fetch_go <= 1'b0;
+      end else begin
+        // this is the 1-cycle pusle (driving pc_set_o)
+        cjalr_spec_fetch_go <= 1'b0;
+      end
 
       // CMPLX is a single instruction, IR1 is still valid, don't dequeue
       // some sysctl are the same way

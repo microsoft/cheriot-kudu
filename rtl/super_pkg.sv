@@ -352,7 +352,6 @@ package super_pkg;
     CSM_DECODE         = 4'h2,
     CSM_CMT_FLUSH      = 4'h3,
     CSM_WAIT_TRVK      = 4'h4,
-    CSM_GO_SPECIAL     = 4'h5,
     CSM_WAIT_CMT0      = 4'h6,
     CSM_WAIT_CMT1      = 4'h7,
     CSM_ISSUE_SPECIAL  = 4'h8,

@@ -137,10 +137,10 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   // hold the IR registers while waiting for cmt fifo to clear
   AssertIssueSpecialWait0: assert property (@(posedge clk_i) 
-    (ctrl_fsm_cs[CSM_GO_SPECIAL]  |-> ((issuer_rdy_o == 2'b00) && ir_hold_o) ));
+    (ctrl_fsm_cs[CSM_WAIT_CMT0]  |-> ((issuer_rdy_o == 2'b00) && ir_hold_o) ));
 
   AssertIssueSpecialWait1: assert property (@(posedge clk_i) 
-    ((ctrl_fsm_cs[CSM_WAIT_CMT0] | ctrl_fsm_cs[CSM_WAIT_CMT1]) |-> 
+    ((ctrl_fsm_cs[CSM_WAIT_CMT1]) |-> 
     ((issuer_rdy_o == 2'b00) && ir_hold_o && ~pc_set_o) ));
 
   AssertIssueSpecial0: assert property (@(posedge clk_i) 
@@ -164,7 +164,7 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
       if (ctrl_fsm_ns[CSM_DECODE] || ctrl_fsm_ns[CSM_CMT_FLUSH])
         special_in_progress <= 1'b0;
-      else if (ctrl_fsm_ns[CSM_GO_SPECIAL])
+      else if (ctrl_fsm_ns[CSM_WAIT_CMT0])
         special_in_progress <= 1'b1;
 
       if (ctrl_fsm_cs[CSM_DECODE] || ctrl_fsm_cs[CSM_CMT_FLUSH])
@@ -200,12 +200,12 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     (ir0_cjalr_err_i == 3'b000));
   // if ir_valid becomes 1 while in wait_cmt0, we may still go to EXEC
   AssumeNoNewInstr: assume property (@(posedge clk_i) 
-    ((ctrl_fsm_cs[CSM_WAIT_CMT0] | ctrl_fsm_cs[CSM_GO_SPECIAL]) |-> ($stable (ir_valid_i) && $stable(ir0_dec)) ));
+    (ctrl_fsm_cs[CSM_WAIT_CMT0] |-> ($stable (ir_valid_i) && $stable(ir0_dec)) ));
 
   // note in KUDU, impossible for csr_mstatus_mie_i to change while in DECODE or WAIT_CMT0, since
   // the CSR operations are treated as "special"
   AssumeIRQStable: assume property (@(posedge clk_i) 
-    ((ctrl_fsm_cs[CSM_WAIT_CMT0] | ctrl_fsm_cs[CSM_GO_SPECIAL])  |-> $stable (irq_pending_i) ));
+    (ctrl_fsm_cs[CSM_WAIT_CMT0]  |-> $stable (irq_pending_i) ));
 
   AssumeSBDEmpty: assume property (@(posedge clk_i) 
     ((ctrl_fsm_cs[CSM_DECODE] & handle_special) |-> 
