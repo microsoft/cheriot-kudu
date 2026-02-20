@@ -649,7 +649,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       ctrl_fsm_cs[CSM_ISSUE_SPECIAL] :  begin
         pc_set_o    = special_setpc_q;      
         pc_target_o = special_pc_q;
-        ir_hold_o   = 1'b0;
+        ir_hold_o   = 1'b1;                 // can't update IR yet since PCC is not yet updated
         ir_flush_o  = special_setpc_q;       
       end
       default : begin

@@ -150,19 +150,39 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     (ir0_issued_special  |-> ((special_case_q == ICJALR)||(special_case_q == SYSCTL)||(special_case_q == CMPLX)) ));
 
   logic [1:0] pc_set_cnt;
+  logic       special_in_progress, special_issued;
   always @(posedge clk_i, negedge rst_ni) begin
     if (~rst_ni) begin
       pc_set_cnt <= 0;
+      special_in_progress <= 1'b0;
+      special_issued      <= 1'b0;
     end else begin
       if (ctrl_fsm_cs[CSM_DECODE] || ctrl_fsm_cs[CSM_CMT_FLUSH])
         pc_set_cnt <= 0;
       else if (pc_set_o)
         pc_set_cnt <= pc_set_cnt + 1;
+
+      if (ctrl_fsm_ns[CSM_DECODE] || ctrl_fsm_ns[CSM_CMT_FLUSH])
+        special_in_progress <= 1'b0;
+      else if (ctrl_fsm_ns[CSM_GO_SPECIAL])
+        special_in_progress <= 1'b1;
+
+      if (ctrl_fsm_cs[CSM_DECODE] || ctrl_fsm_cs[CSM_CMT_FLUSH])
+        special_issued <= 1'b0;
+      else if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL])
+        special_issued <= 1'b1;
     end
   end
 
+  // a special case can only have max 2 pc_set (1st being CJALR speculative)
+  AssertPCSetSPecial0: assert property (@(posedge clk_i) ((pc_set_cnt <= 2)));
+
+  AssertPCSetSPecial1: assert property (@(posedge clk_i)
+    ((pc_set_cnt == 2) |-> ((special_case_q == EXEC) || (special_case_q == IRQ) || (special_case_q == DEBUG))  ));
+
   // if CJALR did the speculative pc_set earlier then it can't do pc_set again at issue-time
-  AssertPCSetCJALR: assert property (@(posedge clk_i) ((special_case_q == ICJALR) |-> (pc_set_cnt <= 1)));
+  AssertPCSetCJALR: assert property (@(posedge clk_i) 
+    (((special_case_q == ICJALR) && special_issued) |-> (pc_set_cnt == 1)));
 
 
 `endif
@@ -1189,11 +1209,17 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   assign pcc_change_cjalr = cheri_pcc_set;
   assign pcc_change_other = csr_save_cause | csr_restore_mret;
 
-  AssertPccChange0: assert property (@(posedge clk_i) 
+  AssertPccChangeAll0: assert property (@(posedge clk_i) 
     (pcc_change_all |-> ((sbdfifo_rd_valid == 2'b00) || cmt_flush) ));
-  AssertPccChange1: assert property (@(posedge clk_i) 
+
+  // When pcc changes, the cheri fetch checks should be done after change (based on new PCC)
+  AssertPccChangeAll1: assert property (@(posedge clk_i) 
+    (pcc_change_all |-> (ir_stage_i.gen_stage1.s1_fifo.wr_hold_i || ir_stage_i.gen_stage1.s1_fifo.flush_i) ));
+
+  AssertPccChangeCJALR0: assert property (@(posedge clk_i) 
     (pcc_change_cjalr |-> (sbdfifo_rd_valid == 2'b00)));
-  AssertPccChange2: assert property (@(posedge clk_i) 
+
+  AssertPccChangeOther0: assert property (@(posedge clk_i) 
     (pcc_change_other |-> (((sbdfifo_rd_valid == 2'b00) || cmt_flush) & ex_pc_set) ));
   
   
