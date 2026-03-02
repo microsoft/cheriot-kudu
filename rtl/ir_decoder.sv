@@ -117,11 +117,11 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   assign ir_dec_o.pc_nxt  = ir_reg_i.pc + (ir_reg_i.is_comp ? 2 : 4);
 
   // this determines the "special case" path for the issuer controller state machine (ctrl_fsm)
-  assign sysctl.valid  = ((~CsrUseLSU & is_csr) | wfi_insn | ebrk_insn | ecall_insn | dret_insn | 
-                         mret_insn | cjalr_insn | fencei_insn | brkpt_match_i);
+  assign sysctl.valid  = (sysctl.csrw | sysctl.wfi | sysctl.ebrk | sysctl.ecall | sysctl.dret | 
+                         sysctl.mret | sysctl.cjalr | sysctl.fencei);
 
   // assign sysctl.csrw   = is_csr_wr;
-  assign sysctl.csrw   = ~CsrUseLSU & is_csr;
+  assign sysctl.csrw   = (~CsrUseLSU & is_csr) | is_csr_wr;
   assign sysctl.mret   = mret_insn; 
   assign sysctl.dret   = dret_insn; 
   assign sysctl.wfi    = wfi_insn; 

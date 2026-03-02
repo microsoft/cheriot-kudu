@@ -203,7 +203,7 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     (ctrl_fsm_cs[CSM_WAIT_CMT0] |-> ($stable (ir_valid_i) && $stable(ir0_dec)) ));
 
   // note in KUDU, impossible for csr_mstatus_mie_i to change while in DECODE or WAIT_CMT0, since
-  // the CSR operations are treated as "special"
+  // CSR write operations are treated as "special" (not issued till all previous instructions complete)
   AssumeIRQStable: assume property (@(posedge clk_i) 
     (ctrl_fsm_cs[CSM_WAIT_CMT0]  |-> $stable (irq_pending_i) ));
 

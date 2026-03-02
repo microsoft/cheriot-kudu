@@ -231,7 +231,6 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   logic [1:0]  branch_mispredict;
   logic        cheri_pmode;
-  logic        ir0_is_cjalr, ir1_is_cjalr;
 
   logic        debug_mode_q, single_step_trap_q;
   logic        debug_ebreak;
