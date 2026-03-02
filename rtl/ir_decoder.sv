@@ -13,7 +13,7 @@
  */
 
 
-module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
+module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #(
   parameter bit        CHERIoTEn  = 1'b0,
   parameter bit        RV32M      = 1'b1,
   parameter bit        RV32B      = 1'b1,
@@ -54,7 +54,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
   logic        cheri_pmode;
   logic        cheri_perm_vio, cheri_bound_vio;
   logic        is_csr, is_csr_wr;
-  logic        csr_wr, cscr_wr;
+  logic        csr_wr, cscr_wr, csr_is_mie;
 
   assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
 
@@ -121,7 +121,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
                          sysctl.mret | sysctl.cjalr | sysctl.fencei);
 
   // assign sysctl.csrw   = is_csr_wr;
-  assign sysctl.csrw   = (~CsrUseLSU & is_csr) | is_csr_wr;
+  assign sysctl.csrw   = (~CsrUseLSU & is_csr) | (is_csr_wr & csr_is_mie);
   assign sysctl.mret   = mret_insn; 
   assign sysctl.dret   = dret_insn; 
   assign sysctl.wfi    = wfi_insn; 
@@ -163,6 +163,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
     cheri_csc_en        = 1'b0;
 
     csr_wr              = 1'b0;
+    csr_is_mie          = 1'b0;
 
     unique case (opcode)
 
@@ -457,6 +458,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; #(
           // instruction to read/modify CSR
           csr_insn     = 1'b1;
           csr_wr       = ~(instr[13] && (rs1 == 0));  
+          csr_is_mie   = (csr_num_e'(instr[31:20]) == CSR_MSTATUS) || (csr_num_e'(instr[31:20]) == CSR_MIE);
           pl_type      = CsrUseLSU ? PL_LS : PL_MULT;
           rf_ren_a     = ~instr[14];
           rf_we        = 1'b1;   // CSR instructions use rd==0 for read-only
