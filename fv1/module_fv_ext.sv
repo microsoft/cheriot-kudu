@@ -8,6 +8,7 @@ module bindfiles;
   bind ls_pipeline         ls_pipeline_fv_ext     ls_pipeline_fv_ext_i (.*);
   bind mult_pipeline       mult_pipeline_fv_ext   mult_pipeline_fv_ext_i (.*);
   bind alu_pipeline        alu_pipeline_fv_ext    alu_pipeline_fv_ext_i (.*);
+  bind dcache              dcache_fv_ext          dcache_fv_ext_i (.*);
   bind kudu_top            kudu_top_fv_ext        kudo_top_fv_ext_i (.*);
 endmodule
 
@@ -1111,6 +1112,22 @@ module alu_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; (
 `endif
 endmodule
 
+////////////////////////////////////////////////////////////////
+// Dcache 
+////////////////////////////////////////////////////////////////
+
+module dcache_fv_ext import super_pkg::*; (
+  input  logic           clk_i,
+  input  logic           rst_ni,
+  input  logic [3:0]     update_valid, 
+  input  logic [3:0]     update_invalid
+);
+
+`ifdef KUDU_FORMAL_G7
+  AssertUpdateLegal: assert property (@(posedge clk_i) ((update_valid & update_invalid) == 4'h0));
+
+`endif
+endmodule
 
 ////////////////////////////////////////////////////////////////
 // kudu_top

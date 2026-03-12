@@ -215,7 +215,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   endfunction
 
   logic [4:0]  ir0_pl_sel, ir1_pl_sel;
-  logic        ir0_issued, ir0_normal_issued, ir0_special_issued; 
+  logic        ir0_issued, ir0_normal_issued;
+  logic [1:0]  ir0_special_issued; 
   logic        ir1_issued;
   logic [4:0]  ex_rdy;
   ir_dec_t     ir0_dec, ir1_dec;
@@ -260,7 +261,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ex_rdy     = {multpl_rdy_i, lspl_rdy_i, alupl1_rdy_i, alupl0_rdy_i, 1'b1};
 
   assign ex_valid_o = ir0_pl_sel | ir1_pl_sel;
-  assign pl_sel_enable[0]  = normal_ex_enable[0] | ir0_special_issued; 
+  assign pl_sel_enable[0]  = normal_ex_enable[0] | (|ir0_special_issued); 
   assign ir0_pl_sel        = select_pl(cheri_pmode, pl_sel_enable[0], ira_is0_i, ir0_dec.pl_type);
 
   // ir1 can only be issued if ir0 is alredy issued and no conflict in ex pipeline selection
@@ -280,7 +281,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   assign ir0_normal_issued = normal_ex_enable[0] & is_issued (ir0_pl_sel, ex_rdy);
 
-  assign ir0_issued = ir0_normal_issued | ir0_special_issued;
+  assign ir0_issued = ir0_normal_issued | (|ir0_special_issued);
   assign ir1_issued = is_issued (ir1_pl_sel, ex_rdy_for_ir1);
 
   assign issuer_rdy_o[0] = ir0_issued | ir_rdy_special_q[0];
@@ -400,6 +401,13 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ir1_reg_rd_req[0] = 1'b0;
   assign ir1_reg_wr_req[0] = 1'b0;
 
+  logic [1:0] ir_set_wrsv;
+
+  // IR0 normal and cjalr issued cases need to set wrsv since they directly go back to DECODE
+  // without waiting for instruction complete
+  assign ir_set_wrsv[0] = ir0_normal_issued | ir0_special_issued[1];  
+  assign ir_set_wrsv[1] = ir1_issued;  
+
   for (genvar i = 1; i < 32; i++) begin : gen_rsv
     always_ff @(posedge clk_i, negedge rst_ni) begin
       if (~rst_ni) begin
@@ -407,9 +415,9 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       end else begin 
         if (cmt_flush_o) 
           reg_wrsv_q[i] <= 1'b0;
-        else if (ir0_normal_issued && ir0_dec.rf_we && (ir0_dec.rd == i))
+        else if (ir_set_wrsv[0] && ir0_dec.rf_we && (ir0_dec.rd == i))
           reg_wrsv_q[i] <= 1'b1;
-        else if (ir1_issued && ir1_dec.rf_we && (ir1_dec.rd == i))
+        else if (ir_set_wrsv[1] && ir1_dec.rf_we && (ir1_dec.rd == i))
           reg_wrsv_q[i] <= 1'b1;
         else if (cmt_regwr_i[i])
           reg_wrsv_q[i] <= 1'b0;
@@ -441,7 +449,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         end else begin 
           if (cmt_flush_o)     // controller staemachine will wait for trsv pipeline to drain
             reg_cheri_trsv_q[i] <= 1'b0;
-          else if (tsafe_en_i && ir0_normal_issued && ir0_dec.cheri_op.clc && (ir0_dec.rd == i))
+          else if (tsafe_en_i && ir0_issued && ir0_dec.cheri_op.clc && (ir0_dec.rd == i))
             reg_cheri_trsv_q[i] <= 1'b1;
           else if (tsafe_en_i && ir1_issued && ir1_dec.cheri_op.clc && (ir1_dec.rd == i))
             reg_cheri_trsv_q[i] <= 1'b1;
@@ -459,7 +467,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   // if allow WAW hazard, broadcast decisions to exp ipelines to cancel forwarding
   // and keep the wrsv_q set
-  assign waw_act_o.valid[0] = AllowWaW & ir0_normal_issued & ir0_dec.rf_we; 
+  assign waw_act_o.valid[0] = AllowWaW & ir0_issued & ir0_dec.rf_we; 
   assign waw_act_o.rd0      = ir0_dec.rd;
   assign waw_act_o.valid[1] = AllowWaW & ir1_issued & ir1_dec.rf_we; 
   assign waw_act_o.rd1      = ir1_dec.rd;
@@ -697,8 +705,9 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
                                ~(handle_special | cmt_err_i | debug_single_step_i) & 
                                ~(ir_any_err[1] | ir_sysctl[1] | ir_cmplx[1] | ir1_dec.is_brkpt);
 
-  assign ir0_special_issued = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] &  ((special_case_q == SYSCTL) || 
-                              (special_case_q == ICJALR) || (special_case_q == CMPLX));
+  assign ir0_special_issued[0] = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & 
+                                 ((special_case_q == SYSCTL) || (special_case_q == CMPLX));
+  assign ir0_special_issued[1] = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == ICJALR);
 
   assign debug_mode_o = debug_mode_q;
 

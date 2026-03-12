@@ -6,11 +6,14 @@
 // Single-issue FIFO used to track WaW status per instruction
 //   Interface protocol:
 //   -- this FIFO use a valid-ready handshaking on both sides
+//   -- waw actions clear the valid bit of data records in FIFO
+//   -- "WrThrough": support same cycle write/read
 //   
 //
 module waw_tracking_fifo # (
-  parameter int unsigned Depth   = 8,    // must be power of 2
-  parameter int unsigned Width   = 6
+  parameter int unsigned Depth     = 8,    // must be power of 2
+  parameter int unsigned Width     = 6,
+  parameter bit          WrThrough = 1'b0
 ) (
   input  logic              clk_i,
   input  logic              rst_ni,
@@ -41,12 +44,13 @@ module waw_tracking_fifo # (
   logic [PtrW-2:0] rd_mem_addr;
 
   logic [Width-1:0] fifo_mem[Depth];
-  logic [Width-1:0] rd_data, waw_mask; 
+  logic [Width-1:0] fifo_head_data, waw_mask; 
 
   logic wr_rdy, rd_valid;
   logic wr_data_en;
   logic fifo_empty;
-  logic waw_match_rdata;
+
+  logic waw_match_head;
 
   // I/O assigments
   assign wr_rdy_o   = wr_rdy;
@@ -66,12 +70,15 @@ module waw_tracking_fifo # (
   // output signals
   assign fifo_empty = (cur_rd_depth == 0);
   assign wr_rdy     = (cur_wr_depth <= DepthM1);
-  assign rd_valid   = ~fifo_empty;
-  assign rd_data_o  = waw_match_rdata ? (rd_data & waw_mask) : rd_data;
-  assign rd_data    = fifo_mem[rd_mem_addr];
+  assign rd_valid   = ~fifo_empty | (WrThrough & wr_valid_i);
 
-  assign waw_match_rdata = (waw_req_i[0] && (rd_data[4:0] == waw_addr0_i)) ||
-                           (waw_req_i[1] && (rd_data[4:0] == waw_addr1_i));
+  assign rd_data_o  = (WrThrough & fifo_empty) ? wr_data_i : fifo_head_data;
+
+  assign fifo_head_data = fifo_mem[rd_mem_addr];
+
+  assign waw_match_head = (waw_req_i[0] && (fifo_head_data[4:0] == waw_addr0_i)) ||
+                          (waw_req_i[1] && (fifo_head_data[4:0] == waw_addr1_i));
+
 
   // extended read and write pointers
   always_comb begin
@@ -127,9 +134,14 @@ module waw_tracking_fifo # (
   logic signed [7:0]  wr_num, rd_num;
   logic signed [7:0]  fifo_level;
   logic signed [31:0] wr_total, rd_total;
+  logic [Width-1:0]   ref_wr_data, ref_rd_data; 
+  
 
   assign wr_num = wr_rdy_o & wr_valid_i; 
   assign rd_num = rd_rdy_i & rd_valid_o;
+
+  assign ref_wr_data = (wr_num >= 1) ? wr_total : 0;
+  assign ref_rd_data = (rd_num >= 1) ? rd_total : 0;
 
   always @(posedge clk_i, negedge rst_ni) begin
     if (~rst_ni) begin
@@ -153,9 +165,13 @@ module waw_tracking_fifo # (
 `endif
 
 `ifdef FORMAL
+  AssumeWrInputData: assume property (@(posedge clk_i) wr_data_i == ref_wr_data);
+  AssumeWrInputWAW: assume property (@(posedge clk_i) waw_req_i == 2'b00);
 
   AssertFifoUnderrun: assert property (@(posedge clk_i) (fifo_level >= 0));
-  AssertFifoOverrun: assert property (@(posedge clk_i) (fifo_level <= Depth));
+  AssertFifoOverrun:  assert property (@(posedge clk_i) (fifo_level <= Depth));
+
+  AssertFifoRdGood0:  assert property (@(posedge clk_i) ((rd_num!=0) |-> (rd_data_o == ref_rd_data)));
   
 `endif
 

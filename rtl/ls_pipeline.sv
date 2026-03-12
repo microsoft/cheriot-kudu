@@ -354,15 +354,11 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   // Data Cache
   // 
   
-  logic load_err, store_err;
-
-  assign load_err  = lsu_resp_err & lsu_resp_info.we;
-  assign store_err = lsu_resp_err & ~lsu_resp_info.we;
-
   if (DCacheEn) begin
     dcache dcache_i (
       .clk_i            (clk_i           ),            
       .rst_ni           (rst_ni          ),
+      .cache_enable_i   (1'b1),
       .flush_i          (flush_i         ),
       .us_valid_i       (us_valid_i      ),
       .lspl_rdy_i       (lspl_rdy_o      ),
@@ -371,8 +367,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
       .lsu_req_info_i   (lsu_req_info    ),
       .lsu_req_done_i   (lsu_req_done    ),
       .lsu_resp_valid_i (lsu_resp_valid  ),
-      .load_err_i       (load_err        ),
-      .store_err_i      (store_err       ),
+      .lsu_resp_err_i   (lsu_resp_err    ),
       .data_rdata_i     (data_rdata_i    ),
       .waw_act_i        (waw_act_i       ),
       .fwd_act_o        (fwd_act_o       ),

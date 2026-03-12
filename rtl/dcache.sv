@@ -10,9 +10,13 @@
 //     QQQ currently 32-bit only - may expand to 64-bit in the future
 //   - only cache integer accesses (not capabilities)
 //
-module dcache import super_pkg::*; (
+module dcache import super_pkg::*; # (
+  parameter int unsigned TagHi = 31
+) (
   input  logic                 clk_i,
   input  logic                 rst_ni,
+
+  input  logic                 cache_enable_i,
 
   input  logic                 flush_i,
   input  logic                 us_valid_i,
@@ -24,8 +28,7 @@ module dcache import super_pkg::*; (
   input  lsu_req_info_t        lsu_req_info_i,
   input  logic                 lsu_req_done_i,
   input  logic                 lsu_resp_valid_i,
-  input  logic                 load_err_i,
-  input  logic                 store_err_i,    
+  input  logic                 lsu_resp_err_i,
   input  logic [MemW-1:0]      data_rdata_i,  
   
   // data fwd interface
@@ -91,43 +94,48 @@ module dcache import super_pkg::*; (
   logic [CacheMemW-1:0] line_rdata[4];
   logic [CacheMemW-1:0] cache_wdata[4];
 
-  logic [29:0]     tags[4];
-  logic [3:0]      line_valid;
+  logic [TagHi-2:0] tags[4];
+  logic [3:0]       line_valid;
+                    
+  logic [3:0]       rd_tag_match, wr_tag_match;
+  logic             unaligned_access, unaligned_access_q;
+  logic             byp_tag_match, byp_data_good;
+  logic [31:0]      cache_rdata, cache_rdata_ext;
+  logic             waw_act_match;
+                    
+  logic             lsu_req_q;
+  lsu_req_info_t    lsu_req_info_q;
+  logic [3:0]       repl_sel;
+  logic [3:0]       update_valid, update_invalid;
+  logic             resp_full_word, resp_partial_word;
+  logic             resp_invalidate;
+                    
+  logic             waw_fifo_wr_valid, waw_fifo_wr_rdy;
+  logic             waw_fifo_rd_valid, waw_fifo_rd_rdy;
+  logic [5:0]       waw_fifo_wdata, waw_fifo_rdata;
 
-  logic [3:0]      rd_tag_match, wr_tag_match;
-  logic            unaligned_access, unaligned_access_q;
-  logic            byp_tag_match, use_byp_data;
-  logic [31:0]     cache_rdata, cache_rdata_ext;
-  logic            waw_act_match;
-
-  lsu_req_info_t   lsu_req_info_q;
-  logic [3:0]      replace_sel, lfsr_sel_q;
-  logic [3:0]      update_valid, replace_valid, update_invalid;
-  logic            resp_full_word, resp_partial_word;
-  logic            resp_invalidate;
-
-  logic            waw_fifo_wr_valid, waw_fifo_rd_rdy;
-  logic [5:0]      waw_fifo_wdata, waw_fifo_rdata;
-
+  logic             cache_rd_match_ok, cache_rd_hit;
+  logic             rd_hit_q;
 
   //
   //  Cache read side (data forwarding for load instructions)
   //
 
   for (genvar i=0; i<4; i++) begin : gen_cache_match
-    assign rd_tag_match[i]  = line_valid[i] & (lsu_req_info_i.addr[31:addrLo] == tags[i]);
+    assign rd_tag_match[i]  = line_valid[i] & (lsu_req_info_i.addr[TagHi:addrLo] == tags[i]);
     //assign line_rdata[i] = cache_mem[i][lsu_req_info_i.addr[3:2]] & {32{rd_tag_match[i]}};
     assign line_rdata[i] = cache_mem[i] & {CacheMemW{rd_tag_match[i]}};
   end
 
   // bypass/forward wdata to the new load instruction (full word write only)
-  // note it is possible that byp_tag_match and one of the rd_tag_match are both true
-  assign byp_tag_match  = ~lsu_req_info_q.rf_we & ~unaligned_access_q &
-                          (lsu_req_info_i.addr[31:addrLo] == lsu_req_info_q.addr[31:addrLo]);
-  assign use_byp_data   = byp_tag_match & (lsu_req_info_q.data_type == 2'b00);
+  // - note it is possible that byp_tag_match and one of the rd_tag_match are both true
+  // - if bypass tag match, don't use the stored cacheline data
+  assign byp_tag_match  = lsu_req_q & (lsu_req_info_i.addr[31:addrLo] == lsu_req_info_q.addr[31:addrLo]);
+  assign byp_data_good  = byp_tag_match & ~unaligned_access_q & ~lsu_req_info_q.is_load &
+                          ~lsu_req_info_q.is_csr & (lsu_req_info_q.data_type == 2'b00);
 
   // assign last_wdata  = lsu_req_info_q.wdata & {CacheMemW{byp_tag_match}};
-  assign cache_rdata = use_byp_data ? lsu_req_info_q.wdata :
+  assign cache_rdata = byp_data_good ? lsu_req_info_q.wdata :
                                        (line_rdata[0] | line_rdata[1] | line_rdata[2] | line_rdata[3]);
 
   // generate return register content based on cache read data and instruction request type
@@ -137,10 +145,11 @@ module dcache import super_pkg::*; (
 
   // unaligned 32-bit or 16-bit accesses
   // let's not include those in the cache load case to simplif things a little
-  assign unaligned_access = ((lsu_req_info_i.data_type==2'b00) && (lsu_req_info_i.addr[1:0]!=2'b00)) ||
+  assign unaligned_access = ~lsu_req_info_i.is_csr &
+                            ((lsu_req_info_i.data_type==2'b00) && (lsu_req_info_i.addr[1:0]!=2'b00)) ||
                             ((lsu_req_info_i.data_type==2'b01) && (lsu_req_info_i.addr[0]  !=1'b0)); 
-
-  assign waw_act_match =  (waw_act_i.valid[0] && (waw_act_i.rd0 == fwd_info_o.addr1)) || 
+  
+  assign waw_act_match =  (waw_act_i.valid[0] && (waw_act_i.rd0 == fwd_info_o.addr1)) ||
                           (waw_act_i.valid[1] && (waw_act_i.rd1 == fwd_info_o.addr1));
 
   assign fwd_act_o[0] = 1'b0;
@@ -151,8 +160,9 @@ module dcache import super_pkg::*; (
   // we don't yet handle bypass case for partial-word writes, so if one of the lines match but
   // there is a partial-word write, don't treat this as a chache hit
   // 
-  logic cache_rd_match_ok;
-  assign cache_rd_match_ok = | {rd_tag_match & {4{~byp_tag_match}}, use_byp_data};
+  assign cache_rd_match_ok = byp_tag_match ? byp_data_good : (|rd_tag_match);
+  assign cache_rd_hit      = lsu_req_info_i.is_load & lsu_req_info_i.cache_ok & ~lsu_req_info_i.is_cap &
+                             ~unaligned_access & cache_rd_match_ok; 
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
@@ -161,11 +171,12 @@ module dcache import super_pkg::*; (
       fwd_info_o.valid[0] <= 1'b0;
       fwd_info_o.addr0    <= 32'h0;  
       fwd_info_o.data0    <= 32'h0;  
-  
-      if (lsu_req_i & lsu_req_done_i & lsu_req_info_i.rf_we & lsu_req_info_i.cache_ok & ~lsu_req_info_i.is_cap &
-          ~unaligned_access & cache_rd_match_ok & waw_fifo_rdata[5]) 
+
+      // waw_fifo track waw status till lsu_req_done (which pops the waw_tracking_fifo
+      // after that waw_act_match is used to cancel forwarding.
+      if (lsu_req_i & lsu_req_done_i & cache_enable_i & cache_rd_hit & waw_fifo_rdata[5]) 
         fwd_info_o.valid[1] <= 1'b1;
-      else if ((lsu_req_i & lsu_req_done_i) || waw_act_match)
+      else if (lsu_req_i || waw_act_match || ~waw_fifo_rd_valid)   
         fwd_info_o.valid[1] <= 1'b0;
 
       if (lsu_req_i & lsu_req_done_i) begin
@@ -180,15 +191,15 @@ module dcache import super_pkg::*; (
   assign waw_fifo_wdata    = {1'b1, lsu_req_dec_i.rd};
   assign waw_fifo_rd_rdy   = lsu_req_i & lsu_req_done_i;
 
-  waw_tracking_fifo # (.Depth(8)) waw_fifo_i (
+  waw_tracking_fifo # (.Depth(4), .WrThrough(1)) waw_fifo_i (
     .clk_i       (clk_i          ),
     .rst_ni      (rst_ni         ),
     .flush_i     (flush_i        ),
     .wr_valid_i  (waw_fifo_wr_valid),
     .wr_data_i   (waw_fifo_wdata ),
-    .wr_rdy_o    (),
+    .wr_rdy_o    (waw_fifo_wr_rdy),
     .rd_rdy_i    (waw_fifo_rd_rdy),
-    .rd_valid_o  (),
+    .rd_valid_o  (waw_fifo_rd_valid),
     .rd_data_o   (waw_fifo_rdata ),
     .waw_req_i   (waw_act_i.valid),
     .waw_addr0_i (waw_act_i.rd0  ),
@@ -207,8 +218,6 @@ module dcache import super_pkg::*; (
   //      - randomly replace line (on miss) cache lies on integer reads or full-word writes
   //   -- integer aligned partial-word writes:
   //      - update cacheline if already valid & hit
-  //   -- integer unaligned read/writes:
-  //      - invalidate cache lines on (if hit)
   //   -- Cap reads/writes or partial-word integer writes:
   //      - invalidate cache lines on (if hit)
   // - Response bad (mem or cheri err)
@@ -218,42 +227,54 @@ module dcache import super_pkg::*; (
   //   cacheline is 32-bit wide but cap is 65-bit
   // 
 
-  assign replace_sel = (|wr_tag_match) ? 0 : lfsr_sel_q;
+  //   Unaligned read/writes:
+  //   - invalidate all cache lines (otherwise have to compare both addr and addr+1)
+  //   Not-cache-OK read/writes:
+  //   - invalidate cacheline if tag matches
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
+      lsu_req_q          <= 1'b0;
       lsu_req_info_q     <= NULL_LSU_REQ_INFO;
       unaligned_access_q <= 1'b0;
+      rd_hit_q           <= 1'b0;
     end else begin
+
+      // lsu_req_q == cache update is in progress, used by read bypass logic
+      if (lsu_req_i & lsu_req_done_i) 
+        lsu_req_q          <= 1'b1;
+      else if (lsu_resp_valid_i)
+        lsu_req_q          <= 1'b0;
+
       if (lsu_req_i & lsu_req_done_i) begin 
         lsu_req_info_q     <= lsu_req_info_i;
         unaligned_access_q <= unaligned_access;
+        rd_hit_q           <= cache_rd_hit;
       end
     end
   end
  
   logic resp_good, resp_bad;
 
-  assign resp_good = lsu_resp_valid_i & ~(load_err_i | store_err_i) & lsu_req_info_q.cache_ok;
-  assign resp_bad  = lsu_resp_valid_i & (load_err_i | store_err_i) & lsu_req_info_q.cache_ok;
+  assign resp_good = lsu_resp_valid_i & ~lsu_resp_err_i & ~lsu_req_info_q.is_csr;
+  assign resp_bad  = lsu_resp_valid_i & lsu_resp_err_i  & ~lsu_req_info_q.is_csr;
 
-  assign resp_full_word    = resp_good & ((lsu_req_info_q.data_type == 2'b00)) & 
-                             ~unaligned_access_q & ~lsu_req_info_q.is_cap;
-  assign resp_partial_word = resp_good & ~lsu_req_info_q.rf_we & (lsu_req_info_q.data_type != 2'b00) & 
-                             ~unaligned_access_q & ~lsu_req_info_q.is_cap;
-  assign resp_invalidate   = resp_bad | unaligned_access_q | lsu_req_info_q.is_cap;
+  assign resp_full_word    = resp_good & (lsu_req_info_q.is_load || (lsu_req_info_q.data_type == 2'b00)) & 
+                             ~unaligned_access_q & ~lsu_req_info_q.is_cap & lsu_req_info_q.cache_ok;
+  assign resp_partial_word = resp_good & ~lsu_req_info_q.is_load & (lsu_req_info_q.data_type != 2'b00) & 
+                             ~unaligned_access_q & ~lsu_req_info_q.is_cap & lsu_req_info_q.cache_ok;
+  assign resp_invalidate   = resp_bad | (resp_good & (lsu_req_info_q.is_cap | ~lsu_req_info_q.cache_ok));
 
   for (genvar i=0; i<4; i++) begin : gen_cache_line
     logic tag_match64;
 
-
-    assign tag_match64     = (lsu_req_info_q.addr[31:addrLo+1] == tags[i][29:1]);
+    assign tag_match64     = (lsu_req_info_q.addr[TagHi:addrLo+1] == tags[i][TagHi-2:1]);
     assign wr_tag_match[i] = line_valid[i] & tag_match64 & 
                              ((lsu_req_info_q.addr[addrLo] == tags[i][0]) || lsu_req_info_q.is_cap);
 
-    assign update_valid[i]   = resp_full_word & (wr_tag_match[i] | replace_sel[i]) ||
-                               (resp_partial_word & wr_tag_match[i]);
-    assign update_invalid[i] = resp_invalidate  & wr_tag_match[i];
+    assign update_valid[i]   = ~rd_hit_q & ((resp_full_word & (wr_tag_match[i] | repl_sel[i])) ||
+                                            (resp_partial_word & wr_tag_match[i]));
+    assign update_invalid[i] = unaligned_access_q | (resp_invalidate  & wr_tag_match[i]);
 
     // rmw version of mem data for byte/halfword writes
     assign cache_wdata[i] = store_update (lsu_req_info_q.data_type, lsu_req_info_q.addr[1:0], 
@@ -266,17 +287,34 @@ module dcache import super_pkg::*; (
         cache_mem[i]  <= 0;
       end else begin
         // if unaligned access we just invalidate all lines to avoid being inconsistent
-        if (update_valid[i]) begin
-          line_valid[i] <= 1'b1;
-          tags[i]       <= lsu_req_info_q.addr[31:addrLo];
-          cache_mem[i]  <= lsu_req_info_q.rf_we ? data_rdata_i[CacheMemW-1:0] : cache_wdata[i];
+        if (~cache_enable_i) begin
+          line_valid[i] <= 1'b0;
         end else if (update_invalid[i]) begin
           line_valid[i] <= 1'b0;
+        end else if (update_valid[i]) begin
+          line_valid[i] <= 1'b1;
+          tags[i]       <= lsu_req_info_q.addr[TagHi:addrLo];
+          cache_mem[i]  <= lsu_req_info_q.is_load ? data_rdata_i[CacheMemW-1:0] : cache_wdata[i];
         end
       end
     end
    
   end  // gen_cache_line
+
+  logic [1:0] repl_index;
+  always_comb begin
+    if (|wr_tag_match) begin 
+      repl_sel = 4'b0000;
+    end else begin 
+      case (repl_index)
+        2'b00:   repl_sel = 4'b0001;
+        2'b01:   repl_sel = 4'b0010;
+        2'b10:   repl_sel = 4'b0100;
+        2'b11:   repl_sel = 4'b1000;
+        default: repl_sel = 4'b0001;
+      endcase
+    end
+  end 
 
   // small LFSR to generated pseudo-random replacement index
   logic [4:0] lfsr5;
@@ -284,22 +322,40 @@ module dcache import super_pkg::*; (
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if(~rst_ni) begin 
       lfsr5      <= 5'h01;
-      lfsr8      <= 8'hff;
-      lfsr_sel_q <= 2'b00;
+      lfsr8      <= 8'hfe;
+      repl_index <= 2'b00;
     end else begin
       // Feedback polynomial taps (x^5 + x^3 +  1) 
       lfsr5 <= {lfsr5[3:0], 1'b0} ^ ({5{lfsr5[4]}} & 5'b01001);
       // Feedback polynomial taps (x^8 + x^6 + x^5 + x^4 + 1) 
       lfsr8 <= {lfsr8[6:0], 1'b0} ^ ({8{lfsr8[7]}} & 8'b01110001);
 
-      case ({lfsr5[0], lfsr8[0]})
-        2'b00: lfsr_sel_q <= 4'b0001;
-        2'b01: lfsr_sel_q <= 4'b0010;
-        2'b10: lfsr_sel_q <= 4'b0100;
-        2'b11: lfsr_sel_q <= 4'b1000;
-        default: lfsr_sel_q <= 4'b0001;
-      endcase
+      // repl_index <= $urandom();
+      repl_index <= {lfsr5[0], lfsr8[0]};
     end
   end
+
+`ifndef SYNTHESIS
+  logic        load_event, store_event;
+  logic        load_hit_event;
+  logic        update_valid_event, update_invalid_event;
+  logic [1:0]  update_illegal;
+  logic        replace_event;
+  logic        byp_match_event, byp_hit_event;
+  
+  assign load_hit_event  = lsu_req_i & lsu_req_done_i & cache_rd_hit;
+  assign load_event      = lsu_req_i & lsu_req_done_i & lsu_req_info_i.is_load;
+  assign store_event     = lsu_req_i & lsu_req_done_i & ~lsu_req_info_i.is_load & ~lsu_req_info_i.is_csr;
+  assign byp_match_event = lsu_req_i & lsu_req_done_i & byp_tag_match;
+  assign byp_hit_event   = lsu_req_i & lsu_req_done_i & byp_tag_match & byp_data_good;
+
+  assign update_valid_event   = (update_valid!=0);
+  assign update_invalid_event = (update_invalid!=0);
+
+  assign update_illegal = {~$onehot0(update_valid) , ~$onehot0(update_invalid)};
+
+  assign replace_event = resp_full_word & (wr_tag_match==0);
+  
+`endif
 
 endmodule
