@@ -32,7 +32,7 @@ cheriot-kudu is 32-bit RISC-V microcontroller currently under development at Mic
 See the following block diagram for an overview of cheriot-kudu hardwared design.
 <br><br>
 
-![image](https://github.com/user-attachments/assets/d8337308-39fc-4907-abe5-26536c4ff03e)
+![image](doc/Kudu_block_diagram.svg)
 <br>
 ## Simulation and emulation
 For VCS simulation, see the instructions in [sim/](https://github.com/microsoft/cheriot-kudu/tree/main/sim) directory.
