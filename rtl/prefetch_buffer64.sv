@@ -16,36 +16,44 @@
 module prefetch_buffer64 import super_pkg::*; #(
   parameter bit          UnalignedFetch = 1'b0,
   parameter bit          RdataBypass    = 1'b1,
-  parameter int unsigned FifoDepth      = 3
+  parameter int unsigned FifoDepth      = 3,
+  parameter bit          AltEnable      = 1'b0
 ) (
-  input  logic        clk_i,
-  input  logic        rst_ni,
+  input  logic          clk_i,
+  input  logic          rst_ni,
+                        
+  input  logic          cheri_const_fetch_i,  
+                        
+  input  logic          req_i,
+                        
+  input  logic          branch_i,
+  input  logic [31:0]   addr_i,
 
-  input  logic        cheri_const_fetch_i,  
-
-  input  logic        req_i,
-
-  input  logic        branch_i,
-  input  logic [31:0] addr_i,
-
-
-  input  logic [1:0]  ready_i,
-  output logic [1:0]  valid_o,
-  output ir_reg_t     instr0_o,
-  output ir_reg_t     instr1_o,
-  output logic [31:0] instr1_pc_spec0_o,
-  output logic [31:0] instr1_pc_spec1_o,
+  // ALT branch related signals
+  input  ex_alt_ctrl_t  ex_alt_ctrl_i,
+  input  logic          alloc_alt_i, 
+  input  logic          bp_instr0_i,
+  output logic          alt_has_free_o,  
+  output logic [1:0]    alt_free_id_o, 
+                        
+                        
+  input  logic [1:0]    ready_i,
+  output logic [1:0]    valid_o,
+  output ir_reg_t       instr0_o,
+  output ir_reg_t       instr1_o,
+  output logic [31:0]   instr1_pc_spec0_o,
+  output logic [31:0]   instr1_pc_spec1_o,
 
   // goes to instruction memory / instruction cache
-  output logic        instr_req_o,
-  input  logic        instr_gnt_i,
-  output logic [31:0] instr_addr_o,
-  input  logic [63:0] instr_rdata_i,
-  input  logic        instr_err_i,
-  input  logic        instr_rvalid_i,
+  output logic          instr_req_o,
+  input  logic          instr_gnt_i,
+  output logic [31:0]   instr_addr_o,
+  input  logic [63:0]   instr_rdata_i,
+  input  logic          instr_err_i,
+  input  logic          instr_rvalid_i,
 
   // Prefetch Buffer Status
-  output logic        busy_o
+  output logic          busy_o
 );
 
   localparam int unsigned NUM_REQS  = FifoDepth;
@@ -63,7 +71,7 @@ module prefetch_buffer64 import super_pkg::*; #(
   logic                fetch_addr_en;
   logic [31:0]         instr_addr, instr_addr_w_aligned;
 
-  logic                fifo_valid;
+  logic                fifo_valid, fifo_valid_alt;
   logic [31:0]         fifo_addr;
   logic                fifo_ready;
   logic                fifo_clear;
@@ -76,6 +84,9 @@ module prefetch_buffer64 import super_pkg::*; #(
   logic [63:0]         instr_rdata_in;
   logic                instr_err_in;
   logic                instr_rvalid_in;
+
+  logic                apply_alt_ok;
+  logic [31:0]         alt_nxt_addr;
 
   ////////////////////////////
   // Prefetch buffer status //
@@ -133,25 +144,34 @@ module prefetch_buffer64 import super_pkg::*; #(
   end 
 
   fetch_fifo64 #(
-    .NUM_REQS (NUM_REQS),
-    .UnalignedFetch (UnalignedFetch)
+    .NUM_REQS       (NUM_REQS),
+    .UnalignedFetch (UnalignedFetch),
+    .AltEnable      (AltEnable)
   ) fifo_i (
-      .clk_i                 ( clk_i             ),
-      .rst_ni                ( rst_ni            ),
-      .cheri_const_fetch_i   (cheri_const_fetch_i),
-      .clear_i               ( fifo_clear        ),
-      .busy_o                ( fifo_busy         ),
-      .in_valid_i            ( fifo_valid        ),
-      .in_addr_i             ( fifo_addr         ),
+      .clk_i                 ( clk_i              ),
+      .rst_ni                ( rst_ni             ),
+      .cheri_const_fetch_i   ( cheri_const_fetch_i),
+      .clear_i               ( fifo_clear         ),
+      .ex_alt_ctrl_i         ( ex_alt_ctrl_i      ),
+      .apply_alt_ok_o        ( apply_alt_ok       ),
+      .alt_nxt_addr_o        ( alt_nxt_addr       ),
+      .alloc_alt_i           ( alloc_alt_i        ),
+      .bp_instr0_i           ( bp_instr0_i        ),
+      .alt_has_free_o        ( alt_has_free_o     ),
+      .alt_free_id_o         ( alt_free_id_o      ),
+      .busy_o                ( fifo_busy          ),
+      .in_valid_i            ( fifo_valid         ),
+      .in_valid_alt_i        ( fifo_valid_alt     ),
+      .in_addr_i             ( fifo_addr          ),
       .in_rdata_i            ( instr_rdata_in     ),
       .in_err_i              ( instr_err_in       ),
-      .in_rdata_align64_i    ( in_rdata_align64  ),
-      .out_valid_o           ( valid_raw         ),
-      .out_ready_i           ( ready_i           ),
-      .out_instr0_o          ( instr0_o          ),
-      .out_instr1_o          ( instr1_o          ),
-      .out_instr1_pc_spec0_o (instr1_pc_spec0_o  ),
-      .out_instr1_pc_spec1_o (instr1_pc_spec1_o  )
+      .in_rdata_align64_i    ( in_rdata_align64   ),
+      .out_valid_o           ( valid_raw          ),
+      .out_ready_i           ( ready_i            ),
+      .out_instr0_o          ( instr0_o           ),
+      .out_instr1_o          ( instr1_o           ),
+      .out_instr1_pc_spec0_o (instr1_pc_spec0_o   ),
+      .out_instr1_pc_spec1_o (instr1_pc_spec1_o   )
   );
 
   //////////////
@@ -183,6 +203,10 @@ module prefetch_buffer64 import super_pkg::*; #(
   // 3. instr_addr_q  - This is the address at the head of the FIFO, efectively our oldest fetched
   //                    address. This address is updated on branches, and does its own increment
   //                    each time the FIFO is popped.
+
+  // Combined jump/branch target address: use alt_nxt_addr or target address from EX or BP
+  logic [31:0] comb_target;
+  assign comb_target = (AltEnable & apply_alt_ok) ? alt_nxt_addr : addr_i;
 
   // 1. stored_addr_q
 
@@ -219,7 +243,7 @@ module prefetch_buffer64 import super_pkg::*; #(
   assign cond_a = req_i & ~rdata_outstanding_q[NUM_REQS-1] & ~valid_req_q;
   assign cond_b = cond_a & fifo_ready;
 
-  assign fetch_addr_d = branch_i ? (addr_i + {{28{1'b0}}, cond_a ,3'b000}) : 
+  assign fetch_addr_d = branch_i ? (comb_target + {{28{1'b0}}, cond_a ,3'b000}) : 
                                    (cur_fetch_addr + {{28{1'b0}}, cond_b,3'b000});
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -232,7 +256,7 @@ module prefetch_buffer64 import super_pkg::*; #(
 
   // Address mux
   assign instr_addr = valid_req_q         ? stored_addr_q :
-                      branch_i            ? addr_i :
+                      branch_i            ? comb_target :
                                             fetch_addr_q;
 
   assign instr_addr_w_aligned = UnalignedFetch ? {instr_addr[31:2], 2'b00} : {instr_addr[31:3], 3'b000};
@@ -275,9 +299,14 @@ module prefetch_buffer64 import super_pkg::*; #(
                                                 branch_discard_n;
 
   // Push a new entry to the FIFO once complete (and not cancelled by a branch)
-  assign fifo_valid = instr_rvalid_in & ~branch_discard_q[0];
+  assign fifo_valid     = instr_rvalid_in & ~branch_discard_q[0];
 
-  assign fifo_addr = addr_i;
+  // QQQ this needs more work.. we can't just assume all outstanding memory read requets belong
+  // to the ALT entry being updated, since they might be from previous branch/jumps.
+  // assign fifo_valid_alt = instr_rvalid_in & branch_discard_q[0];
+  assign fifo_valid_alt = 1'b0;
+
+  assign fifo_addr = addr_i;    // this goes to the FIFO, always use addr_i  even for apply_alt
 
   ///////////////
   // Registers //

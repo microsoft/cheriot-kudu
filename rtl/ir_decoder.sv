@@ -107,8 +107,12 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   assign ir_dec_o.cheri_op  = cheri_op;
   assign ir_dec_o.is_brkpt  = brkpt_match_i; 
 
-  assign ir_dec_o.ptaken  = ir_reg_i.ptaken;
-  assign ir_dec_o.ptarget = ir_reg_i.ptarget;
+  assign ir_dec_o.ptaken    = ir_reg_i.ptaken;
+  assign ir_dec_o.ptarget   = ir_reg_i.ptarget;
+
+  assign ir_dec_o.alt_valid = ir_reg_i.alt_valid;
+  assign ir_dec_o.alt_id    = ir_reg_i.alt_id;
+  assign ir_dec_o.alt_seq   = ir_reg_i.alt_seq;
 
   assign imm_j_type = { {12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1'b0 };
   assign imm_b_type = { {19{instr[31]}}, instr[31], instr[7], instr[30:25], instr[11:8], 1'b0 };

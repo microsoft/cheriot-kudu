@@ -7,11 +7,13 @@
 `define BOOT_ADDR 32'h8000_0000
 
 `ifdef DII_SIM
-import "DPI-C" function int instr_mem_init(string filename);
+import "DPI-C" function int instr_mem_init(string infile_name, string log_name);
+import "DPI-C" function int instr_mem_dump(string filename);
 `endif
 
 module tb_kudu_top; 
 `ifndef IBEX
+  import kudu_cfg_pkg::*;
   import super_pkg::*;
   localparam DBusW = MemW;
 `else
@@ -91,6 +93,9 @@ module tb_kudu_top;
 
   logic [3:0] dbg_req_intvl;
 
+  logic        stat_mcycle, cfg_stat_mcycle;
+  logic [31:0] cycle_cnt;
+
   task config_tb ();
     int i;
     instr_resp_wmax = 0;
@@ -104,6 +109,8 @@ module tb_kudu_top;
     intr_intvl    = 0;
     cap_err_rate  = 0;
     dbg_req_intvl = 0;
+
+    stat_mcycle   = 0;
 
     i = $value$plusargs("INSTR_ERR_RATE=%d", cfg_instr_err_rate);
     if (i == 1) instr_err_rate = cfg_instr_err_rate[2:0];
@@ -128,29 +135,34 @@ module tb_kudu_top;
     i = $value$plusargs("CAP_ERR_RATE=%d", cfg_cap_err_rate);
     if (i == 1) cap_err_rate = cfg_cap_err_rate[2:0];
 
-    $display("TB> MemDataWidth = %2d, CFG.cheri_pmode=%1d", DBusW,  cheri_pmode);
+    i = $value$plusargs("STAT_MCYCLE=%d", cfg_stat_mcycle);
+    if (i == 1) stat_mcycle = cfg_stat_mcycle;
+
+    $display("TB> MemDataWidth = %2d, CFG.cheri_pmode = %1d", DBusW,  cheri_pmode);
     $display("TB> INSTR_GNTW = %d, INSTR_RESPW = %d, DATA_GNTW = %d, DATA_RESPW = %d", 
              instr_gnt_wmax, instr_resp_wmax, data_gnt_wmax, data_resp_wmax); 
     $display("TB> INSTR_ERR_RATE = %d, DATA_ERR_RATE = %d, INTR_INTVL = %d, CAP_ERR_RATE = %d", 
              instr_err_rate,  data_err_rate, intr_intvl, cap_err_rate);
-    $display("TB> DBG_REQ_INTVL = %d", dbg_req_intvl);
+    $display("TB> DBG_REQ_INTVL = %d, STAT_MCYCLE = %d", dbg_req_intvl, stat_mcycle);
   endtask
 
   task print_dut_cfg ();
   `ifndef IBEX
      // print KUDU configuration parameters
     $display("TB> DUT: Kudu configuration parameters");
-    $display("TB> DUT: CHERIoTEn = %1d, DualIssue = %1d", dut.CHERIoTEn, dut.DualIssue);
-    $display("TB> DUT: EarlyLoad = %1d, LoadFiltEn = %1d, DCahceEn = %1d, TSMapSize = %4d", 
-             dut.EarlyLoad, dut.LoadFiltEn, dut.DCacheEn, dut.TSMapSize);
-    $display("TB> DUT: NoMult = %1d, UseDWMult = %1d", dut.NoMult, dut.UseDWMult);
-    $display("TB> DUT: PipeCfg = %1d, IrStageBypass = %1d, IfRdataBypass = %1d, UnalignedFetch = %1d", 
-             dut.PipeCfg, dut.IrStageBypass, dut.IfRdataBypass, dut.UnalignedFetch);
-    $display("TB> DUT: PrefetchDepth = %1d, IrS0Depth = %1d", dut.PrefetchDepth, dut.IrS0Depth);
+    $display("TB> DUT: CHERIoTEn = %1d, DualIssue = %1d", dut.CHERIoTEn, dut.CFG.DualIssue);
+    $display("TB> DUT: EarlyLoad = %1d, DCahceEn = %1d, TSMapSize = %4d", 
+             dut.CFG.EarlyLoad, dut.CFG.DCacheEn, dut.CFG.TSMapSize);
+    $display("TB> UseDWMult = %1d", dut.UseDWMult);
+    $display("TB> DUT: IrStageBypass = %1d, IfRdataBypass = %1d, UnalignedFetch = %1d", 
+             dut.CFG.IrStageBypass, dut.CFG.IfRdataBypass, dut.CFG.UnalignedFetch);
+    $display("TB> DUT: PrefetchDepth = %1d, IrS0Depth = %1d", dut.CFG.PrefetchDepth, dut.CFG.IrS0Depth);
     $display("TB> DUT: IfCompDecEn = %1d, IrCompDecEn = %1d, IfBTCacheEn = 0",
-             dut.IfCompDecEn, dut.IrCompDecEn);
+             dut.CFG.IfCompDecEn, dut.CFG.IrCompDecEn);
     $display("TB> DUT: PredictBhtSize = %2d, PredictUseBtb = %1d, PredictIbufEn = %1d", 
-             dut.PredictBhtSize, dut.PredictUseBtb, dut.PredictIbufEn);
+             dut.CFG.PredictBhtSize, dut.CFG.PredictUseBtb, dut.CFG.PredictIbufEn);
+    $display("TB> DUT: AltEnable = %1d, PredictRA = %1d", 
+             dut.CFG.AltEnable, dut.CFG.PredictRA);
   `endif    
   endtask
 
@@ -179,16 +191,14 @@ module tb_kudu_top;
     `define KUDU_CHERIOT_EN 0
   `endif
 
+  localparam kudu_cfg_t MyKuduCfg = (`KUDU_PPL_CFG == 2) ? KuduCfg2 : 
+                                    (`KUDU_PPL_CFG == 3) ? KuduCfg3 : 
+                                    KuduCfg1;
+
   kudu_top #(
     .CHERIoTEn   (`KUDU_CHERIOT_EN),
-    .PipeCfg     (`KUDU_PPL_CFG),
     .UseDWMult   (`KUDU_DW_MULT),
-    .HeapBase    (32'h8000_0000),
-    .TSMapSize   (1024),
-    .DmHaltAddr  (32'h84000000),
-    .DmExcAddr   (32'h84000008),  // QQQ
-    .DbgTriggerEn(1'b1),
-    .BrkptNum    (2)
+    .CFG         (MyKuduCfg)
   ) dut (
     .clk_i                (clk         ),
     .rst_ni               (rst_n       ),
@@ -224,17 +234,20 @@ module tb_kudu_top;
     .irq_fast_i           (15'h0       )
   );
 
+  logic stat_start_stop, cycle100;
   logic ir0_mcycle_rd, ir1_mcycle_rd;
   assign ir0_mcycle_rd =  (dut.issuer_i.ir0_dec.insn[6:0] == 7'h73) && (dut.issuer_i.ir0_dec.insn[31:20] == 12'hB00);
   assign ir1_mcycle_rd =  (dut.issuer_i.ir1_dec.insn[6:0] == 7'h73) && (dut.issuer_i.ir1_dec.insn[31:20] == 12'hB00);
 
   assign mcycle_rd_event = ((|dut.issuer_i.ir0_pl_sel) & ir0_mcycle_rd) ||
                            ((|dut.issuer_i.ir1_pl_sel) & ir1_mcycle_rd) ;
+  assign cycle100 = (cycle_cnt == 100);
+  assign stat_start_stop = stat_mcycle ? mcycle_rd_event : cycle100;
 
   kudu_stats kudu_stats_i (
     .clk_i      (clk),
     .rst_ni     (rst_n),
-    .start_stop (mcycle_rd_event),
+    .start_stop (stat_start_stop),
     .print_req  (stat_print_req)
   );
 
@@ -369,7 +382,7 @@ module tb_kudu_top;
 
   initial begin
     bit cont_flag;
-    int i, timeout, cycle_cnt;
+    int i, timeout;
 
     timeout = 20*1000*1000;   // default timeout
     timeout = 1000* 1000;   // default timeout
@@ -396,7 +409,8 @@ module tb_kudu_top;
     #1;
     rst_n = 1'b0;
 `ifdef DII_SIM
-    instr_mem_init(instr_dii_path);
+    instr_mem_init(instr_dii_path, "./instr_mem_init.log");
+    instr_mem_dump("./instr_mem_dump.log");
 `else
     //$readmemh(vhx_path, u_instr_mem.iram, 'h0);   // load main executable
     $readmemh(vhx_path, u_data_mem.dram, 'h0);   // load main executable

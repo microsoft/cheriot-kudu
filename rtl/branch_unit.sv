@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 module branch_unit import super_pkg::*; import cheri_pkg::*; #(
-  parameter bit CHERIoTEn = 1'b1
+  parameter bit CHERIoTEn        = 1'b1,
+  parameter bit ChkBranchJALAddr = 1'b1,
+  parameter bit PredictRA        = 1'b0
 ) (
   input  logic          clk_i,
   input  logic          rst_ni,
@@ -68,19 +70,23 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
     return result;
   endfunction 
 
-  function automatic logic [1:0] get_mispredict_type (ir_dec_t ir_dec, logic branch_taken);
-    logic [1:0] result;  // bit 0: mispredict_taken, bit 1: mispredict_not_taken;
+  function automatic logic [1:0] get_mispredict_type (ir_dec_t ir_dec, logic branch_taken, 
+                                                      full_data2_t full_data2);
+    logic [1:0] result; 
 
-    // note it's possible in JAL case to have predict_taken == 0, since the jtb table
-    // entry might be invalid
+    // bit 0: mispredict_taken (predicted as not-taken but actually taken);
+    //        note this is also covers target address misprediction (BTB/JBL table, JALR)
     if ((ir_dec.is_branch | ir_dec.is_jal) && ~ir_dec.ptaken & branch_taken)
       result[0] = 1'b1; 
     else if ((ir_dec.is_branch | ir_dec.is_jal) && ir_dec.ptaken && 
-              branch_taken && (ir_dec.ptarget != ir_dec.btarget))
-      result[0] = 1'b1; 
+              branch_taken && ChkBranchJALAddr && (ir_dec.ptarget != ir_dec.btarget))
+      result[0] = 1'b1;
+    else if (ir_dec.is_jalr & (~ir_dec.ptaken || (ir_dec.ptaken && (ir_dec.ptarget != full_data2.d0[31:0])) ))
+      result[0] = 1'b1;
     else 
       result[0] = 1'b0; 
 
+    // bit 1: mispredict_not_taken (predicted as taken but actually not)
     result[1] = ir_dec.is_branch && ir_dec.ptaken & ~branch_taken;
   
     return result;
@@ -137,8 +143,8 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
 
   logic [1:0] tmpa, tmpb;
 
-  assign tmpa = get_mispredict_type(ira_dec_i, branch_taken_a);
-  assign tmpb = get_mispredict_type(irb_dec_i, branch_taken_b);
+  assign tmpa = get_mispredict_type(ira_dec_i, branch_taken_a, ira_full_data2_i);
+  assign tmpb = get_mispredict_type(irb_dec_i, branch_taken_b, irb_full_data2_i);
 
   assign branch_info_o.mispredict_taken     = ira_is0_i ? {tmpb[0], tmpa[0]} : {tmpa[0], tmpb[0]};
   assign branch_info_o.mispredict_not_taken = ira_is0_i ? {tmpb[1], tmpa[1]} : {tmpa[1], tmpb[1]};

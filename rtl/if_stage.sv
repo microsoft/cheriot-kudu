@@ -25,41 +25,61 @@ module if_stage import super_pkg::*; #(
   parameter bit          InstrRdataBypass  = 1'b1,
   parameter bit          PredictUseBtb     = 1'b1,
   parameter int unsigned PredictBhtSize    = 16,
-  parameter int unsigned PrefetchDepth     = 3
+  parameter int unsigned PrefetchDepth     = 3,
+  parameter bit          AltEnable         = 1'b0,
+  parameter bit          PredictRA         = 1'b0,
+  parameter logic [20:0] RALimitHi         = 21'h080040,  // in 4kB unit
+  parameter logic [20:0] RALimitLo         = 21'h080000
 ) (
-  input  logic                        clk_i,
-  input  logic                        rst_ni,
-
-  input  logic                        cheri_pmode_i,
-  input  logic                        req_i,                    // instruction request control
-  input  logic                        debug_mode_i,
-
-  input  logic [31:0]                 boot_addr_i,
-  input  logic                        cheri_const_fetch_i,
+  input  logic             clk_i,
+  input  logic             rst_ni,
+                          
+  input  logic             cheri_pmode_i,
+  input  logic             req_i,                    // instruction request control
+  input  logic             debug_mode_i,
+                          
+  input  logic [31:0]      boot_addr_i,
+  input  logic             cheri_const_fetch_i,
 
   // instruction cache interface
-  output logic                        instr_req_o,
-  output logic [31:0]                 instr_addr_o,
-  input  logic                        instr_gnt_i,
-  input  logic                        instr_rvalid_i,
-  input  logic [63:0]                 instr_rdata_i,
-  input  logic                        instr_err_i,
+  output logic             instr_req_o,
+  output logic [31:0]      instr_addr_o,
+  input  logic             instr_gnt_i,
+  input  logic             instr_rvalid_i,
+  input  logic [63:0]      instr_rdata_i,
+  input  logic             instr_err_i,
+                           
+  // output of ID stage    
+  input  logic [1:0]       ds_rdy_i,
+  output ir_reg_t          if_instr0_o,
+  output ir_reg_t          if_instr1_o,
+  output logic [1:0]       if_valid_o,
+                           
+  // control signals       
+  input  logic             ex_pc_set_i,              // set the PC to a new value
+  input  logic [31:0]      ex_pc_target_i,           // Not-taken branch address in ID/EX
+                                                     // vectorized interrupt lines
+  input  logic             ex_bp_init_i, 
+  input  ex_bp_info_t      ex_bp_info_i, 
 
-  // output of ID stage
-  input  logic [1:0]                  ds_rdy_i,
-  output ir_reg_t                     if_instr0_o,
-  output ir_reg_t                     if_instr1_o,
-  output logic [1:0]                  if_valid_o,
-
-  // control signals
-  input  logic                        ex_pc_set_i,              // set the PC to a new value
-  input  logic [31:0]                 ex_pc_target_i,           // Not-taken branch address in ID/EX
-                                                                // vectorized interrupt lines
-  input  logic                        ex_bp_init_i, 
-  input  ex_bp_info_t                 ex_bp_info_i, 
+  // ALT branch related signals
+  input  ex_alt_ctrl_t     ex_alt_ctrl_i,
 
   // misc signals
-  output logic                        if_busy_o                 // IF stage is busy fetching instr
+  output logic             if_busy_o,                // IF stage is busy fetching instr
+
+  // regfile write snoop interface
+  input  logic [4:0]       rf_waddr0_i,
+  input  logic [RegW-1:0]  rf_wdata0_i,
+  input  logic             rf_we0_i,
+                           
+  input  logic [4:0]       rf_waddr1_i,
+  input  logic [RegW-1:0]  rf_wdata1_i,
+  input  logic             rf_we1_i,
+                           
+  input  logic [4:0]       rf_waddr2_i,
+  input  logic [RegW-1:0]  rf_wdata2_i,
+  input  logic             rf_we2_i
 );
 
   // prefetch buffer related signals
@@ -78,15 +98,22 @@ module if_stage import super_pkg::*; #(
 
   logic         branch_req;
   logic  [31:0] fetch_addr_n;
+
+  logic         alt_has_free;
+  logic [1:0]   alt_free_id;
+  logic         alloc_alt, bp_alloc_alt, bp_instr0;
+
   // The Branch predictor can provide a new PC which is internal to if_stage. Only override the mux
   // select to choose this if the core isn't already trying to set a PC.
   assign fetch_addr_n = ex_pc_set_i ? ex_pc_target_i : predict_pc_target;
-  assign branch_req  = ex_pc_set_i | predict_pc_set;
+  assign branch_req   = ex_pc_set_i | predict_pc_set;
+  assign alloc_alt    = ~ex_pc_set_i & bp_alloc_alt;   // don't save ALT if EX request a pc_set
   
   prefetch_buffer64 #(
     .UnalignedFetch (UnalignedFetch),
     .RdataBypass    (InstrRdataBypass),
-    .FifoDepth      (PrefetchDepth)
+    .FifoDepth      (PrefetchDepth),
+    .AltEnable      (AltEnable)
   ) prefetch_buffer_i (
       .clk_i               ( clk_i                      ),
       .rst_ni              ( rst_ni                     ),
@@ -94,6 +121,11 @@ module if_stage import super_pkg::*; #(
       .req_i               ( req_i                      ),
       .branch_i            ( branch_req                 ),
       .addr_i              ( {fetch_addr_n[31:1], 1'b0} ),
+      .ex_alt_ctrl_i       ( ex_alt_ctrl_i              ),
+      .alloc_alt_i         ( alloc_alt                  ),
+      .bp_instr0_i         ( bp_instr0                  ),
+      .alt_has_free_o      ( alt_has_free               ),
+      .alt_free_id_o       ( alt_free_id                ),
       .ready_i             ( ds_rdy_i                   ),
       .valid_o             ( fetch_valid                ),
       .instr0_o            ( fetch_instr0               ),
@@ -114,7 +146,11 @@ module if_stage import super_pkg::*; #(
   branch_predict #(
     .InstrBufEn (InstrBufEn), 
     .UseBtb     (PredictUseBtb),
-    .BhtSize    (PredictBhtSize)
+    .BhtSize    (PredictBhtSize),
+    .AltEnable  (AltEnable),
+    .PredictRA  (PredictRA),
+    .RALimitHi  (RALimitHi),
+    .RALimitLo  (RALimitLo)
   ) branch_predict_i (
     .clk_i               (clk_i            ),
     .rst_ni              (rst_ni           ),
@@ -135,7 +171,20 @@ module if_stage import super_pkg::*; #(
     .ds_rdy_i            (ds_rdy_i         ),
     .pdt_valid_o         (if_valid_o       ),
     .pdt_instr0_o        (pdt_instr0       ), 
-    .pdt_instr1_o        (pdt_instr1       )
+    .pdt_instr1_o        (pdt_instr1       ),
+    .alloc_alt_o         (bp_alloc_alt     ),
+    .bp_instr0_o         (bp_instr0        ),
+    .alt_has_free_i      (alt_has_free     ),
+    .alt_free_id_i       (alt_free_id      ),
+    .rf_waddr0_i         (rf_waddr0_i      ),
+    .rf_wdata0_i         (rf_wdata0_i      ),
+    .rf_we0_i            (rf_we0_i         ),       
+    .rf_waddr1_i         (rf_waddr1_i      ),
+    .rf_wdata1_i         (rf_wdata1_i      ),
+    .rf_we1_i            (rf_we1_i         ),        
+    .rf_waddr2_i         (rf_waddr2_i      ),
+    .rf_wdata2_i         (rf_wdata2_i      ),
+    .rf_we2_i            (rf_we2_i         )
   );
 
   // compressed instruction decoding, or more precisely compressed instruction

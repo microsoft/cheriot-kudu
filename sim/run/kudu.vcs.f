@@ -3,6 +3,7 @@
 $rtlRoot/cheri_pkg.sv
 $rtlRoot/csr_pkg.sv
 $rtlRoot/super_pkg.sv
+$rtlRoot/kudu_cfg_pkg.sv
 $rtlRoot/dual_fifo.sv
 $rtlRoot/stage_fifo.sv
 $rtlRoot/wt_fifo.sv

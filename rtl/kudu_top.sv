@@ -2,17 +2,10 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-module kudu_top import super_pkg::*;  #(
-  parameter bit          CHERIoTEn      = 1'b0,
-  parameter int unsigned PipeCfg        = 0,
-  parameter bit          UseDWMult      = 1'b0,
-  parameter bit          DCacheEn       = 1'b1,
-  parameter int unsigned HeapBase       = 32'h2001_0000,
-  parameter int unsigned TSMapSize      = 1024,
-  parameter int unsigned DmHaltAddr     = 32'h1A110800,
-  parameter int unsigned DmExcAddr      = 32'h1A110808,
-  parameter bit          DbgTriggerEn   = 1'b1,
-  parameter int unsigned BrkptNum       = 2
+module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
+  parameter bit          CHERIoTEn = 1'b0,
+  parameter bit          UseDWMult = 1'b0,
+  parameter kudu_cfg_t   CFG       = KuduCfg1
 ) (
   // Clock and Reset
   input  logic                         clk_i,
@@ -62,44 +55,6 @@ module kudu_top import super_pkg::*;  #(
   import csr_pkg::*;
   import cheri_pkg::*;
 
-  // pipeline configuration (PipeCfg)
-  // Use prefetch buffer:
-  //   0: 5-stage total, 0-1-1, InstrRdataBypass = 1, IrStageBypass = 00 
-  //   1: 5-stage total, 1-0-1, InstrRdataBypass = 0, IrStageBypass = 01
-  //   2: 4-stage total, 0-1-0, InstrRdataBypass = 1, IrStageBypass = 10
-  //   3: 6-stage total, 1-1-1, InstrRdataBypass = 0, IrStageBypass = 00
-
-  localparam bit [1:0]    IrStageBypass  = (PipeCfg == 0) ? 2'b00 : 
-                                           (PipeCfg == 1) ? 2'b01 :
-                                           (PipeCfg == 2) ? 2'b10 :
-                                           (PipeCfg == 3) ? 2'b00 :
-                                           2'b00;
-                                         
-  localparam bit          IfRdataBypass  = (PipeCfg == 0) || (PipeCfg == 2);
-  localparam bit          IfCompDecEn    = (PipeCfg == 2);
-  localparam bit          IrCompDecEn    = (PipeCfg != 2);
-  //localparam bit        IfBTCacheEn    = (PipeCfg == 4) || (PipeCfg == 5);
-                          
-  localparam bit          PredictUseBtb  = (PipeCfg == 0) || (PipeCfg == 2);
-  localparam bit          PredictIbufEn  = (PipeCfg == 0) || (PipeCfg == 2);
-  localparam int unsigned PredictBhtSize = (PipeCfg == 1) ? 32 :
-                                           (PipeCfg == 3) ? 32 :
-                                           16;
-  localparam int unsigned PrefetchDepth  = (PipeCfg == 1) ? 3 :
-                                           (PipeCfg == 3) ? 3 :
-                                           2;
-  localparam int unsigned IrS0Depth      = ((PipeCfg == 1) |  (PipeCfg == 3)) ? 4 : 2;
-
-  localparam bit          DualIssue      = 1'b1;
-  localparam bit          EarlyLoad      = 1'b1;
-  localparam bit          UnalignedFetch = 1'b0;
-  localparam bit          NoMult         = 1'b0;
-  localparam bit          LoadFiltEn     = CHERIoTEn;
-  localparam bit          RV32M          = 1'b1;
-  localparam bit          RV32B          = 1'b1;
-  localparam bit          RV32A          = 1'b1;
-  localparam bit          CsrUseLSU      = 1'b1;
-
   rf_rdata2_t     rf_rdata2_p0;
   rf_rdata2_t     rf_rdata2_p1;
   rf_raddr2_t     rf_raddr2_p0;
@@ -117,7 +72,8 @@ module kudu_top import super_pkg::*;  #(
   logic [31:0]    ex_pc_target;            // Not-taken branch address in ID/EX
                                             // vectorized interrupt lines
   logic           ex_bp_init;         
-  ex_bp_info_t    ex_bp_info;         
+  ex_bp_info_t    ex_bp_info; 
+  ex_alt_ctrl_t   ex_alt_ctrl;        
                   
   logic [1:0]     ir_rdy;
   ir_reg_t        if_instr0;
@@ -207,17 +163,18 @@ module kudu_top import super_pkg::*;  #(
   logic            debug_csr_save;
 
 
-  logic [BrkptNum-1:0] tmatch_control;
-  logic [31:0]         tmatch_value[0:BrkptNum-1];
+  logic [CFG.BrkptNum-1:0] tmatch_control;
+  logic [31:0]     tmatch_value[0:CFG.BrkptNum-1];
 
-  logic             cmplx_instr_start;
-  logic             cmplx_instr_done; 
-  logic             cmplx_sbd_wr;
-  sbd_fifo_t        cmplx_sbd_wdata;
-  logic             cmplx_lsu_req_valid;
-  lsu_req_info_t    cmplx_lsu_req_info;
+  logic            cmplx_instr_start;
+  logic            cmplx_instr_done; 
+  logic            cmplx_sbd_wr;
+  sbd_fifo_t       cmplx_sbd_wdata;
+  logic            cmplx_lsu_req_valid;
+  lsu_req_info_t   cmplx_lsu_req_info;
 
-  logic             cheri_tsafe_en;
+
+  logic            cheri_tsafe_en;
 
   assign cheri_tsafe_en = 1'b1;   // QQQ for now - tie to an input or CSR?
 
@@ -245,13 +202,17 @@ module kudu_top import super_pkg::*;  #(
 
   if_stage #(
     .CHERIoTEn        (CHERIoTEn),
-    .InstrBufEn       (PredictIbufEn), 
-    .CompDecEn        (IfCompDecEn),
-    .InstrRdataBypass (IfRdataBypass),
-    .UnalignedFetch   (UnalignedFetch),
-    .PredictUseBtb    (PredictUseBtb),
-    .PredictBhtSize   (PredictBhtSize),
-    .PrefetchDepth    (PrefetchDepth)
+    .InstrBufEn       (CFG.PredictIbufEn), 
+    .CompDecEn        (CFG.IfCompDecEn),
+    .InstrRdataBypass (CFG.IfRdataBypass),
+    .UnalignedFetch   (CFG.UnalignedFetch),
+    .PredictUseBtb    (CFG.PredictUseBtb),
+    .PredictBhtSize   (CFG.PredictBhtSize),
+    .PrefetchDepth    (CFG.PrefetchDepth),
+    .AltEnable        (CFG.AltEnable),
+    .PredictRA        (CFG.PredictRA),
+    .RALimitHi        (CFG.RALimitHi),
+    .RALimitLo        (CFG.RALimitLo)
   ) if_stage_i(
     .clk_i                   (clk_i                   ),
     .rst_ni                  (rst_ni                  ),
@@ -274,20 +235,30 @@ module kudu_top import super_pkg::*;  #(
     .ex_pc_target_i          (ex_pc_target            ),   
     .ex_bp_init_i            (ex_bp_init              ),
     .ex_bp_info_i            (ex_bp_info              ),
-    .if_busy_o               (                        )
+    .ex_alt_ctrl_i           (ex_alt_ctrl             ),
+    .if_busy_o               (                        ),
+    .rf_waddr0_i             (rf_waddr0               ),
+    .rf_wdata0_i             (rf_wdata0               ),
+    .rf_we0_i                (rf_we0                  ),       
+    .rf_waddr1_i             (rf_waddr1               ),
+    .rf_wdata1_i             (rf_wdata1               ),
+    .rf_we1_i                (rf_we1                  ),        
+    .rf_waddr2_i             (rf_waddr2               ),
+    .rf_wdata2_i             (rf_wdata2               ),
+    .rf_we2_i                (rf_we2                  )
   );                        
                            
   ir_stage # (
-    .CompDecEn    (IrCompDecEn), 
-    .StageBypass  (IrStageBypass),
     .CHERIoTEn    (CHERIoTEn),
-    .S0FifoDepth  (IrS0Depth),
-    .RV32M        (RV32M),
-    .RV32B        (RV32B),
-    .RV32A        (RV32A),
-    .CsrUseLSU    (CsrUseLSU),
-    .DbgTriggerEn (DbgTriggerEn),
-    .BrkptNum     (BrkptNum)    
+    .CompDecEn    (CFG.IrCompDecEn), 
+    .StageBypass  (CFG.IrStageBypass),
+    .S0FifoDepth  (CFG.IrS0Depth),
+    .RV32M        (CFG.RV32M),
+    .RV32B        (CFG.RV32B),
+    .RV32A        (CFG.RV32A),
+    .CsrUseLSU    (CFG.CsrUseLSU),
+    .DbgTriggerEn (CFG.DbgTriggerEn),
+    .BrkptNum     (CFG.BrkptNum)    
   ) ir_stage_i (
     .clk_i              (clk_i           ),
     .rst_ni             (rst_ni          ),
@@ -330,11 +301,12 @@ module kudu_top import super_pkg::*;  #(
 
   issuer #(
     .CHERIoTEn  (CHERIoTEn ), 
-    .DualIssue  (DualIssue ), 
-    .LoadFiltEn (LoadFiltEn),
-    .RV32A      (RV32A     ),
-    .DmHaltAddr (DmHaltAddr),
-    .DmExcAddr  (DmExcAddr )
+    .DualIssue  (CFG.DualIssue ), 
+    .LoadFiltEn (CHERIoTEn),
+    .RV32A      (CFG.RV32A     ),
+    .AltEnable  (CFG.AltEnable ),
+    .DmHaltAddr (CFG.DmHaltAddr),
+    .DmExcAddr  (CFG.DmExcAddr )
   ) issuer_i (
     .clk_i                     (clk_i                   ),
     .rst_ni                    (rst_ni                  ),
@@ -388,6 +360,7 @@ module kudu_top import super_pkg::*;  #(
     .pc_target_o               (ex_pc_target            ),   
     .ex_bp_init_o              (ex_bp_init              ),
     .ex_bp_info_o              (ex_bp_info              ),
+    .ex_alt_ctrl_o             (ex_alt_ctrl             ),
     .irq_pending_i             (irq_pending             ),
     .irqs_i                    (irqs                    ),
     .priv_mode_i               (priv_mode               ),
@@ -433,7 +406,11 @@ module kudu_top import super_pkg::*;  #(
     .rd_data1_o  (sbdfifo_rdata1   )
   );
 
-  branch_unit #(.CHERIoTEn(CHERIoTEn)) branch_unit_i (
+  branch_unit #(
+    .CHERIoTEn         (CHERIoTEn),
+    .ChkBranchJALAddr  (CFG.PredictUseBtb),
+    .PredictRA         (CFG.PredictRA)
+  ) branch_unit_i (
     .clk_i               (clk_i              ), 
     .rst_ni              (rst_ni             ),
     .cheri_pmode_i       (cheri_pmode_i      ),
@@ -450,7 +427,7 @@ module kudu_top import super_pkg::*;  #(
     .ir1_cjalr_err_o     (ir1_cjalr_err      )
   );
 
-  alu_pipeline #(.CHERIoTEn(CHERIoTEn), .RV32B(RV32B)) alu_pipeline0_i (
+  alu_pipeline #(.CHERIoTEn(CHERIoTEn), .RV32B(CFG.RV32B)) alu_pipeline0_i (
     .clk_i             (clk_i           ),
     .rst_ni            (rst_ni          ),
     .cheri_pmode_i     (cheri_pmode_i   ),
@@ -470,7 +447,7 @@ module kudu_top import super_pkg::*;  #(
     .alupl_output_o    (alupl0_output   )
   );
 
-  alu_pipeline #(.CHERIoTEn(CHERIoTEn), .RV32B(RV32B)) alu_pipeline1_i (
+  alu_pipeline #(.CHERIoTEn(CHERIoTEn), .RV32B(CFG.RV32B)) alu_pipeline1_i (
     .clk_i             (clk_i           ),
     .rst_ni            (rst_ni          ),
     .cheri_pmode_i     (cheri_pmode_i   ),
@@ -491,12 +468,12 @@ module kudu_top import super_pkg::*;  #(
   );
 
   ls_pipeline # (.CHERIoTEn  (CHERIoTEn ), 
-                 .EarlyLoad  (EarlyLoad ), 
-                 .DCacheEn   (DCacheEn  ),
-                 .LoadFiltEn (LoadFiltEn),
-                 .RV32A      (RV32A     ),
-                 .HeapBase   (HeapBase  ),
-                 .TSMapSize  (TSMapSize ) 
+                 .EarlyLoad  (CFG.EarlyLoad ), 
+                 .DCacheEn   (CFG.DCacheEn  ),
+                 .LoadFiltEn (CHERIoTEn ),
+                 .RV32A      (CFG.RV32A     ),
+                 .HeapBase   (CFG.HeapBase  ),
+                 .TSMapSize  (CFG.TSMapSize ) 
 
   ) ls_pipeline_i ( 
     .clk_i                 (clk_i             ),
@@ -555,7 +532,7 @@ module kudu_top import super_pkg::*;  #(
 
   mult_pipeline # (
     .CHERIoTEn  (CHERIoTEn), 
-    .NoMult     (NoMult), 
+    .NoMult     (1'b0), 
     .UseDWMult  (UseDWMult)
   ) mult_pipeline_i (
     .clk_i              (clk_i            ),
@@ -630,19 +607,19 @@ module kudu_top import super_pkg::*;  #(
   );                  
   
   // Select which pipeline handles CSR/SCR read/write
-  assign csr_access = CsrUseLSU ? csr_access_a : csr_access_b;
-  assign csr_cheri  = CsrUseLSU ? csr_cheri_a  : csr_cheri_b;
-  assign csr_op_en  = CsrUseLSU ? csr_op_en_a  : csr_op_en_b;
-  assign csr_op     = CsrUseLSU ? csr_op_a     : csr_op_b;   
-  assign csr_addr   = CsrUseLSU ? csr_addr_a   : csr_addr_b; 
-  assign csr_wdata  = CsrUseLSU ? csr_wdata_a  : csr_wdata_b;
+  assign csr_access = CFG.CsrUseLSU ? csr_access_a : csr_access_b;
+  assign csr_cheri  = CFG.CsrUseLSU ? csr_cheri_a  : csr_cheri_b;
+  assign csr_op_en  = CFG.CsrUseLSU ? csr_op_en_a  : csr_op_en_b;
+  assign csr_op     = CFG.CsrUseLSU ? csr_op_a     : csr_op_b;   
+  assign csr_addr   = CFG.CsrUseLSU ? csr_addr_a   : csr_addr_b; 
+  assign csr_wdata  = CFG.CsrUseLSU ? csr_wdata_a  : csr_wdata_b;
 
   cs_registers #(
     .CHERIoTEn    (CHERIoTEn),
-    .DbgTriggerEn (DbgTriggerEn),
-    .BrkptNum     (BrkptNum),    
-    .RV32M        (RV32M),
-    .RV32B        (RV32B)
+    .DbgTriggerEn (CFG.DbgTriggerEn),
+    .BrkptNum     (CFG.BrkptNum),    
+    .RV32M        (CFG.RV32M),
+    .RV32B        (CFG.RV32B)
   ) cs_registers_i (
     .clk_i                        (clk_i),
     .rst_ni                       (rst_ni),
@@ -728,7 +705,7 @@ module kudu_top import super_pkg::*;  #(
     .cheri_fatal_err_o            ()
   );
 
-  cmplx_unit # (.RV32A(RV32A)) comlx_unit_i (
+  cmplx_unit # (.RV32A(CFG.RV32A)) comlx_unit_i (
     .clk_i                 (clk_i              ),    
     .rst_ni                (rst_ni             ),
     .flush_i               (cmt_flush        ),

@@ -22,6 +22,8 @@ module kudu_stats (
   logic [1:0] branch_mispredict;
   logic [1:0] jal_mispredict;
   logic       pc_set;
+  logic [1:0] branch_mis_not_taken;
+  logic       apply_alt;
 
   logic [31:0] issue_cnt, cycle_cnt;
   logic [31:0] dual_issue_cnt, single_issue_cnt;
@@ -34,7 +36,9 @@ module kudu_stats (
 
   logic [31:0] pc_set_cnt;
   logic [31:0] ir0_branch_mis_cnt, ir1_branch_mis_cnt;
+  logic [31:0] ir0_mis_not_taken_cnt, ir1_mis_not_taken_cnt;
   logic [31:0] ir0_jal_mis_cnt, ir1_jal_mis_cnt;
+  logic [31:0] alt_apply_cnt;
 
   logic [31:0] ir0_raw_alu_cnt, ir0_raw_mult_cnt, ir0_raw_ls_cnt;
   logic [31:0] ir1_raw_alu_cnt, ir1_raw_mult_cnt, ir1_raw_ls_cnt;
@@ -44,6 +48,9 @@ module kudu_stats (
 
   logic [31:0] ir_valid0_cnt, ir_valid1_cnt, ir_valid2_cnt;
   logic [31:0] single_case_cnt[5];
+
+  logic [31:0] load_cnt, store_cnt, load_hit_cnt;
+  logic [31:0] byp_match_cnt, byp_hit_cnt;
 
   // map RTL signals
   assign ir0_hazard = `ISSUER.ir0_hazard_event;
@@ -73,6 +80,11 @@ module kudu_stats (
   assign branch_mispredict = `ISSUER.branch_mispredict_event;
   assign jal_mispredict    = `ISSUER.jal_mispredict_event;
   assign pc_set            = `ISSUER.pc_set_o;
+
+  assign apply_alt         = `ISSUER.apply_alt;
+  assign branch_mis_not_taken = {`ISSUER.ir1_issued, `ISSUER.ir0_issued} & 
+                                {`ISSUER.ir1_dec.is_branch, `ISSUER.ir0_dec.is_branch} &
+                                `ISSUER.branch_info_i.mispredict_not_taken;
 
   always_ff  @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
@@ -172,11 +184,14 @@ module kudu_stats (
 
   always_ff  @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      pc_set_cnt         <= 0;
-      ir0_branch_mis_cnt <= 0;
-      ir1_branch_mis_cnt <= 0;
-      ir0_jal_mis_cnt    <= 0;
-      ir1_jal_mis_cnt    <= 0;
+      pc_set_cnt            <= 0;
+      ir0_branch_mis_cnt    <= 0;
+      ir1_branch_mis_cnt    <= 0;
+      ir0_jal_mis_cnt       <= 0;
+      ir1_jal_mis_cnt       <= 0;
+      ir0_mis_not_taken_cnt <= 0;
+      ir1_mis_not_taken_cnt <= 0;
+      alt_apply_cnt         <= 0;
     end else begin
       if (cnt_enable) begin
         if (pc_set) pc_set_cnt <= pc_set_cnt + 1;
@@ -185,9 +200,32 @@ module kudu_stats (
         if (branch_mispredict[1]) ir1_branch_mis_cnt <= ir1_branch_mis_cnt + 1;
         if (jal_mispredict[0]) ir0_jal_mis_cnt <= ir0_jal_mis_cnt + 1;
         if (jal_mispredict[1]) ir1_jal_mis_cnt <= ir1_jal_mis_cnt + 1;
+
+        alt_apply_cnt <= alt_apply_cnt + apply_alt;
+
+        ir0_mis_not_taken_cnt <= ir0_mis_not_taken_cnt + branch_mis_not_taken[0];
+        ir1_mis_not_taken_cnt <= ir1_mis_not_taken_cnt + branch_mis_not_taken[1];
       end
     end
   end
+
+  `define DCACHE tb_kudu_top.dut.ls_pipeline_i.genblk1.dcache_i
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      load_hit_cnt  <= 0;
+      load_cnt      <= 0;
+      store_cnt     <= 0;
+      byp_match_cnt <= 0;
+      byp_hit_cnt   <= 0;
+    end else if (cnt_enable) begin
+      load_hit_cnt  <= load_hit_cnt  + `DCACHE.load_hit_event;
+      load_cnt      <= load_cnt      + `DCACHE.load_event;
+      store_cnt     <= store_cnt     + `DCACHE.store_event;
+      byp_match_cnt <= byp_match_cnt + `DCACHE.byp_match_event;
+      byp_hit_cnt   <= byp_hit_cnt   + `DCACHE.byp_hit_event;
+    end
+  end
+
 
   initial begin
     @(posedge rst_ni);
@@ -199,27 +237,27 @@ module kudu_stats (
         $display("TB> STAT: cycle_cnt\t\t = %7d,  issue_cnt\t\t = %7d", cycle_cnt, issue_cnt);
         $display("TB> STAT: dual_issue_cnt\t = %7d,  single_issue_cnt\t = %7d,  idle_cnt\t\t = %7d",
                   dual_issue_cnt, single_issue_cnt, cycle_cnt - dual_issue_cnt - single_issue_cnt);
-        $display("TB>  STAT: ir_valid0_cnt\t = %7d,  ir_valid1_cnt\t = %7d,  ir_valid2_cnt\t = %7d",
+        $display("TB> STAT: ir_valid0_cnt\t = %7d,  ir_valid1_cnt\t = %7d,  ir_valid2_cnt\t = %7d",
                        ir_valid0_cnt, ir_valid1_cnt, ir_valid2_cnt);
 
         $display("TB> STAT: Branch stats --------------------------------------------------------" );
-        $display("TB> STAT: pc_set_cnt\t\t = %7d", pc_set_cnt);
-        $display("TB> STAT: ir0_branch_mis_cnt\t = %7d,  ir0_jal_mis_cnt\t = %7d", ir0_branch_mis_cnt, ir0_jal_mis_cnt);
-        $display("TB> STAT: ir1_branch_mis_cnt\t = %7d,  ir1_jal_mis_cnt\t = %7d", ir1_branch_mis_cnt, ir1_jal_mis_cnt);
+        $display("TB> STAT: pc_set_cnt\t\t = %7d,  alt_apply_cnt\t\t = %7d", pc_set_cnt, alt_apply_cnt);
+        $display("TB> STAT: ir0_branch_mis_cnt\t = %7d,  ir0_mis_not_taken_cnt\t = %7d", ir0_branch_mis_cnt, ir0_mis_not_taken_cnt);
+        $display("TB> STAT: ir1_branch_mis_cnt\t = %7d,  ir1_mis_not_taken_cnt\t = %7d", ir1_branch_mis_cnt, ir1_mis_not_taken_cnt);
 
-        $display("TB> STAT: Single issue (x1) stats ---------------------------------------------" );
-        $display("TB> STAT: x1_irvalid1_cnt\t = %7d,  x1_mispredict0_cnt\t = %7d", 
-                       single_case_cnt[0], single_case_cnt[1]);
-        $display("TB> STAT: x1_ir1_raw_by0_cnt\t = %7d,  x1_ir1_raw_more_cnt = %7d", 
-                       single_case_cnt[2], single_case_cnt[3]);
-        $display("TB> STAT: x1_others_cnt\t = %7d", single_case_cnt[4]);
+        // $display("TB> STAT: Single issue (x1) stats ---------------------------------------------" );
+        // $display("TB> STAT: x1_irvalid1_cnt\t = %7d,  x1_mispredict0_cnt\t = %7d", 
+        //               single_case_cnt[0], single_case_cnt[1]);
+        //$display("TB> STAT: x1_ir1_raw_by0_cnt\t = %7d,  x1_ir1_raw_more_cnt = %7d", 
+        //               single_case_cnt[2], single_case_cnt[3]);
+        //$display("TB> STAT: x1_others_cnt\t = %7d", single_case_cnt[4]);
 
         $display("TB> STAT: IR0 stats -----------------------------------------------------------" );
         $display("TB> STAT: ir0_hazard_cnt\t = %7d,  ir0_raw_cnt\t = %7d,  ir0_waw_cnt\t = %7d",
                        ir0_hazard_cnt, ir0_raw_cnt, ir0_waw_cnt);
         $display("TB> STAT: ir0_raw_alu_cnt\t = %7d,  ir0_raw_mult_cnt\t = %7d,  ir0_raw_ls_cnt\t = %7d",
                        ir0_raw_alu_cnt, ir0_raw_mult_cnt, ir0_raw_ls_cnt);
-        $display("TB> STAT: ir0_stall_nohaz_cnt = %7d", ir0_stall_nohaz_cnt);
+        $display("TB> STAT: ir0_stall_nohaz_cnt\t = %7d", ir0_stall_nohaz_cnt);
 
         $display("TB> STAT: IR1 stats -----------------------------------------------------------" );
         $display("TB> STAT: ir1_hazard_cnt\t = %7d,  ir1_raw_cnt\t = %7d,  ir1_waw_cnt\t = %7d",
@@ -227,8 +265,12 @@ module kudu_stats (
         $display("TB> STAT: ir1_raw_by_ir0_cnt\t = %7d", ir1_raw_by_ir0_cnt);
         $display("TB> STAT: ir1_raw_alu_cnt\t = %7d,  ir1_raw_mult_cnt\t = %7d,  ir1_raw_ls_cnt\t = %7d",
                        ir1_raw_alu_cnt, ir1_raw_mult_cnt, ir1_raw_ls_cnt);
-        $display("TB> STAT: ir1_stall_nohaz_cnt = %7d,  ir1_ooo_rdy_cnt\t = %7d", 
+        $display("TB> STAT: ir1_stall_nohaz_cnt\t = %7d,  ir1_ooo_rdy_cnt\t = %7d", 
                        ir1_stall_nohaz_cnt, ir1_ooo_rdy_cnt);
+
+        $display("TB> STAT: DCACHE stats --------------------------------------------------------" );
+        $display("TB> STAT: load_cnt\t\t = %7d,  load_hit_cnt\t = %7d,  store_cnt\t\t = %7d",
+                       load_cnt, load_hit_cnt, store_cnt);
       end
     end
   end

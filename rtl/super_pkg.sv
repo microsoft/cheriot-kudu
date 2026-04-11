@@ -45,6 +45,9 @@ package super_pkg;
     logic [15:0] c_insn;           // for trace only
     logic        ptaken;
     logic [31:0] ptarget;
+    logic        alt_valid;
+    logic [1:0]  alt_id;
+    logic [4:0]  alt_seq;
   } ir_reg_t;
 
   parameter ir_reg_t NULL_IR_REG = ir_reg_t'(0);
@@ -123,6 +126,9 @@ package super_pkg;
     cheri_op_t   cheri_op;
     logic        is_cmplx;
     logic        is_brkpt;
+    logic        alt_valid;
+    logic [1:0]  alt_id;
+    logic [4:0]  alt_seq;
   } ir_dec_t;
 
   typedef struct packed {
@@ -220,6 +226,15 @@ package super_pkg;
     logic [31:0] target0;
     logic [31:0] target1;
   } ex_bp_info_t;
+
+  typedef struct packed {
+    logic       flush;
+    logic       apply;
+    logic [1:0] cancel;
+    logic       ir_sel;
+    logic [1:0] id0;
+    logic [1:0] id1;
+  } ex_alt_ctrl_t;
 
   typedef struct packed {
     logic [31:0] pc;

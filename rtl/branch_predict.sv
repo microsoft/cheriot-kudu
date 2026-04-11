@@ -8,7 +8,11 @@
 module branch_predict import super_pkg::*; #(
   parameter int unsigned BhtSize    = 16,
   parameter int unsigned JtbSize    = 4,
-  parameter bit          UseBtb     = 1'b1, 
+  parameter bit          UseBtb     = 1'b1,
+  parameter bit          AltEnable  = 1'b0, 
+  parameter bit          PredictRA  = 1'b0, 
+  parameter logic [20:0] RALimitHi  = 21'h080040,  // in 4kB unit
+  parameter logic [20:0] RALimitLo  = 21'h080000,
   parameter bit          InstrBufEn = 1'b0
 ) (
   input  logic                clk_i,
@@ -41,7 +45,26 @@ module branch_predict import super_pkg::*; #(
   input  logic [1:0]          ds_rdy_i,
   output logic [1:0]          pdt_valid_o,
   output ir_reg_t             pdt_instr0_o, 
-  output ir_reg_t             pdt_instr1_o
+  output ir_reg_t             pdt_instr1_o,
+
+  // Branch ALT save interace
+  input  logic                alt_has_free_i,  
+  input  logic [1:0]          alt_free_id_i, 
+  output logic                alloc_alt_o, 
+  output logic                bp_instr0_o,
+
+  // regfile write snoop interface
+  input  logic [4:0]          rf_waddr0_i,
+  input  logic [RegW-1:0]     rf_wdata0_i,
+  input  logic                rf_we0_i,  
+                              
+  input  logic [4:0]          rf_waddr1_i,
+  input  logic [RegW-1:0]     rf_wdata1_i,
+  input  logic                rf_we1_i,   
+                              
+  input  logic [4:0]          rf_waddr2_i,
+  input  logic [RegW-1:0]     rf_wdata2_i,
+  input  logic                rf_we2_i    
 );
 
   localparam int unsigned BhtAW = $clog2(BhtSize);
@@ -115,11 +138,26 @@ module branch_predict import super_pkg::*; #(
     return result;
   endfunction
 
+  function automatic logic dec_jalr_ra(logic [31:0] insn);
+    logic result;
+    
+    if ((insn[6:0] == 7'h2) && (insn[15:13] == 3'b100) && (insn[11:7] == 5'h1))
+      result = 1'b1;     // c.jr and c.jalr with rs1 == ra
+    else if ((insn[6:0] == OPCODE_JALR) && (insn[19:15] == 5'h1) && 
+             (insn[31:20] == 12'h0) && (insn[14:12] == 3'b000))
+      result = 1'b1;     // JAR with offset 0, rs1 == ra
+    else 
+      result = 1'b0;
+
+    return result;
+  endfunction
+
+
   bht_e   bht[BhtSize];
   btb_t   btb[BhtSize];            
   btb_t   jtb[JtbSize];
 
-  logic [1:0] is_branch, is_jal;
+  logic [1:0] is_branch, is_jal, is_jalr_ra;
 
   logic [BhtAW-1:0] bht_index0, bht_index1_spec0, bht_index1_spec1;
 
@@ -127,14 +165,18 @@ module branch_predict import super_pkg::*; #(
   btb_t  btb_rdata[2];
   btb_t  jtb_rdata[2];
   
-  logic [1:0]  pdt_branch_go, pdt_jal_go;
+  logic [1:0]  pdt_branch_go, pdt_jal_go, pdt_jalr_go;
+  logic [1:0]  pdt_pc_set;
   logic [31:0] predict_target, predict_pc;
   logic        use_ibuf;
+  logic [1:0]  alloc_alt_go;
 
   ir_reg_t     pdt_instr0, pdt_instr1;
   ir_reg_t     ibuf_instr;
   logic [31:0] ibuf_pc_nxt;
   logic        ibuf_valid;
+
+  logic [31:0] cur_ra_q, cur_ra;
 
   assign predict_ibuf_hit_o  = use_ibuf & ds_rdy_i[1];
   assign predict_br_target_o = predict_target;
@@ -149,6 +191,9 @@ module branch_predict import super_pkg::*; #(
 
   assign is_jal[0] = fetch_instr0_i.is_jal;
   assign is_jal[1] = fetch_instr1_i.is_jal;
+
+  assign is_jalr_ra[0] = PredictRA & dec_jalr_ra(fetch_instr0_i.insn);
+  assign is_jalr_ra[1] = PredictRA & dec_jalr_ra(fetch_instr1_i.insn);
 
   // update bht table and btb buffer based on information from EX stage only
   logic [JtbAW-1:0] jtb_index0, jtb_index1_spec0, jtb_index1_spec1;
@@ -231,18 +276,30 @@ module branch_predict import super_pkg::*; #(
   assign pdt_jal_go[0] = is_jal[0];
   assign pdt_jal_go[1] = is_jal[1];
 
-  assign predict_pc_set_o = pdt_en_i &
-                            ((fetch_valid_i[0] & ds_rdy_i[0] & (pdt_branch_go[0] | pdt_jal_go[0])) ||
-                             (fetch_valid_i[1] & ds_rdy_i[1] & (pdt_branch_go[1] | pdt_jal_go[1]))); 
+  assign pdt_jalr_go[0] = is_jalr_ra[0];
+  assign pdt_jalr_go[1] = is_jalr_ra[1];
+
+  assign pdt_pc_set[0] = fetch_valid_i[0] & ds_rdy_i[0] & (pdt_branch_go[0] | pdt_jal_go[0] | pdt_jalr_go[0]);
+  assign pdt_pc_set[1] = fetch_valid_i[1] & ds_rdy_i[1] & (pdt_branch_go[1] | pdt_jal_go[1] | pdt_jalr_go[1]);
+
+  assign predict_pc_set_o = pdt_en_i & (|pdt_pc_set);
 
   assign pdt_valid_o[0] = fetch_valid_i[0];
-  assign pdt_valid_o[1] = pdt_en_i ? (use_ibuf | (fetch_valid_i[1] & ~(pdt_branch_go[0]| pdt_jal_go[0]))) :
-                          fetch_valid_i[1];
+  assign pdt_valid_o[1] = pdt_en_i ? (use_ibuf | (fetch_valid_i[1] & 
+                          ~(pdt_branch_go[0] | pdt_jal_go[0] | pdt_jalr_go[0]))) : fetch_valid_i[1];
 
   // can only select ibuf_pc_nxt if downstream is ready to accept instr1
   assign predict_pc    = pdt_en_i ? ((use_ibuf & ds_rdy_i[1])? ibuf_pc_nxt : predict_target) : 32'h0;
   assign pdt_instr0_o  = pdt_en_i ? pdt_instr0 : fetch_instr0_i;
   assign pdt_instr1_o  = pdt_en_i ? (use_ibuf ? ibuf_instr : pdt_instr1) : fetch_instr1_i;
+
+  // ALT allocation logic
+  // only branch uses ALT, jal/jalr don't
+  assign alloc_alt_go[0] = AltEnable & fetch_valid_i[0] & ds_rdy_i[0] & pdt_branch_go[0] & alt_has_free_i;
+  assign alloc_alt_go[1] = AltEnable & ~pdt_pc_set[0] & fetch_valid_i[1] & ds_rdy_i[1] & pdt_branch_go[1] & alt_has_free_i;
+
+  assign alloc_alt_o = pdt_en_i & (|alloc_alt_go);
+  assign bp_instr0_o = alloc_alt_go[0];
 
   // generate output based on valdi/rdy status and pass on to next pipe stages
   always_comb begin
@@ -255,7 +312,11 @@ module branch_predict import super_pkg::*; #(
     pdt_instr1.ptaken  = 1'b0;
     pdt_instr1.ptarget = 32'h0;
 
-    // predict_target = btb_rdata[0].target;
+    pdt_instr0.alt_valid = pdt_en_i & alloc_alt_go[0]; 
+    pdt_instr0.alt_id    = alt_free_id_i;
+
+    pdt_instr1.alt_valid = pdt_en_i & alloc_alt_go[1]; 
+    pdt_instr1.alt_id    = alt_free_id_i;
 
     if (pdt_branch_go[0])
       predict_target     = btb_rdata[0].target;
@@ -263,8 +324,10 @@ module branch_predict import super_pkg::*; #(
       predict_target     = jtb_rdata[0].target;
     else if (pdt_branch_go[1])
       predict_target     = btb_rdata[1].target;
-    else
+    else if (pdt_jal_go[1])
       predict_target     = jtb_rdata[1].target;
+    else
+      predict_target     = cur_ra;
 
     if (pdt_branch_go[0]) begin
       pdt_instr0.ptaken  = 1'b1;
@@ -272,15 +335,21 @@ module branch_predict import super_pkg::*; #(
     end else if (pdt_jal_go[0]) begin
       pdt_instr0.ptaken  = 1'b1;
       pdt_instr0.ptarget = jtb_rdata[0].target;
+    end else if (pdt_jalr_go[0]) begin
+      pdt_instr0.ptaken  = 1'b1;
+      pdt_instr0.ptarget = cur_ra;
     end else if (pdt_branch_go[1]) begin
       pdt_instr1.ptaken  = 1'b1;
       pdt_instr1.ptarget = btb_rdata[1].target;
     end else if (pdt_jal_go[1]) begin 
       pdt_instr1.ptaken  = 1'b1;
       pdt_instr1.ptarget = jtb_rdata[1].target;
+    end else if (pdt_jalr_go[1]) begin
+      pdt_instr1.ptaken  = 1'b1;
+      pdt_instr1.ptarget = cur_ra;
     end
-  end
 
+  end
 
   // 
   //  Single instruction buffer/cache for branch target
@@ -341,6 +410,38 @@ module branch_predict import super_pkg::*; #(
     assign use_ibuf    = 1'b0;
     assign ibuf_instr  = NULL_IR_REG;
     assign ibuf_valid  = 1'b0;
+  end
+
+  // Keep a copy of RA by snooping regfile writes
+  if (PredictRA) begin : gen_predict_ra
+    logic [31:0] cur_ra_d;
+
+    assign cur_ra = cur_ra_q;
+
+    always_comb begin
+      if (rf_we2_i && (rf_waddr2_i == 5'h1))
+        cur_ra_d = rf_wdata2_i;
+      else if (rf_we1_i && (rf_waddr1_i == 5'h1))
+        cur_ra_d = rf_wdata1_i;
+      else if (rf_we0_i && (rf_waddr0_i == 5'h1))
+        cur_ra_d = rf_wdata0_i;
+      else
+        cur_ra_d = cur_ra_q;
+
+      // limit predicted return address to a memory range in case the memory system 
+      // can't handle acess to unpopulated space (e.g., hanging)
+      if (({1'b0, cur_ra_d[31:12]} >= RALimitHi) || ({1'b0, cur_ra_d[31:12]} < RALimitLo))
+        cur_ra_d = cur_ra_q;
+    end
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+      if (!rst_ni) 
+        cur_ra_q <= 32'h0;
+      else
+        cur_ra_q <= cur_ra_d;
+    end
+  end else begin : gen_no_predict_ra
+    assign cur_ra = 32'h0;
   end
 
 endmodule

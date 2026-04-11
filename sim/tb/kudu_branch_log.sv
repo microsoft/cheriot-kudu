@@ -10,12 +10,13 @@ module kudu_branch_log #(
 
   logic log_enable;
   int fd;
-  int line_cnt;
+  int line_cnt, cycle_cnt, instr_cnt;
 
-  logic [1:0]  ir_branch, ir_taken, ir_miss;
+  logic [1:0]  ir_branch, ir_taken, ir_miss, ir_issued;
   logic [31:0] ir_pc[2], ir_target[2];
 
   // map RTL signals
+  assign ir_issued   = {`ISSUER.ir1_issued, `ISSUER.ir0_issued};
   assign ir_branch   = {(`ISSUER.ir1_issued & `ISSUER.ir1_dec.is_branch),
                         (`ISSUER.ir0_issued & `ISSUER.ir0_dec.is_branch)};
   assign ir_miss     = `ISSUER.branch_mispredict;
@@ -38,7 +39,8 @@ module kudu_branch_log #(
     int i;
     string flag_str1, flag_str2;
     @(posedge rst_ni);
-    line_cnt = 0;
+    line_cnt  = 0;
+    cycle_cnt = 0;
 
     repeat (3) @(posedge clk_i);
     while (~log_enable) @(posedge clk_i);
@@ -46,15 +48,18 @@ module kudu_branch_log #(
     fd = $fopen(log_fname, "w");
     if (fd == 0) $error("Error: branch_log: failed to open file");
 
-    $fdisplay(fd, "Line Number\tPC\t\tTarget\tTaken\tMispredict");
+    $fdisplay(fd, "Line Number\tcycle_cnt\tinstr_cnt\tPC\t\tTarget\tTaken\tMispredict");
     while (log_enable) begin
       @(posedge clk_i);
+      cycle_cnt += 1;
+
       for (i = 0; i<2; i++) begin
+        instr_cnt += ir_issued[i];
         if (ir_branch[i]) begin
           flag_str1 = ir_miss[i] ? "MISS" : "";
           flag_str2 = (ir_pc[i] < ir_target[i]) ? "FWD" : "BKWD";
-          $fdisplay(fd, "%d\t%8x\t%8x\t%d\t%d\t%s\t%s", 
-                    line_cnt, ir_pc[i], ir_target[i], ir_taken[i], ir_miss[i], flag_str1, flag_str2);
+          $fdisplay(fd, "%d\t%d\t%d\t%8x\t%8x\t%d\t%d\t%s\t%s", 
+                    line_cnt, cycle_cnt, instr_cnt, ir_pc[i], ir_target[i], ir_taken[i], ir_miss[i], flag_str1, flag_str2);
           line_cnt += 1;
         end
       end

@@ -12,6 +12,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   parameter bit          AllowWaW   = 1'b1,
   parameter bit          LoadFiltEn = 1'b1,
   parameter bit          RV32A      = 1'b1,
+  parameter bit          AltEnable  = 1'b0,
   parameter int unsigned DmHaltAddr = 32'h1A110800,
   parameter int unsigned DmExcAddr  = 32'h1A110808
 ) (
@@ -84,6 +85,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   output logic [31:0]      pc_target_o,
   output logic             ex_bp_init_o,      // to branch predictor
   output ex_bp_info_t      ex_bp_info_o,      // to branch predictor
+  output ex_alt_ctrl_t     ex_alt_ctrl_o,
                            
   // CSR interface         
   input  priv_lvl_e        priv_mode_i,
@@ -272,7 +274,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   //      ir0 misprediction will preempt ir1 (pl_sel_enable[1]) anyway
 
   assign pl_sel_enable[1] = DualIssue & ir0_normal_issued & normal_ex_enable[1] & 
-                            ~(branch_mispredict[0] | (~CHERIoTEn & ir0_dec.is_jalr));
+                            ~branch_mispredict[0]; // | (~CHERIoTEn & ir0_dec.is_jalr));
   assign ir1_pl_sel       = select_pl(cheri_pmode, pl_sel_enable[1], ~ira_is0_i, ir1_dec.pl_type);
 
   // issued == all ex pipeline involved must be ready (jal case needs 2)
@@ -595,13 +597,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         ir_flush_o  = 1'b0;
       end 
       ctrl_fsm_cs[CSM_DECODE] : begin
-        if (~CHERIoTEn & ir0_dec.is_jalr & ir0_issued) begin
-          pc_set_o    = 1'b1;
-          ir_flush_o  = 1'b1;
-        end else if (branch_mispredict[0] && ir0_issued) begin 
-          pc_set_o    = 1'b1;
-          ir_flush_o  = 1'b1;
-        end else if (~CHERIoTEn & ir1_dec.is_jalr & ir1_issued) begin
+        if (branch_mispredict[0] && ir0_issued) begin 
           pc_set_o    = 1'b1;
           ir_flush_o  = 1'b1;
         end else if (branch_mispredict[1] && ir1_issued) begin
@@ -612,16 +608,12 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
           ir_flush_o  = 1'b0;
         end
 
-        if (~CHERIoTEn & ir0_dec.is_jalr)
-          pc_target_o = ir0_jalr_target_i;
-        else if (branch_info_i.mispredict_taken[0])
-          pc_target_o = ir0_dec.btarget;
+        if (branch_info_i.mispredict_taken[0])
+          pc_target_o = ir0_dec.is_jalr ? ir0_jalr_target_i : ir0_dec.btarget;
         else if (branch_info_i.mispredict_not_taken[0])
           pc_target_o = ir0_dec.pc_nxt;
-        else if (~CHERIoTEn & ir1_dec.is_jalr)
-          pc_target_o = ir1_jalr_target_i;
         else if (branch_info_i.mispredict_taken[1])
-          pc_target_o = ir1_dec.btarget;
+          pc_target_o = ir1_dec.is_jalr ? ir1_jalr_target_i : ir1_dec.btarget;
         else if (branch_info_i.mispredict_not_taken[1])
           pc_target_o = ir1_dec.pc_nxt;
         else
@@ -665,6 +657,40 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       fetch_req_o = 1'b1;
     else
       fetch_req_o = 1'b0;
+  end
+
+  logic        flush_alt, apply_alt, alt_ir_sel;
+  logic [1:0]  cancel_alt;
+  logic [1:0]  apply_cause;
+
+  always_comb begin
+
+    // ALT logic
+    apply_alt     = 1'b0;
+    cancel_alt    = 2'b00;
+    alt_ir_sel    = 1'b0;
+
+    if (AltEnable) begin
+      flush_alt = ir_flush_o;
+
+      apply_cause[0] = ir0_issued & ir0_dec.is_branch & ir0_dec.alt_valid &
+                       branch_info_i.mispredict_not_taken[0];
+      apply_cause[1] = ir1_issued & ir1_dec.is_branch & ir1_dec.alt_valid &
+                       branch_info_i.mispredict_not_taken[1];
+      apply_alt = ctrl_fsm_cs[CSM_DECODE] & (|apply_cause);
+
+      alt_ir_sel = apply_cause[1];  // ir1 issued |-> ir0 is not a misprediction
+
+      // cancel ALT may happen on both IR0 and IR1.
+      // alt_valid implies a branch predicted as taken 
+      cancel_alt[0] = ctrl_fsm_cs[CSM_DECODE] & ir0_issued & ir0_dec.is_branch & 
+                      ir0_dec.alt_valid & ~branch_mispredict[0];
+      cancel_alt[1] = ctrl_fsm_cs[CSM_DECODE] & ir1_issued & ir1_dec.is_branch & 
+                      ir1_dec.alt_valid & ~branch_mispredict[1];
+    end
+
+    ex_alt_ctrl_o = '{flush_alt, apply_alt, cancel_alt, alt_ir_sel, ir0_dec.alt_id, ir1_dec.alt_id};
+
   end
 
   //
