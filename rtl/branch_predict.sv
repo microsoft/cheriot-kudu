@@ -322,6 +322,8 @@ module branch_predict import super_pkg::*; #(
       predict_target     = btb_rdata[0].target;
     else if (pdt_jal_go[0]) 
       predict_target     = jtb_rdata[0].target;
+    else if (pdt_jalr_go[0])
+      predict_target     = cur_ra;
     else if (pdt_branch_go[1])
       predict_target     = btb_rdata[1].target;
     else if (pdt_jal_go[1])
