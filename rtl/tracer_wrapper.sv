@@ -25,31 +25,37 @@ module tracer_wrapper import super_pkg::*; import tracer_pkg::*; import cheri_pk
     // only need to conside issued branch/jal/jalr instructions (rvfi.valid == 1)
     // note this is basically 
     ir_dec_t      ir_dec;
-    logic         mis_taken, mis_not_taken;
+    logic         mis_taken, mis_not_taken, mis_jal, mis_jalr;
     logic         branch_taken;
     logic         any_err;
 
     if (ir_sel == 0) begin
       ir_dec        = `ISSUER_PATH.ir0_dec;
-      mis_taken     = `ISSUER_PATH.branch_info_i.mispredict_taken[0];
-      mis_not_taken = `ISSUER_PATH.branch_info_i.mispredict_not_taken[0];
+      mis_taken     = `ISSUER_PATH.branch_info_i.mis_taken[0];
+      mis_not_taken = `ISSUER_PATH.branch_info_i.mis_not_taken[0];
+      mis_jal       = `ISSUER_PATH.branch_info_i.mis_jal[0];
+      mis_jalr      = `ISSUER_PATH.branch_info_i.mis_jalr[0];
       branch_taken  = `ISSUER_PATH.branch_info_i.branch_taken[0];
       any_err       = `ISSUER_PATH.ir_any_err[0];
     end else begin
       ir_dec        = `ISSUER_PATH.ir1_dec;
-      mis_taken     = `ISSUER_PATH.branch_info_i.mispredict_taken[1];
-      mis_not_taken = `ISSUER_PATH.branch_info_i.mispredict_not_taken[1];
+      mis_taken     = `ISSUER_PATH.branch_info_i.mis_taken[1];
+      mis_not_taken = `ISSUER_PATH.branch_info_i.mis_not_taken[1];
+      mis_jal       = `ISSUER_PATH.branch_info_i.mis_jal[1];
+      mis_jalr      = `ISSUER_PATH.branch_info_i.mis_jalr[1];
       branch_taken  = `ISSUER_PATH.branch_info_i.branch_taken[1];
       any_err       = `ISSUER_PATH.ir_any_err[1];
     end
 
     if (any_err) 
       result = ir_dec.pc_nxt;  // somehow this is the ibex tracer behavor - should use the instr.btarget?
-    else if (ir_dec.is_jalr) 
+    else if ((ir_dec.is_jalr & mis_jalr) | (ir_dec.is_jal & mis_jal)) 
       result = `TOP_PATH.ex_pc_target; 
-    else if ((ir_dec.is_jal | ir_dec.is_branch) & branch_taken & mis_taken)
+    else if (ir_dec.is_jalr | ir_dec.is_jal ) 
+      result = ir_dec.ptarget;
+    else if (ir_dec.is_branch & branch_taken & mis_taken)
       result = `TOP_PATH.ex_pc_target; 
-    else if ((ir_dec.is_jal | ir_dec.is_branch) & branch_taken)
+    else if (ir_dec.is_branch & branch_taken)
       result = ir_dec.ptarget;
     else
       result = ir_dec.pc_nxt;

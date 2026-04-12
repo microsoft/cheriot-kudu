@@ -212,8 +212,10 @@ package super_pkg;
   parameter lsu_req_info_t NULL_LSU_REQ_INFO = lsu_req_info_t'(0);
 
   typedef struct packed {
-    logic [1:0]  mispredict_taken;
-    logic [1:0]  mispredict_not_taken;
+    logic [1:0]  mis_taken;
+    logic [1:0]  mis_not_taken;
+    logic [1:0]  mis_jal;
+    logic [1:0]  mis_jalr;
     logic [1:0]  branch_taken;
   } branch_info_t;
 

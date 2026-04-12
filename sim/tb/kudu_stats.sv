@@ -75,7 +75,7 @@ module kudu_stats (
   assign ir1_ooo_rdy = `ISSUER.ir1_ooo_rdy_event;
   assign ir1_raw_by_ir0 = `ISSUER.ir1_raw_by_ir0_event;
 
-  assign ir0_mispredict = `ISSUER.branch_mispredict[0];
+  assign ir0_mispredict = `ISSUER.mispredict[0];
 
   assign branch_mispredict = `ISSUER.branch_mispredict_event;
   assign jal_mispredict    = `ISSUER.jal_mispredict_event;
@@ -84,7 +84,7 @@ module kudu_stats (
   assign apply_alt         = `ISSUER.apply_alt;
   assign branch_mis_not_taken = {`ISSUER.ir1_issued, `ISSUER.ir0_issued} & 
                                 {`ISSUER.ir1_dec.is_branch, `ISSUER.ir0_dec.is_branch} &
-                                `ISSUER.branch_info_i.mispredict_not_taken;
+                                `ISSUER.branch_info_i.mis_not_taken;
 
   always_ff  @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
@@ -237,13 +237,13 @@ module kudu_stats (
         $display("TB> STAT: cycle_cnt\t\t = %7d,  issue_cnt\t\t = %7d", cycle_cnt, issue_cnt);
         $display("TB> STAT: dual_issue_cnt\t = %7d,  single_issue_cnt\t = %7d,  idle_cnt\t\t = %7d",
                   dual_issue_cnt, single_issue_cnt, cycle_cnt - dual_issue_cnt - single_issue_cnt);
-        $display("TB> STAT: ir_valid0_cnt\t = %7d,  ir_valid1_cnt\t = %7d,  ir_valid2_cnt\t = %7d",
+        $display("TB> STAT: ir_valid0_cnt\t\t = %7d,  ir_valid1_cnt\t = %7d,  ir_valid2_cnt\t = %7d",
                        ir_valid0_cnt, ir_valid1_cnt, ir_valid2_cnt);
 
         $display("TB> STAT: Branch stats --------------------------------------------------------" );
-        $display("TB> STAT: pc_set_cnt\t\t = %7d,  alt_apply_cnt\t\t = %7d", pc_set_cnt, alt_apply_cnt);
-        $display("TB> STAT: ir0_branch_mis_cnt\t = %7d,  ir0_mis_not_taken_cnt\t = %7d", ir0_branch_mis_cnt, ir0_mis_not_taken_cnt);
-        $display("TB> STAT: ir1_branch_mis_cnt\t = %7d,  ir1_mis_not_taken_cnt\t = %7d", ir1_branch_mis_cnt, ir1_mis_not_taken_cnt);
+        $display("TB> STAT: pc_set_cnt\t\t = %7d,  alt_apply_cnt\t = %7d", pc_set_cnt, alt_apply_cnt);
+        $display("TB> STAT: ir0_branch_mis_cnt\t = %7d,  ir0_mis_not_taken\t = %7d", ir0_branch_mis_cnt, ir0_mis_not_taken_cnt);
+        $display("TB> STAT: ir1_branch_mis_cnt\t = %7d,  ir1_mis_not_taken\t = %7d", ir1_branch_mis_cnt, ir1_mis_not_taken_cnt);
 
         // $display("TB> STAT: Single issue (x1) stats ---------------------------------------------" );
         // $display("TB> STAT: x1_irvalid1_cnt\t = %7d,  x1_mispredict0_cnt\t = %7d", 

@@ -19,7 +19,7 @@ module kudu_branch_log #(
   assign ir_issued   = {`ISSUER.ir1_issued, `ISSUER.ir0_issued};
   assign ir_branch   = {(`ISSUER.ir1_issued & `ISSUER.ir1_dec.is_branch),
                         (`ISSUER.ir0_issued & `ISSUER.ir0_dec.is_branch)};
-  assign ir_miss     = `ISSUER.branch_mispredict;
+  assign ir_miss     = `ISSUER.mispredict;
   assign ir_taken    = `ISSUER.branch_info_i.branch_taken;
 
   assign ir_pc[1]     = `ISSUER.ir1_dec.pc;

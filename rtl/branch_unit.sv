@@ -70,25 +70,25 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
     return result;
   endfunction 
 
-  function automatic logic [1:0] get_mispredict_type (ir_dec_t ir_dec, logic branch_taken, 
-                                                      full_data2_t full_data2);
-    logic [1:0] result; 
+  function automatic logic [3:0] get_mispredict_cause (ir_dec_t ir_dec, logic branch_taken, 
+                                                       full_data2_t full_data2);
+    logic [3:0] result; 
 
-    // bit 0: mispredict_taken (predicted as not-taken but actually taken);
-    //        note this is also covers target address misprediction (BTB/JBL table, JALR)
-    if ((ir_dec.is_branch | ir_dec.is_jal) && ~ir_dec.ptaken & branch_taken)
-      result[0] = 1'b1; 
-    else if ((ir_dec.is_branch | ir_dec.is_jal) && ir_dec.ptaken && 
-              branch_taken && ChkBranchJALAddr && (ir_dec.ptarget != ir_dec.btarget))
-      result[0] = 1'b1;
-    else if (ir_dec.is_jalr & (~ir_dec.ptaken || (ir_dec.ptaken && (ir_dec.ptarget != full_data2.d0[31:0])) ))
-      result[0] = 1'b1;
-    else 
-      result[0] = 1'b0; 
+    // bit 0: branch mispredict_taken 
+    //        (predicted as not-taken but actually taken, or target mispredicted (btb/jtb)
+    result[0] = ir_dec.is_branch & branch_taken & 
+                (~ir_dec.ptaken || (ChkBranchJALAddr && (ir_dec.ptarget != ir_dec.btarget)));
 
-    // bit 1: mispredict_not_taken (predicted as taken but actually not)
+    // bit 1: branch mispredict_not_taken (predicted as taken but actually not)
     result[1] = ir_dec.is_branch && ir_dec.ptaken & ~branch_taken;
   
+    // bit 2: jal target mispredict
+    result[2] = ir_dec.is_jal && ChkBranchJALAddr && (ir_dec.ptarget != ir_dec.btarget);
+
+    // bit 3: jalr target mispredict
+    result[3] = ir_dec.is_jalr & (~ir_dec.ptaken || (ir_dec.ptaken &&
+                (ir_dec.ptarget != full_data2.d0[31:0])) );
+
     return result;
   endfunction
 
@@ -141,13 +141,15 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
 
   // Misprediction decision
 
-  logic [1:0] tmpa, tmpb;
+  logic [3:0] tmpa, tmpb;
 
-  assign tmpa = get_mispredict_type(ira_dec_i, branch_taken_a, ira_full_data2_i);
-  assign tmpb = get_mispredict_type(irb_dec_i, branch_taken_b, irb_full_data2_i);
+  assign tmpa = get_mispredict_cause(ira_dec_i, branch_taken_a, ira_full_data2_i);
+  assign tmpb = get_mispredict_cause(irb_dec_i, branch_taken_b, irb_full_data2_i);
 
-  assign branch_info_o.mispredict_taken     = ira_is0_i ? {tmpb[0], tmpa[0]} : {tmpa[0], tmpb[0]};
-  assign branch_info_o.mispredict_not_taken = ira_is0_i ? {tmpb[1], tmpa[1]} : {tmpa[1], tmpb[1]};
+  assign branch_info_o.mis_taken     = ira_is0_i ? {tmpb[0], tmpa[0]} : {tmpa[0], tmpb[0]};
+  assign branch_info_o.mis_not_taken = ira_is0_i ? {tmpb[1], tmpa[1]} : {tmpa[1], tmpb[1]};
+  assign branch_info_o.mis_jal       = ira_is0_i ? {tmpb[2], tmpa[2]} : {tmpa[2], tmpb[2]};
+  assign branch_info_o.mis_jalr      = ira_is0_i ? {tmpb[3], tmpa[3]} : {tmpa[3], tmpb[3]};
 
   //
   // Compute JALR target addresses (based on resolved operands)

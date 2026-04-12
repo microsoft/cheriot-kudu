@@ -216,6 +216,20 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     return result;
   endfunction
 
+  function automatic logic [31:0] get_target (logic [3:0] cause, ir_dec_t ir_dec, 
+                                              logic [31:0] jalr_target);
+    logic [31:0] result;
+
+    unique case (1'b1)
+      cause[0], cause[2]: result = ir_dec.btarget;  // branch mispredict_taken, JAL
+      cause[1]:           result = ir_dec.pc_nxt;   // branch mispredict_not_taken
+      cause[3]:           result = jalr_target;
+      default:            result = jalr_target;
+    endcase
+
+    return result;
+  endfunction
+
   logic [4:0]  ir0_pl_sel, ir1_pl_sel;
   logic        ir0_issued, ir0_normal_issued;
   logic [1:0]  ir0_special_issued; 
@@ -232,7 +246,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic [1:0]  pl_sel_enable;
   logic [1:0]  ir_hazard;
 
-  logic [1:0]  branch_mispredict;
+  logic [1:0]  mispredict;
   logic        cheri_pmode;
 
   logic        debug_mode_q, single_step_trap_q;
@@ -274,7 +288,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   //      ir0 misprediction will preempt ir1 (pl_sel_enable[1]) anyway
 
   assign pl_sel_enable[1] = DualIssue & ir0_normal_issued & normal_ex_enable[1] & 
-                            ~branch_mispredict[0]; // | (~CHERIoTEn & ir0_dec.is_jalr));
+                            ~mispredict[0]; // | (~CHERIoTEn & ir0_dec.is_jalr));
   assign ir1_pl_sel       = select_pl(cheri_pmode, pl_sel_enable[1], ~ira_is0_i, ir1_dec.pl_type);
 
   // issued == all ex pipeline involved must be ready (jal case needs 2)
@@ -288,9 +302,9 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   assign issuer_rdy_o[0] = ir0_issued | ir_rdy_special_q[0];
 
-  // issuer_rdy_o[1] really should be a don't care when branch_mispredict[0] == 1
+  // issuer_rdy_o[1] really should be a don't care when mispredict[0] == 1
   // since we will flush the IR regs. 
-  // -- Taking branch_mispredict[0] out of the logic equationto avoid unnecessary timing path.
+  // -- Taking mispredict[0] out of the logic equationto avoid unnecessary timing path.
   // -- basically remove it from the pl_sel_enable[1] logic and keep the rest
   logic        ir1_enable_shadow;
   logic [4:0]  ir1_sel_shadow;
@@ -584,7 +598,20 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   //
   // IF/IR control logic
   //
-  assign branch_mispredict = branch_info_i.mispredict_taken | branch_info_i.mispredict_not_taken;
+  logic [3:0]  ir0_mis_cause, ir1_mis_cause;
+  logic [31:0] ir0_target, ir1_target;
+
+  assign mispredict = branch_info_i.mis_taken | branch_info_i.mis_not_taken | 
+                      branch_info_i.mis_jal   | branch_info_i.mis_jalr;
+
+  assign ir0_mis_cause = {branch_info_i.mis_jalr[0], branch_info_i.mis_jal[0],
+                          branch_info_i.mis_not_taken[0], branch_info_i.mis_taken[0]};
+  assign ir1_mis_cause = {branch_info_i.mis_jalr[1], branch_info_i.mis_jal[1],
+                          branch_info_i.mis_not_taken[1], branch_info_i.mis_taken[1]};
+
+  assign ir0_target = get_target(ir0_mis_cause, ir0_dec, ir0_jalr_target_i);
+  assign ir1_target = get_target(ir1_mis_cause, ir1_dec, ir1_jalr_target_i);
+  
 
   always_comb begin
 
@@ -597,29 +624,15 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         ir_flush_o  = 1'b0;
       end 
       ctrl_fsm_cs[CSM_DECODE] : begin
-        if (branch_mispredict[0] && ir0_issued) begin 
-          pc_set_o    = 1'b1;
-          ir_flush_o  = 1'b1;
-        end else if (branch_mispredict[1] && ir1_issued) begin
-          pc_set_o    = 1'b1;
-          ir_flush_o  = 1'b1;
-        end else begin
-          pc_set_o    = 1'b0;
-          ir_flush_o  = 1'b0;
-        end
+        pc_set_o = (mispredict[0] && ir0_issued) || (mispredict[1] && ir1_issued);
 
-        if (branch_info_i.mispredict_taken[0])
-          pc_target_o = ir0_dec.is_jalr ? ir0_jalr_target_i : ir0_dec.btarget;
-        else if (branch_info_i.mispredict_not_taken[0])
-          pc_target_o = ir0_dec.pc_nxt;
-        else if (branch_info_i.mispredict_taken[1])
-          pc_target_o = ir1_dec.is_jalr ? ir1_jalr_target_i : ir1_dec.btarget;
-        else if (branch_info_i.mispredict_not_taken[1])
-          pc_target_o = ir1_dec.pc_nxt;
+        if (mispredict[0])
+          pc_target_o = ir0_target;
         else
-          pc_target_o = ir0_dec.btarget;
+          pc_target_o = ir1_target;
 
-        ir_hold_o   = 1'b0;
+        ir_flush_o = pc_set_o;
+        ir_hold_o  = 1'b0;
       end
       ctrl_fsm_cs[CSM_CMT_FLUSH] : begin
         pc_set_o    = 1'b1;
@@ -673,20 +686,17 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     if (AltEnable) begin
       flush_alt = ir_flush_o;
 
-      apply_cause[0] = ir0_issued & ir0_dec.is_branch & ir0_dec.alt_valid &
-                       branch_info_i.mispredict_not_taken[0];
-      apply_cause[1] = ir1_issued & ir1_dec.is_branch & ir1_dec.alt_valid &
-                       branch_info_i.mispredict_not_taken[1];
-      apply_alt = ctrl_fsm_cs[CSM_DECODE] & (|apply_cause);
+      apply_cause[0] = ir0_issued & ir0_dec.alt_valid & branch_info_i.mis_not_taken[0];
+      apply_cause[1] = ir1_issued & ir1_dec.alt_valid & branch_info_i.mis_not_taken[1];
+      apply_alt = |apply_cause;  // branch will only be issued in DECODE state
 
-      alt_ir_sel = apply_cause[1];  // ir1 issued |-> ir0 is not a misprediction
+      //alt_ir_sel = apply_cause[1];  // ir1 issued |-> ir0 is not a misprediction
+      alt_ir_sel = ~apply_cause[0];
 
       // cancel ALT may happen on both IR0 and IR1.
       // alt_valid implies a branch predicted as taken 
-      cancel_alt[0] = ctrl_fsm_cs[CSM_DECODE] & ir0_issued & ir0_dec.is_branch & 
-                      ir0_dec.alt_valid & ~branch_mispredict[0];
-      cancel_alt[1] = ctrl_fsm_cs[CSM_DECODE] & ir1_issued & ir1_dec.is_branch & 
-                      ir1_dec.alt_valid & ~branch_mispredict[1];
+      cancel_alt[0] = ir0_issued & ir0_dec.is_branch & ir0_dec.alt_valid & ~mispredict[0];
+      cancel_alt[1] = ir1_issued & ir1_dec.is_branch & ir1_dec.alt_valid & ~mispredict[1];
     end
 
     ex_alt_ctrl_o = '{flush_alt, apply_alt, cancel_alt, alt_ir_sel, ir0_dec.alt_id, ir1_dec.alt_id};
@@ -1054,6 +1064,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   logic [1:0]  branch_mispredict_event;
   logic [1:0]  jal_mispredict_event;
+  logic [1:0]  jalr_mispredict_event;
 
   ctrl_fsm_e   ctrl_fsm_cs_dec;
   logic        ctrl_fsm_err;
@@ -1089,8 +1100,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   // events for debugging/perfomrance count
   assign issue_err_event = ~ir0_issued & ir1_issued;
 
-  assign branch_mispredict_event = branch_mispredict & ex_bp_info_o.is_branch;
-  assign jal_mispredict_event    = branch_mispredict & ex_bp_info_o.is_jal;
+  assign branch_mispredict_event = mispredict & ex_bp_info_o.is_branch;
+  assign jal_mispredict_event    = mispredict & ex_bp_info_o.is_jal;
 
   assign pc_set_trap_event =  (ctrl_fsm_cs_dec == CSM_CMT_FLUSH) || 
                               ((ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && 
@@ -1103,11 +1114,11 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ir0_cjalr_issued = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && (special_case_q == ICJALR);
   
   // ir1 ready to be issued otherwise, but blocked by ir0
-  assign ir1_pl_sel_enable_ooo = DualIssue & ~branch_mispredict[0] & normal_ex_enable[1]; 
+  assign ir1_pl_sel_enable_ooo = DualIssue & ~mispredict[0] & normal_ex_enable[1]; 
   assign ir1_pl_sel_ooo = ~ir0_pl_sel & select_pl(cheri_pmode, ir1_pl_sel_enable_ooo, 
                                                   ira_is0_i, ir1_dec.pl_type);
 
-  // branch_mispredict[0] is sufficient - if ir0 is branch but correctly predicted, IR1 is good to go.
+  // mispredict[0] is sufficient - if ir0 is branch but correctly predicted, IR1 is good to go.
   assign ir1_ooo_rdy_event = ~ir1_issued & (|(ir1_pl_sel_ooo & ex_rdy));
 
   assign ir0_stall_nohaz_event = ir_valid_i[0] & ~ir0_issued & ~ir_hazard[0];
