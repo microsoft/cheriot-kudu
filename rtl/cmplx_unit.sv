@@ -140,7 +140,8 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
       5'h1c: begin      //  AMO_OP_MAXU;ot considered cmplx
         amo_wdata = minu_flag ? rs2_val : amo_rdata_q;
       end
-      default: begin    // AMO_OP_SWAP;
+      default: begin   
+        amo_wdata = rs2_val;
       end
     endcase
 

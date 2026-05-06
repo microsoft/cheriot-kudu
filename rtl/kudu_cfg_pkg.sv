@@ -24,7 +24,6 @@ package kudu_cfg_pkg;
     bit        RV32M;
     bit        RV32B;
     bit        RV32A;
-    bit        CsrUseLSU;
 
     bit        IfRdataBypass;
     bit [1:0]  IrStageBypass;
@@ -41,7 +40,7 @@ package kudu_cfg_pkg;
 
     bit [31:0] PrefetchDepth;
     bit        AltEnable;
-
+    bit        CJALRErrEn;
   } kudu_cfg_t;
 
   // 5-stage pipeline configuration
@@ -59,7 +58,6 @@ package kudu_cfg_pkg;
     RV32M          : 1'b1,
     RV32B          : 1'b1,
     RV32A          : 1'b1,
-    CsrUseLSU      : 1'b1,
     IfRdataBypass  : 1'b0,
     IrStageBypass  : 2'b01,       
     IfCompDecEn    : 1'b0,
@@ -72,7 +70,39 @@ package kudu_cfg_pkg;
     RALimitLo      : 21'h080000,
     PrefetchDepth  : 3,
     IrS0Depth      : 4,
-    AltEnable      : 1'b1
+    AltEnable      : 1'b1,
+    CJALRErrEn     : 1'b1
+  };
+
+  // 5-stage pipeline configuration
+  parameter kudu_cfg_t KuduCfg1x = '{
+    DCacheEn       : 1'b1,
+    HeapBase       : 32'h8000_0000,
+    TSMapSize      : 1024,
+    DmHaltAddr     : 32'h84000000,
+    DmExcAddr      : 32'h84000008,
+    DbgTriggerEn   : 1'b1,
+    BrkptNum       : 2,
+    DualIssue      : 1'b1,
+    EarlyLoad      : 1'b1,
+    UnalignedFetch : 1'b0,
+    RV32M          : 1'b1,
+    RV32B          : 1'b1,
+    RV32A          : 1'b1,
+    IfRdataBypass  : 1'b0,
+    IrStageBypass  : 2'b01,       
+    IfCompDecEn    : 1'b0,
+    IrCompDecEn    : 1'b1,
+    PredictUseBtb  : 1'b0,
+    PredictIbufEn  : 1'b0,
+    PredictBhtSize : 32, 
+    PredictRA      : 1'b1,
+    RALimitHi      : 21'h080040,  
+    RALimitLo      : 21'h080000,
+    PrefetchDepth  : 3,
+    IrS0Depth      : 4,
+    AltEnable      : 1'b1,
+    CJALRErrEn     : 1'b0   // disable CJALR errors (not compatible with CHERIoT 1.0)
   };
 
   // 4-stage pipeline configuration
@@ -90,7 +120,6 @@ package kudu_cfg_pkg;
     RV32M          : 1'b1,
     RV32B          : 1'b1,
     RV32A          : 1'b1,
-    CsrUseLSU      : 1'b1,
     IfRdataBypass  : 1'b1,
     IrStageBypass  : 2'b10,       
     IfCompDecEn    : 1'b1,
@@ -103,7 +132,8 @@ package kudu_cfg_pkg;
     RALimitLo      : 21'h080000,
     PrefetchDepth  : 2,
     IrS0Depth      : 2,
-    AltEnable      : 1'b0          // Lowwer branch overhead in 4-stage configuration 
+    AltEnable      : 1'b0,         // Lowwer branch overhead in 4-stage configuration 
+    CJALRErrEn     : 1'b1
   };
 
   // 6-stage pipeline configuration
@@ -121,7 +151,6 @@ package kudu_cfg_pkg;
     RV32M          : 1'b1,
     RV32B          : 1'b1,
     RV32A          : 1'b1,
-    CsrUseLSU      : 1'b1,
     IfRdataBypass  : 1'b0,
     IrStageBypass  : 2'b00,       
     IfCompDecEn    : 1'b0,
@@ -134,6 +163,7 @@ package kudu_cfg_pkg;
     RALimitLo      : 21'h080000,
     PrefetchDepth  : 3,
     IrS0Depth      : 4,
-    AltEnable      : 1'b1
+    AltEnable      : 1'b1,
+    CJALRErrEn     : 1'b1
   };
 endpackage

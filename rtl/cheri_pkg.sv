@@ -599,6 +599,13 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
     return out_cap;
   endfunction
 
+  function automatic reg_cap_t unseal_rcap (reg_cap_t in_rcap);
+    reg_cap_t out_rcap;
+    out_rcap = in_rcap;
+    out_rcap.otype = OTYPE_UNSEALED;
+    return out_rcap;
+  endfunction
+
   // seal/unseal related functions
   function automatic logic is_cap_sealed (full_cap_t in_cap);
     logic result;

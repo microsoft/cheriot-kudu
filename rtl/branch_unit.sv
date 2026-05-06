@@ -77,17 +77,18 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
     // bit 0: branch mispredict_taken 
     //        (predicted as not-taken but actually taken, or target mispredicted (btb/jtb)
     result[0] = ir_dec.is_branch & branch_taken & 
-                (~ir_dec.ptaken || (ChkBranchJALAddr && (ir_dec.ptarget != ir_dec.btarget)));
+                (~ir_dec.ptaken || (ChkBranchJALAddr && (ir_dec.ptarget[31:0] != ir_dec.btarget)));
 
     // bit 1: branch mispredict_not_taken (predicted as taken but actually not)
     result[1] = ir_dec.is_branch && ir_dec.ptaken & ~branch_taken;
   
     // bit 2: jal target mispredict
-    result[2] = ir_dec.is_jal && ChkBranchJALAddr && (ir_dec.ptarget != ir_dec.btarget);
+    result[2] = ir_dec.is_jal && ChkBranchJALAddr && (ir_dec.ptarget[31:0] != ir_dec.btarget);
 
-    // bit 3: jalr target mispredict
-    result[3] = ir_dec.is_jalr & (~ir_dec.ptaken || (ir_dec.ptaken &&
-                (ir_dec.ptarget != full_data2.d0[31:0])) );
+    // bit 3: jalr target mispredict. compare the full capability for CHERIoT
+    result[3] = ir_dec.is_jalr & (~ir_dec.ptaken || (ir_dec.ptaken && 
+                (cheri_pmode_i ? (ir_dec.ptarget[RegW-1:0] != full_data2.d0[RegW-1:0]) :
+                                 (ir_dec.ptarget[31:0] != full_data2.d0[31:0]))  ));
 
     return result;
   endfunction

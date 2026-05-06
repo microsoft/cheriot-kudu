@@ -28,7 +28,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   parameter bit               RV32E             = 0,
   parameter bit               RV32M             = 1'b1,
   parameter bit               RV32B             = 1'b1,
-  parameter bit               CHERIoTEn         = 1'b1
+  parameter bit               CHERIoTEn         = 1'b1,
+  parameter bit               PredictRA         = 1'b0
 ) (
   // Clock and Reset
   input  logic                 clk_i,
@@ -59,8 +60,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   output logic                 illegal_csr_insn_o,     // access to non-existent CSR,
                                                         // with wrong priviledge level, or
                                                         // missing write permissions
-  input  logic                 csr_set_mie_i,
-  input  logic                 csr_clr_mie_i,
+  input  logic                 ex1_cjalr_set_mie_i,
+  input  logic                 ex1_cjalr_clr_mie_i,
 
   // stack highwatermark and fast-clearing function
   input  logic                 csr_lsu_wr_req_i,
@@ -99,13 +100,10 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   output logic                 csr_shadow_err_o,
 
   // Exception save/restore
-  input  logic [31:0]          csr_exc_pc_i,
   input  logic                 csr_save_cause_i,
+  input  exc_info_t            csr_exc_info_i,
   input  logic                 csr_restore_mret_i,
   input  logic                 csr_restore_dret_i,
-  input  logic                 csr_mepcc_clrtag_i,
-  input  exc_cause_e           csr_mcause_i,
-  input  logic [31:0]          csr_mtval_i,
   output logic                 double_fault_seen_o,
   // Performance Counters
   input  logic                 instr_ret_i,                 // instr retired in ID/EX stage
@@ -122,9 +120,15 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   input  logic                 mul_wait_i,                  // core waiting for multiply
   input  logic                 div_wait_i,                   // core waiting for divide
 
-  input  logic                 cheri_pcc_set_i,
-  input  pcc_cap_t             pcc_cap_i,
-  output pcc_cap_t             pcc_cap_o,
+  input  logic                 ex1_cjalr_pcc_set_i,
+  input  logic                 ex1_mispredict_i,
+  input  pcc_cap_t             ex1_cjalr_pcap_i,
+  output pcc_cap_t             ex1_pcc_cap_o,
+
+  input  logic                 ir_flush_i,
+  input  logic                 ir_cjalr_pcc_set_i,
+  input  reg_cap_t             ir_cjalr_rcap_i,
+  output pcc_cap_t             ir_pcc_cap_o,
 
   output logic                 csr_dbg_tclr_fault_o,
   output logic                 cheri_fatal_err_o
@@ -211,7 +215,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   logic        mshwm_en, mshwmb_en;
   logic [31:0] cdbg_ctrl_q;
   logic        cdbg_ctrl_en;
-  pcc_cap_t    pcc_cap_q, pcc_cap_d;
+  pcc_cap_t    ex1_pcc_cap_q, ex1_pcc_cap_d;
+  pcc_cap_t    ir_pcc_cap_q, ir_pcc_cap_d;
 
   // PMP Signals
   logic [31:0]                 pmp_addr_rdata  [PMP_MAX_REGIONS];
@@ -675,14 +680,14 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
           // In debug mode, "exceptions do not update any registers. That
           // includes cause, epc, tval, dpc and mstatus." [Debug Spec v0.13.2, p.39]
           mtval_en       = 1'b1;
-          mtval_d        = csr_mtval_i;
+          mtval_d        = csr_exc_info_i.mtval;
           mstatus_en     = 1'b1;
           mstatus_d.mie  = 1'b0; // disable interrupts
           // save current status
-          mstatus_d.mpie = mstatus_q.mie;
+          mstatus_d.mpie = (cheri_pmode_i & csr_exc_info_i.has_pcc) ? csr_exc_info_i.mie : mstatus_q.mie;
           mstatus_d.mpp  = priv_lvl_q;
           mcause_en      = 1'b1;
-          mcause_d       = {csr_mcause_i};
+          mcause_d       = {csr_exc_info_i.mcause};
 
           if (!mcause_d[5]) begin
             cpuctrl_we = 1'b1;
@@ -791,11 +796,11 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   logic    mstatus_en_combi;
   status_t mstatus_d_combi;
 
-  assign mstatus_en_combi = mstatus_en | csr_clr_mie_i | csr_set_mie_i;
+  assign mstatus_en_combi = mstatus_en | ex1_cjalr_clr_mie_i | ex1_cjalr_set_mie_i;
 
   always_comb begin
    mstatus_d_combi      = mstatus_d;
-   mstatus_d_combi.mie  = (mstatus_d.mie & ~csr_clr_mie_i) | csr_set_mie_i;
+   mstatus_d_combi.mie  = (mstatus_d.mie & ~ex1_cjalr_clr_mie_i) | ex1_cjalr_set_mie_i;
   end
 
   ibex_csr #(
@@ -1512,7 +1517,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   localparam logic [RegW-1:0] MTDC_RESET_VAL      = CHERIoTEn ?  TM_ROOT_RCAP : '0; 
   localparam logic [RegW-1:0] MSCRATCHC_RESET_VAL = CHERIoTEn ?  TS_ROOT_RCAP : '0; 
 
-  reg_cap_t        pcc_exc_cap;
+  reg_cap_t        pcc_exc_rcap;
   logic            csr_wr_rv32, csr_wr_cheri;
   logic [4:0]      scr_addr;
   logic [RegW-1:0] mtdc_q, mscratchc_q;
@@ -1567,15 +1572,15 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     if (csr_wr_rv32 && (csr_addr_i == CSR_MEPC)) begin
       mepc_en = 1'b1;
       mepc_d  = {csr_wdata32[31:1], 1'b0};
-    end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && (pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+    end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
       mepc_en = 1'b1;
       mepc_d  = csr_wdata_cheri;
     end else if (CHERIoTEn & cheri_pmode_i & csr_save_cause_i & ~debug_mode_i) begin
       mepc_en = 1'b1;
-      mepc_d  = pcc_exc_cap;
+      mepc_d  = (cheri_pmode_i & csr_exc_info_i.has_pcc) ? csr_exc_info_i.pc : pcc_exc_rcap;
     end else if (~(CHERIoTEn & cheri_pmode_i) & csr_save_cause_i & ~debug_mode_i) begin
       mepc_en = 1'b1;
-      mepc_d  = csr_exc_pc_i;
+      mepc_d  = csr_exc_info_i.pc;
     end else begin
       mepc_en = 1'b0;
       mepc_d  = mepc_q;
@@ -1605,7 +1610,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     if (csr_wr_rv32 && (csr_addr_i == CSR_MTVEC)) begin
       mtvec_en = 1'b1;
       mtvec_d  = {csr_wdata32[31:2], 2'b00};
-    end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MTCC) && (pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+    end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MTCC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
       mtvec_en = 1'b1;
       mtvec_d  = csr_wdata_cheri;
     end else if (CHERIoTEn & csr_mtvec_init_i) begin
@@ -1648,10 +1653,10 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       depc_d  = {csr_wdata_cheri[RegW-1:1], 1'b0};
     end else if (CHERIoTEn & cheri_pmode_i & csr_save_cause_i & debug_csr_save_i) begin
       depc_en = 1'b1;
-      depc_d  = pcc_exc_cap;
+      depc_d  = pcc_exc_rcap;
     end else if (~(CHERIoTEn & cheri_pmode_i) & csr_save_cause_i & debug_csr_save_i) begin
       depc_en = 1'b1;
-      depc_d  = csr_exc_pc_i;
+      depc_d  = csr_exc_info_i.pc;
     end else begin
       depc_en = 1'b0;
       depc_d  = depc_q;
@@ -1725,7 +1730,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   //
   // CHERIoT-only SCR's
   //
-  assign pcc_cap_o = pcc_cap_q;
+  assign ex1_pcc_cap_o  = ex1_pcc_cap_q;
+  assign ir_pcc_cap_o   = (CHERIoTEn & PredictRA) ? ir_pcc_cap_q : ex1_pcc_cap_q;
 
   if (CHERIoTEn) begin: gen_scr
     logic [RegW-1:0] mtdc_d, mscratchc_d;
@@ -1736,7 +1742,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     //  -- PC address range checking is always against the pcc_cap, which is only updated with
     //     CHER CJALR or exceptions. Legacy RV32 jumps/branches can change PC but not the PCC
     //     bounds/perms, so they are still limited by the orginal bounds in IF stage checking
-    assign pcc_exc_cap = pcc2regcap(pcc_cap_q, csr_exc_pc_i, csr_mepcc_clrtag_i);
+    assign pcc_exc_rcap = pcc2regcap(ex1_pcc_cap_q, csr_exc_info_i.pc, csr_exc_info_i.clrtag);
     assign mtvec_cap   = reg_cap_t'(mtvec_q);
     assign mepc_cap    = reg_cap_t'(mepc_q);
     assign depc_cap    = reg_cap_t'(depc_q);
@@ -1747,43 +1753,56 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
       if (!rst_ni) begin
-        pcc_cap_q  <= PCC_RESET_CAP;
+        ex1_pcc_cap_q <= PCC_RESET_CAP;
+        ir_pcc_cap_q  <= PCC_RESET_CAP;
       end else begin
-        pcc_cap_q  <= pcc_cap_d;
+        ex1_pcc_cap_q <= ex1_pcc_cap_d;
+        ir_pcc_cap_q  <= ir_pcc_cap_d;
       end
     end
 
     always_comb begin
-      full_cap_t   tf_cap;
-      reg_cap_t    tr_cap;
+      pcc_cap_t  exc_pcap, ir_cjalr_pcap;
+      reg_cap_t  exc_rcap, rcap1, rcap2;
       logic [31:0] tr_addr;
+      logic exc_flag;
+
+      exc_flag = csr_save_cause_i | csr_restore_mret_i | (csr_restore_dret_i & debug_mode_i);
      
-      if (csr_save_cause_i) begin              // Exception cases
-        tr_cap  = mtvec_cap;
-      end else if (csr_restore_mret_i) begin
-        tr_cap  = mepc_cap;
-      end else if (csr_restore_dret_i & debug_mode_i) begin
-        tr_cap  = depc_cap;
-      end else begin
-        tr_cap  = NULL_REG_CAP;
-      end
+      if (csr_save_cause_i) 
+        exc_rcap  = mtvec_cap;
+      else if (csr_restore_mret_i) 
+        exc_rcap  = mepc_cap;
+      else 
+        exc_rcap  = depc_cap;
+      
+      exc_pcap = full2pcap(op2fullcap(reg2opcap(exc_rcap)));
 
-      tf_cap = op2fullcap(reg2opcap(tr_cap));
+      // PCC cap for issue/EX1
+      ex1_pcc_cap_d = exc_flag ? exc_pcap :
+                      (ex1_cjalr_pcc_set_i ? ex1_cjalr_pcap_i : ex1_pcc_cap_q);
+     
+      // PCC cap for IR stage (predicted)
 
-      // Exception cases
-      if (csr_save_cause_i | csr_restore_mret_i | (csr_restore_dret_i & debug_mode_i)) begin 
-        pcc_cap_d = full2pcap(tf_cap);
-      end else if (cheri_pcc_set_i) begin
-        pcc_cap_d = pcc_cap_i;
-      end else begin
-        pcc_cap_d = pcc_cap_q;
-      end
-    end
+      ir_cjalr_pcap = full2pcap(op2fullcap(reg2opcap(ir_cjalr_rcap_i)));
+      
+      if (exc_flag) 
+        ir_pcc_cap_d = exc_pcap;
+      else if (ex1_cjalr_pcc_set_i & ex1_mispredict_i)
+        ir_pcc_cap_d =  ex1_cjalr_pcap_i;
+      else if (ir_flush_i)
+        ir_pcc_cap_d = ex1_pcc_cap_q;
+      else if (ir_cjalr_pcc_set_i)
+        ir_pcc_cap_d = ir_cjalr_pcap;
+      else 
+        ir_pcc_cap_d  = ir_pcc_cap_q;
+
+    end // always_comb
 
     // MTDC and MScratchC
     
     always_comb begin
-      if (csr_wr_cheri && (scr_addr == CHERI_SCR_MTDC) && (pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+      if (csr_wr_cheri && (scr_addr == CHERI_SCR_MTDC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
         mtdc_en = 1'b1;
         mtdc_d  = csr_wdata_cheri;
       end else begin
@@ -1791,7 +1810,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
         mtdc_d  = mtdc_q;
       end
 
-      if (csr_wr_cheri && (scr_addr == CHERI_SCR_MSCRATCHC) && (pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+      if (csr_wr_cheri && (scr_addr == CHERI_SCR_MSCRATCHC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
         mscratchc_en = 1'b1;
         mscratchc_d  = csr_wdata_cheri;
       end else begin
@@ -1852,8 +1871,9 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
     assign mtdc_q            = '0;
     assign mscratchc_q       = '0;
-    assign pcc_cap_q         = NULL_PCC_CAP;
-    assign pcc_exc_cap       = NULL_REG_CAP;
+    assign ex1_pcc_cap_q     = NULL_PCC_CAP;
+    assign ir_pcc_cap_q      = NULL_PCC_CAP;
+    assign pcc_exc_rcap       = NULL_REG_CAP;
     assign cheri_fatal_err_o = 1'b0;
   end
 

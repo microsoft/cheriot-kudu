@@ -55,7 +55,6 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   input  logic             ds_rdy_i,
 
   // CSR interface
-  input  logic             pcc_asr_i,
   output logic             csr_access_o,
   output logic             csr_cheri_o,
   output logic             csr_op_en_o,
@@ -114,6 +113,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   logic [5:0]      lsu_err_mcause;
   logic [31:0]     lsu_err_mtval;
   logic [RegW-1:0] lsu_rdata;    
+  logic [RegW-1:0] csr_rdata;
 
   ls_fsm_e         ls_fsm_cs, ls_fsm_ns;
 
@@ -567,6 +567,10 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   logic [31:0] csr_insn;
   logic        csr_cheri;
   logic        csr_cheri_asr_err, csr_cheri_always_ok; 
+  logic        pcc_asr_bit;
+
+  logic [PERMS_W-1:0] pcc_perms;
+  reg_cap_t           tr_cap;
 
   assign csr_insn  = lsu_req_info_q.insn;
   assign csr_cheri = cheri_pmode & lsu_req_info_q.is_csr && (csr_insn[6:0] == OPCODE_CHERI);
@@ -584,7 +588,12 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign csr_cheri_always_ok = ~csr_cheri & 
                               (((csr_insn[31:28] == 4'hb) || (csr_insn[31:28] == 4'hc)) &&
                                ((csr_insn[27] == 1'b0) || (csr_insn[26:25] == 2'b00)));
-  assign csr_cheri_asr_err   = cheri_pmode & csr_go_q & ~pcc_asr_i & ~csr_cheri_always_ok;
+
+  assign tr_cap      = reg_cap_t'(lsu_req_info_q.pc);
+  assign pcc_perms   = expand_perms(tr_cap.cperms);
+  assign pcc_asr_bit = ~cheri_pmode | pcc_perms[PERM_SR];
+
+  assign csr_cheri_asr_err   = cheri_pmode & csr_go_q & ~pcc_asr_bit & ~csr_cheri_always_ok;
 
   assign csr_err  = ~debug_mode_i & lsu_req_info_q.is_csr & (illegal_csr_insn_i | csr_cheri_asr_err);
 
@@ -603,6 +612,12 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
         default: csr_op_o = CSR_OP_READ;       // don't care case
       endcase
     end
+
+    // use mstatus.mie captured at instruction issue time as the CSR value could be overwritten by 
+    // later-issued cjalr instructions.
+    csr_rdata = csr_rdata_i;
+    if (~csr_cheri && (csr_addr == CSR_MSTATUS))
+      csr_rdata[CSR_MSTATUS_MIE_BIT] = lsu_req_info_q.mie;
   end
   
   // load/store/csr error mcause/mtval encoding
@@ -660,7 +675,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign lsu_resp_info.wrsv   = lsu_req_info_q.rf_we;
   assign lsu_resp_info.waddr  = lsu_req_info_q.rd;
   assign lsu_resp_info.pc     = lsu_req_info_q.pc;
-  assign lsu_resp_info.wdata  = csr_go_q ? csr_rdata_i : lsu_rdata;
+  assign lsu_resp_info.mie    = lsu_req_info_q.mie;
+  assign lsu_resp_info.wdata  = csr_go_q ? csr_rdata : lsu_rdata;
   assign lsu_resp_info.err    = lsu_resp_err;
   assign lsu_resp_info.mcause = lsu_err_mcause;
   assign lsu_resp_info.mtval  = lsu_err_mtval;

@@ -11,8 +11,6 @@ module branch_predict import super_pkg::*; #(
   parameter bit          UseBtb     = 1'b1,
   parameter bit          AltEnable  = 1'b0, 
   parameter bit          PredictRA  = 1'b0, 
-  parameter logic [20:0] RALimitHi  = 21'h080040,  // in 4kB unit
-  parameter logic [20:0] RALimitLo  = 21'h080000,
   parameter bit          InstrBufEn = 1'b0
 ) (
   input  logic                clk_i,
@@ -46,25 +44,13 @@ module branch_predict import super_pkg::*; #(
   output logic [1:0]          pdt_valid_o,
   output ir_reg_t             pdt_instr0_o, 
   output ir_reg_t             pdt_instr1_o,
+  input  logic [31:0]         cur_ra32_i,
 
   // Branch ALT save interace
   input  logic                alt_has_free_i,  
   input  logic [1:0]          alt_free_id_i, 
   output logic                alloc_alt_o, 
-  output logic                bp_instr0_o,
-
-  // regfile write snoop interface
-  input  logic [4:0]          rf_waddr0_i,
-  input  logic [RegW-1:0]     rf_wdata0_i,
-  input  logic                rf_we0_i,  
-                              
-  input  logic [4:0]          rf_waddr1_i,
-  input  logic [RegW-1:0]     rf_wdata1_i,
-  input  logic                rf_we1_i,   
-                              
-  input  logic [4:0]          rf_waddr2_i,
-  input  logic [RegW-1:0]     rf_wdata2_i,
-  input  logic                rf_we2_i    
+  output logic                bp_instr0_o
 );
 
   localparam int unsigned BhtAW = $clog2(BhtSize);
@@ -175,8 +161,6 @@ module branch_predict import super_pkg::*; #(
   ir_reg_t     ibuf_instr;
   logic [31:0] ibuf_pc_nxt;
   logic        ibuf_valid;
-
-  logic [31:0] cur_ra_q, cur_ra;
 
   assign predict_ibuf_hit_o  = use_ibuf & ds_rdy_i[1];
   assign predict_br_target_o = predict_target;
@@ -323,13 +307,13 @@ module branch_predict import super_pkg::*; #(
     else if (pdt_jal_go[0]) 
       predict_target     = jtb_rdata[0].target;
     else if (pdt_jalr_go[0])
-      predict_target     = cur_ra;
+      predict_target     = cur_ra32_i;
     else if (pdt_branch_go[1])
       predict_target     = btb_rdata[1].target;
     else if (pdt_jal_go[1])
       predict_target     = jtb_rdata[1].target;
     else
-      predict_target     = cur_ra;
+      predict_target     = cur_ra32_i;
 
     if (pdt_branch_go[0]) begin
       pdt_instr0.ptaken  = 1'b1;
@@ -339,7 +323,7 @@ module branch_predict import super_pkg::*; #(
       pdt_instr0.ptarget = jtb_rdata[0].target;
     end else if (pdt_jalr_go[0]) begin
       pdt_instr0.ptaken  = 1'b1;
-      pdt_instr0.ptarget = cur_ra;
+      pdt_instr0.ptarget = cur_ra32_i;
     end else if (pdt_branch_go[1]) begin
       pdt_instr1.ptaken  = 1'b1;
       pdt_instr1.ptarget = btb_rdata[1].target;
@@ -348,7 +332,7 @@ module branch_predict import super_pkg::*; #(
       pdt_instr1.ptarget = jtb_rdata[1].target;
     end else if (pdt_jalr_go[1]) begin
       pdt_instr1.ptaken  = 1'b1;
-      pdt_instr1.ptarget = cur_ra;
+      pdt_instr1.ptarget = cur_ra32_i;
     end
 
   end
@@ -412,38 +396,6 @@ module branch_predict import super_pkg::*; #(
     assign use_ibuf    = 1'b0;
     assign ibuf_instr  = NULL_IR_REG;
     assign ibuf_valid  = 1'b0;
-  end
-
-  // Keep a copy of RA by snooping regfile writes
-  if (PredictRA) begin : gen_predict_ra
-    logic [31:0] cur_ra_d;
-
-    assign cur_ra = cur_ra_q;
-
-    always_comb begin
-      if (rf_we2_i && (rf_waddr2_i == 5'h1))
-        cur_ra_d = rf_wdata2_i;
-      else if (rf_we1_i && (rf_waddr1_i == 5'h1))
-        cur_ra_d = rf_wdata1_i;
-      else if (rf_we0_i && (rf_waddr0_i == 5'h1))
-        cur_ra_d = rf_wdata0_i;
-      else
-        cur_ra_d = cur_ra_q;
-
-      // limit predicted return address to a memory range in case the memory system 
-      // can't handle acess to unpopulated space (e.g., hanging)
-      if (({1'b0, cur_ra_d[31:12]} >= RALimitHi) || ({1'b0, cur_ra_d[31:12]} < RALimitLo))
-        cur_ra_d = cur_ra_q;
-    end
-
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-      if (!rst_ni) 
-        cur_ra_q <= 32'h0;
-      else
-        cur_ra_q <= cur_ra_d;
-    end
-  end else begin : gen_no_predict_ra
-    assign cur_ra = 32'h0;
   end
 
 endmodule

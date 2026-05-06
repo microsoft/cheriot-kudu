@@ -60,7 +60,6 @@ package super_pkg;
     logic wfi;
     logic ecall;
     logic ebrk;
-    logic cjalr;
     logic fencei;
   } sysctl_t;
 
@@ -101,34 +100,34 @@ package super_pkg;
   } cheri_op_t;
 
   typedef struct packed {
-    logic [31:0] insn;
-    logic [31:0] pc;
-    logic        any_err;
-    ir_errs_t    errs;   
-    logic        is_comp;
-    logic        is_branch;
-    logic        is_jal;
-    logic        is_jalr;
-    logic        is_csr;
-    pl_type_e    pl_type;  
-    logic [4:0]  rs1;
-    logic [4:0]  rs2;
-    logic [4:0]  rd;
-    logic [1:0]  rf_ren;
-    logic        rf_we;   
-    logic [15:0] c_insn;          // for trace only
-    logic        ptaken;
-    logic [31:0] ptarget;
-    logic [31:0] btarget;
-    logic [31:0] pc_nxt;
-    sysctl_t     sysctl;
-    logic        is_cheri;
-    cheri_op_t   cheri_op;
-    logic        is_cmplx;
-    logic        is_brkpt;
-    logic        alt_valid;
-    logic [1:0]  alt_id;
-    logic [4:0]  alt_seq;
+    logic [31:0]     insn;
+    logic [31:0]     pc;
+    logic            any_err;
+    ir_errs_t        errs;   
+    logic            is_comp;
+    logic            is_branch;
+    logic            is_jal;
+    logic            is_jalr;
+    logic            is_csr;
+    pl_type_e        pl_type;  
+    logic [4:0]      rs1;
+    logic [4:0]      rs2;
+    logic [4:0]      rd;
+    logic [1:0]      rf_ren;
+    logic            rf_we;   
+    logic [15:0]     c_insn;          // for trace only
+    logic            ptaken;
+    logic [RegW-1:0] ptarget;
+    logic [31:0]     btarget;
+    logic [31:0]     pc_nxt;
+    sysctl_t         sysctl;
+    logic            is_cheri;
+    cheri_op_t       cheri_op;
+    logic            is_cmplx;
+    logic            is_brkpt;
+    logic            alt_valid;
+    logic [1:0]      alt_id;
+    logic [4:0]      alt_seq;
   } ir_dec_t;
 
   typedef struct packed {
@@ -161,7 +160,8 @@ package super_pkg;
     logic            wrsv;
     logic [4:0]      waddr;
     logic [RegW-1:0] wdata;
-    logic [31:0]     pc;
+    logic [RegW-1:0] pc;
+    logic            mie;
     logic            err;
     logic [5:0]      mcause;
     logic [31:0]     mtval;
@@ -201,7 +201,8 @@ package super_pkg;
     logic [4:0]         rs1;
     logic [4:0]         rd;
     logic [31:0]        insn;          
-    logic [31:0]        pc;
+    logic [RegW-1:0]    pc;
+    logic               mie;
     logic               early_load;
     logic               cache_ok;
     logic               cs2_valid;
@@ -239,12 +240,15 @@ package super_pkg;
   } ex_alt_ctrl_t;
 
   typedef struct packed {
-    logic [31:0] pc;
-    logic [5:0]  mcause;
-    logic [31:0] mtval;
-  } cmt_err_info_t;
+    logic            has_pcc;
+    logic            clrtag;
+    logic [RegW-1:0] pc;
+    logic            mie;
+    logic [5:0]      mcause;
+    logic [31:0]     mtval;
+  } exc_info_t;
 
-  parameter cmt_err_info_t NULL_CMT_ERR_INFO = cmt_err_info_t'(0);
+  parameter exc_info_t NULL_EXC_INFO = exc_info_t'(0);
 
   typedef enum logic [6:0] {
     OPCODE_LOAD     = 7'h03,
@@ -370,14 +374,13 @@ package super_pkg;
     CSM_CMT_FLUSH      = 4'h3,
     CSM_WAIT_TRVK      = 4'h4,
     CSM_WAIT_CMT0      = 4'h6,
-    CSM_WAIT_CMT1      = 4'h7,
     CSM_ISSUE_SPECIAL  = 4'h8,
     CSM_WAIT_FINAL     = 4'h9,
     CSM_WAIT_CMPLX     = 4'ha,
     CSM_SLEEP          = 4'hb
   } ctrl_fsm_e;     
 
-  typedef enum logic [2:0] {NULL, EXEC, SYSCTL, ICJALR, CMPLX, IRQ, DEBUG} special_case_e;
+  typedef enum logic [2:0] {NULL, EXEC, SYSCTL, CMPLX, IRQ, DEBUG} special_case_e;
 
   typedef enum logic [2:0]  {
     IDLE, WAIT_GNT_MIS, WAIT_RVALID_MIS, WAIT_GNT,

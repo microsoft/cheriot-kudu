@@ -27,9 +27,7 @@ module if_stage import super_pkg::*; #(
   parameter int unsigned PredictBhtSize    = 16,
   parameter int unsigned PrefetchDepth     = 3,
   parameter bit          AltEnable         = 1'b0,
-  parameter bit          PredictRA         = 1'b0,
-  parameter logic [20:0] RALimitHi         = 21'h080040,  // in 4kB unit
-  parameter logic [20:0] RALimitLo         = 21'h080000
+  parameter bit          PredictRA         = 1'b0
 ) (
   input  logic             clk_i,
   input  logic             rst_ni,
@@ -60,26 +58,15 @@ module if_stage import super_pkg::*; #(
   input  logic [31:0]      ex_pc_target_i,           // Not-taken branch address in ID/EX
                                                      // vectorized interrupt lines
   input  logic             ex_bp_init_i, 
-  input  ex_bp_info_t      ex_bp_info_i, 
+  input  ex_bp_info_t      ex_bp_info_i,
+  input  logic [31:0]      cur_ra32_i, 
 
   // ALT branch related signals
   input  ex_alt_ctrl_t     ex_alt_ctrl_i,
 
   // misc signals
-  output logic             if_busy_o,                // IF stage is busy fetching instr
+  output logic             if_busy_o                 // IF stage is busy fetching instr
 
-  // regfile write snoop interface
-  input  logic [4:0]       rf_waddr0_i,
-  input  logic [RegW-1:0]  rf_wdata0_i,
-  input  logic             rf_we0_i,
-                           
-  input  logic [4:0]       rf_waddr1_i,
-  input  logic [RegW-1:0]  rf_wdata1_i,
-  input  logic             rf_we1_i,
-                           
-  input  logic [4:0]       rf_waddr2_i,
-  input  logic [RegW-1:0]  rf_wdata2_i,
-  input  logic             rf_we2_i
 );
 
   // prefetch buffer related signals
@@ -148,14 +135,13 @@ module if_stage import super_pkg::*; #(
     .UseBtb     (PredictUseBtb),
     .BhtSize    (PredictBhtSize),
     .AltEnable  (AltEnable),
-    .PredictRA  (PredictRA),
-    .RALimitHi  (RALimitHi),
-    .RALimitLo  (RALimitLo)
+    .PredictRA  (PredictRA)
   ) branch_predict_i (
     .clk_i               (clk_i            ),
     .rst_ni              (rst_ni           ),
     .pdt_en_i            (1'b1             ),
     .tbl_rst_val_i       (boot_addr_i      ),
+    .cur_ra32_i          (cur_ra32_i       ),
     .ex_bp_init_i        (ex_bp_init_i     ), 
     .ex_bp_info_i        (ex_bp_info_i     ), 
     .instr_gnt_i         (instr_gnt_i      ),
@@ -175,16 +161,7 @@ module if_stage import super_pkg::*; #(
     .alloc_alt_o         (bp_alloc_alt     ),
     .bp_instr0_o         (bp_instr0        ),
     .alt_has_free_i      (alt_has_free     ),
-    .alt_free_id_i       (alt_free_id      ),
-    .rf_waddr0_i         (rf_waddr0_i      ),
-    .rf_wdata0_i         (rf_wdata0_i      ),
-    .rf_we0_i            (rf_we0_i         ),       
-    .rf_waddr1_i         (rf_waddr1_i      ),
-    .rf_wdata1_i         (rf_wdata1_i      ),
-    .rf_we1_i            (rf_we1_i         ),        
-    .rf_waddr2_i         (rf_waddr2_i      ),
-    .rf_wdata2_i         (rf_wdata2_i      ),
-    .rf_we2_i            (rf_we2_i         )
+    .alt_free_id_i       (alt_free_id      )
   );
 
   // compressed instruction decoding, or more precisely compressed instruction

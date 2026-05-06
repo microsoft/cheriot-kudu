@@ -18,8 +18,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   parameter bit        RV32M      = 1'b1,
   parameter bit        RV32B      = 1'b1,
   parameter bit        RV32A      = 1'b1,
-  parameter bit        IbexCmpt   = 1'b1,
-  parameter bit        CsrUseLSU  = 1'b0 
+  parameter bit        IbexCmpt   = 1'b1
 ) (
   input  logic         clk_i,
   input  logic         rst_ni,
@@ -122,16 +121,15 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
 
   // this determines the "special case" path for the issuer controller state machine (ctrl_fsm)
   assign sysctl.valid  = (sysctl.csrw | sysctl.wfi | sysctl.ebrk | sysctl.ecall | sysctl.dret | 
-                         sysctl.mret | sysctl.cjalr | sysctl.fencei);
+                         sysctl.mret  | sysctl.fencei);
 
   // assign sysctl.csrw   = is_csr_wr;
-  assign sysctl.csrw   = (~CsrUseLSU & is_csr) | (is_csr_wr & csr_is_mie);
+  assign sysctl.csrw   = is_csr_wr & csr_is_mie;
   assign sysctl.mret   = mret_insn; 
   assign sysctl.dret   = dret_insn; 
   assign sysctl.wfi    = wfi_insn; 
   assign sysctl.ebrk   = ebrk_insn; 
   assign sysctl.ecall  = ecall_insn; 
-  assign sysctl.cjalr  = cjalr_insn; 
   assign sysctl.fencei = fencei_insn; 
 
   assign illegal_reg_cheri = cheri_pmode & ((rf_ren_a & rs1[4]) | (rf_ren_b & rs2[4]) | (rf_we & rd[4]));
@@ -463,7 +461,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
           csr_insn     = 1'b1;
           csr_wr       = ~(instr[13] && (rs1 == 0));  
           csr_is_mie   = (csr_num_e'(instr[31:20]) == CSR_MSTATUS) || (csr_num_e'(instr[31:20]) == CSR_MIE);
-          pl_type      = CsrUseLSU ? PL_LS : PL_MULT;
+          pl_type      = PL_LS;
           rf_ren_a     = ~instr[14];
           rf_we        = 1'b1;   // CSR instructions use rd==0 for read-only
           illegal_insn = (instr[13:12] == 2'b00);
@@ -472,9 +470,9 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
 
       OPCODE_CHERI: begin
         logic cheri_go_mult, cheri_go_ls;
-        cheri_go_ls     = CsrUseLSU & cheri_op.cscrrw; 
-        cheri_go_mult   = (~CsrUseLSU & cheri_op.cscrrw) | cheri_op.csetbounds | cheri_op.csetboundsex |
-                          cheri_op.csetboundsimm | cheri_op.csetboundsrndn | cheri_op.crrl | cheri_op.cram;
+        cheri_go_ls     = cheri_op.cscrrw; 
+        cheri_go_mult   = cheri_op.csetbounds | cheri_op.csetboundsex | cheri_op.csetboundsimm |
+                          cheri_op.csetboundsrndn | cheri_op.crrl | cheri_op.cram;
         pl_type         = cheri_go_ls ? PL_LS : (cheri_go_mult ? PL_MULT : PL_ALU);   
         rf_ren_a        = 1'b1;
         rf_ren_b        = (instr[14:12] == 0) && (instr[31:25] != 7'h7f) && (instr[31:25] != 7'h01);

@@ -39,7 +39,7 @@ module committer import super_pkg::*; # (
   input  logic              cmt_flush_i,
   output logic [31:0]       cmt_regwr_o,
   output logic              cmt_err_o,
-  output cmt_err_info_t     cmt_err_info_o,
+  output exc_info_t         cmt_err_info_o,
 
   // Write ports
   output logic [4:0]        rf_waddr0_o,
@@ -59,7 +59,7 @@ module committer import super_pkg::*; # (
   logic [4:0]      instr0_pl_sel, instr1_pl_sel;
   logic [4:0]      pl_we_vec0, pl_we_vec1;
   logic            cmt_err_q;
-  cmt_err_info_t   cmt_err_info_d, cmt_err_info_q;
+  exc_info_t       cmt_err_info_d, cmt_err_info_q;
   logic [31:0]     cmt_err_pc;
                    
   logic            cmt_wrsv0, cmt_wrsv1, cmt_wrsv2;
@@ -195,30 +195,27 @@ module committer import super_pkg::*; # (
   assign cmt_err_o      = cmt_err_q;
   assign cmt_err_info_o = cmt_err_info_q;
 
-  always_comb begin
-    // prioritize instr0 when reporting
-    // No error from ALU*PL for now
-    cmt_err_info_d = cmt_err_info_q;
-
-    if ((instr0_pl_sel[3] && pl_err_st[3]) || (~instr_err[0] & instr1_pl_sel[3] && pl_err_st[3])) begin
-      cmt_err_info_d = '{lspl_output_i.pc, lspl_output_i.mcause, lspl_output_i.mtval};
-    end else if ((instr0_pl_sel[4] && pl_err_st[4]) || (~instr_err[0] & instr1_pl_sel[4] && pl_err_st[4])) begin
-      cmt_err_info_d = '{multpl_output_i.pc, multpl_output_i.mcause, multpl_output_i.mtval};
-    end
-
-  end
+  // error can only be from LSPL now
+  assign  cmt_err_info_d = '{has_pcc : 1'b1, 
+                             clrtag  : 1'b0, 
+                             pc      : lspl_output_i.pc, 
+                             mie     : lspl_output_i.mie, 
+                             mcause  : lspl_output_i.mcause, 
+                             mtval   : lspl_output_i.mtval
+                             };
   
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (~rst_ni) begin
       cmt_err_q      <= 1'b0;
-      cmt_err_info_q <= NULL_CMT_ERR_INFO;
+      cmt_err_info_q <= NULL_EXC_INFO;
     end else begin
       if (cmt_flush_i) 
         cmt_err_q <= 1'b0;
       else if (instr_err[0] | instr_err[1]) 
         cmt_err_q    <= 1'b1;
 
-      cmt_err_info_q <= cmt_err_info_d;
+      if (instr_err[0] | instr_err[1])
+        cmt_err_info_q <= cmt_err_info_d;
     end
   end
 

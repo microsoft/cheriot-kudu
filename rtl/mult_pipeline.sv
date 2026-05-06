@@ -31,7 +31,8 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   input  ir_dec_t              irb_dec_i,
   input  full_data2_t          ira_full_data2_i,
   input  full_data2_t          irb_full_data2_i,
-  input  logic                 pcc_asr_i,
+  input  logic                 ira_is0_i,
+  input  logic [1:0]           mis_jalr_i,
   input  waw_act_t             waw_act_i,
 
   output logic [31:0]          fwd_act_o,
@@ -43,24 +44,15 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   output pl_out_t              multpl_output_o,
 
   // CSR r/w interface
-  output logic                 csr_access_o,
-  output logic                 csr_cheri_o,
-  output logic                 csr_op_en_o,
-  output csr_op_e              csr_op_o,
-  output csr_num_e             csr_addr_o,
-  output logic [FullW-1:0]     csr_wdata_o,
-  input  logic [RegW-1:0]      csr_rdata_i,
-  input  logic                 illegal_csr_insn_i,      // access to non-existent CSR,
-  input  logic                 csr_mstatus_mie_i,
   input  pcc_cap_t             pcc_cap_i,
-  output pcc_cap_t             pcc_cap_o,
-  output logic                 cheri_pcc_set_o,
-  output logic                 csr_set_mie_o,           
-  output logic                 csr_clr_mie_o           
+  input  logic                 csr_mstatus_mie_i,
+  output pcc_cap_t             cjalr_pcap_o,
+  output logic                 cjalr_pcc_set_o,
+  output logic                 cjalr_set_mie_o,           
+  output logic                 cjalr_clr_mie_o           
 );
 
   typedef struct packed {
-    logic is_csr;
     logic is_cjalr;
     logic is_mult;
     logic is_div;
@@ -106,7 +98,6 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   logic        cheri_pmode;
 
   logic [OpW-1:0] ex1_result,  ex2_result;
-  logic [31:0]    ex1_csr_wdata;
 
   assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
 
@@ -143,7 +134,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   //   - csetbounds (1st stage)
   //   - cjalr
   // 
-  logic        ex1_is_csr, ex1_is_cjalr;
+  logic        ex1_is_cjalr;
   logic        mult_sel, div_sel;
   opcode_e     opcode;
   logic [9:0]  func10;
@@ -154,13 +145,11 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   assign multpl_rdy_o = ex2_rdy;
 
-  assign ex1_is_csr    = instr_dec.is_csr;
   assign ex1_is_cjalr  = cheri_pmode & instr_dec.is_jalr;
-  assign ex1_csr_wdata = instr_dec.insn[14] ? instr_dec.insn[19:15] : full_data2.d0[31:0];
 
-  assign ex1_result    = ex1_csr_wdata; // only used by RV32 CSR instructions
+  assign ex1_result    = full_data2.d0[31:0];
 
-  assign ex1to2_reg = '{'{ex1_is_csr, ex1_is_cjalr, mult_sel, div_sel},
+  assign ex1to2_reg = '{'{ex1_is_cjalr, mult_sel, div_sel},
                         instr_dec.cheri_op, instr_dec.rf_we, instr_dec.rd, 
                         ex1_result, instr_dec.pc, '0, '0, instr_dec.insn};  
 
@@ -234,7 +223,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     logic [2:0]  seal_type;
     logic [31:0] pc_nxt;
     full_cap_t   cs1_fcap, cs2_fcap;
-    full_cap_t   cjalr_tfcap;
+    full_cap_t   lr_fcap;
 
     assign cs1_fcap = full_cap_t'(full_data2.d0);
     assign cs2_fcap = full_cap_t'(full_data2.d1);
@@ -244,19 +233,19 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
       pc_nxt      = instr_dec.pc + (instr_dec.is_comp ? 2 : 4);
       seal_type   = csr_mstatus_mie_i ? OTYPE_SENTRY_IE_BKWD : OTYPE_SENTRY_ID_BKWD;
 
-      cjalr_tfcap       = pcc2fullcap_lite(pcc_cap_i, pc_nxt);
-      cjalr_tfcap.otype = (instr_dec.rd == 5'h1) ? seal_type : cjalr_tfcap.otype;
+      lr_fcap       = pcc2fullcap_lite(pcc_cap_i, pc_nxt);
+      lr_fcap.otype = (instr_dec.rd == 5'h1) ? seal_type : lr_fcap.otype;
 
-      csr_set_mie_o = us_valid_i & ex1_is_cjalr & ex2_rdy &
-                      ((cs1_fcap.otype == OTYPE_SENTRY_IE_FWD) || (cs1_fcap.otype == OTYPE_SENTRY_IE_BKWD));
-      csr_clr_mie_o = us_valid_i & ex1_is_cjalr & ex2_rdy &
-                      ((cs1_fcap.otype == OTYPE_SENTRY_ID_FWD) || (cs1_fcap.otype == OTYPE_SENTRY_ID_BKWD));
+      cjalr_set_mie_o = us_valid_i & ex1_is_cjalr & ex2_rdy &
+                        ((cs1_fcap.otype == OTYPE_SENTRY_IE_FWD) || (cs1_fcap.otype == OTYPE_SENTRY_IE_BKWD));
+      cjalr_clr_mie_o = us_valid_i & ex1_is_cjalr & ex2_rdy &
+                        ((cs1_fcap.otype == OTYPE_SENTRY_ID_FWD) || (cs1_fcap.otype == OTYPE_SENTRY_ID_BKWD));
     end
 
     // pc bound violation checked later
     // pcc only contains address bound/metadata, no need for set_addr
-    assign pcc_cap_o       =  full2pcap(unseal_cap(cs1_fcap));  
-    assign cheri_pcc_set_o = us_valid_i & ex1_is_cjalr & ex2_rdy;
+    assign cjalr_pcap_o    = full2pcap(unseal_cap(cs1_fcap));  
+    assign cjalr_pcc_set_o = us_valid_i & ex1_is_cjalr & ex2_rdy;
     
     // csetbounds 1st stage & shared context flops
     always_comb begin: set_bounds_comb
@@ -264,14 +253,10 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
       logic        req_exact;
       logic [31:0] tmp_addr;
       
-      if (ex1_is_csr) begin
+      if (ex1_is_cjalr) begin
         newlen      = cs1_fcap.addr;
         req_exact_d = 1'b0;
-        ex1_tfcap_d = cs1_fcap;
-      end else if (ex1_is_cjalr) begin
-        newlen      = cs1_fcap.addr;
-        req_exact_d = 1'b0;
-        ex1_tfcap_d = cjalr_tfcap;
+        ex1_tfcap_d = lr_fcap;
       end else if (instr_dec.cheri_op.csetbounds | instr_dec.cheri_op.csetboundsrndn) begin
         newlen      = cs2_fcap.addr;
         req_exact_d = 1'b0;
@@ -310,8 +295,8 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   end else begin
 
-    assign csr_set_mie_o   = 1'b0;
-    assign csr_clr_mie_o   = 1'b0;
+    assign cjalr_set_mie_o   = 1'b0;
+    assign cjalr_clr_mie_o   = 1'b0;
     assign setbounds_req_q = setbounds_req_t'(0);
     assign req_exact_q     = 1'b0;
     assign ex1_tfcap_q     = NULL_FULL_CAP;
@@ -330,8 +315,8 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
 
   assign ex2_rdy      = ~ex2_valid | (op_done & wb_rdy);
-  assign op_done      = ex2_reg.flags.is_csr | ex2_reg.flags.is_cjalr | (|ex2_reg.cheri_op) | 
-                        ex2_reg.flags.is_mult | (ex2_reg.flags.is_div & md_div_valid) | op_done_q;
+  assign op_done      = ex2_reg.flags.is_cjalr | (|ex2_reg.cheri_op) | ex2_reg.flags.is_mult | 
+                        (ex2_reg.flags.is_div & md_div_valid) | op_done_q;
   assign ex2wb_valid  = ex2_valid & op_done;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -385,10 +370,6 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     if (ex2_reg.flags.is_cjalr) begin 
       ex2_tfcap  = ex2_sa_fcap_out;
       ex2_result = ex2_tfcap[OpW-1:0];
-    end else if (ex2_reg.flags.is_csr & ex2_reg.cheri_op.cscrrw) begin 
-      ex2_result = reg2opcap(csr_rdata_i);   // needed for forwarding
-    end else if (ex2_reg.flags.is_csr) begin 
-      ex2_result = csr_rdata_i;
     end else if (ex2_reg.flags.is_mult) begin 
       ex2_result = md_mult_result;
     end else if (ex2_reg.flags.is_div) begin 
@@ -406,51 +387,9 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     end
   end
 
-  // CSR operations
 
-  logic        csr_cheri, csr_cheri_err;
-  logic        csr_cheri_asr_err, csr_cheri_always_ok;
-  logic [31:0] ex2_insn;
-  logic [4:0]  scr_addr;
-  logic [11:0] csr_addr;
-
-  assign csr_op_en_o  = ex2_valid & ex2_reg.flags.is_csr;
-  assign csr_access_o = csr_op_en_o; 
-  assign csr_wdata_o  = csr_cheri ? ex2_sa_fcap_out : ex2_reg.wdata;
-  assign csr_cheri    = ex2_reg.cheri_op.cscrrw;
-  assign csr_cheri_o  = csr_cheri;
-
-  assign scr_addr   = ex2_insn[24:20];
-  assign csr_addr   = ex2_insn[31:20]; 
-  assign ex2_insn   = ex2_reg.insn;
-  assign csr_addr_o = csr_cheri ? csr_num_e'({7'h0, scr_addr}) : csr_num_e'(csr_addr); 
-
-  // check CHERIoT CSR/SCR access permission
-  assign csr_cheri_always_ok = ~csr_cheri & (((ex2_insn[31:28] == 4'hb) || (ex2_insn[31:28] == 4'hc)) && 
-                               ((ex2_insn[27] == 1'b0) || (ex2_insn[26:25] == 2'b00)));
-  assign csr_cheri_asr_err   = cheri_pmode & ~pcc_asr_i & ~csr_cheri_always_ok;
-  
-  assign ex2_err  = ~debug_mode_i & ex2_reg.flags.is_csr & (illegal_csr_insn_i | csr_cheri_asr_err);
-
-  //  ASR error for SCR access: fill in scr address. ASR error for CSR: use zero
-  assign ex2_err_type = {(csr_cheri ? scr_addr : 4'h0), illegal_csr_insn_i}; 
-
-  always_comb begin
-    logic        rs1_is_zero;
- 
-    rs1_is_zero = (ex2_insn[19:15] == '0);
-
-    if (csr_cheri) begin
-      csr_op_o = rs1_is_zero ? CSR_OP_READ : CSR_OP_WRITE;
-    end else begin
-      case (ex2_insn[13:12])
-        2'b01:   csr_op_o = CSR_OP_WRITE;
-        2'b10:   csr_op_o = rs1_is_zero ? CSR_OP_READ : CSR_OP_SET;
-        2'b11:   csr_op_o = rs1_is_zero ? CSR_OP_READ : CSR_OP_CLEAR;
-        default: csr_op_o = CSR_OP_READ;       // don't care case
-      endcase
-    end
-  end
+  assign ex2_err  = 1'b0;
+  assign ex2_err_type = 4'h0;
 
   //
   // WB stage

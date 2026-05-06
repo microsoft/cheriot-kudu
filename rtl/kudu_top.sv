@@ -5,7 +5,7 @@
 module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   parameter bit          CHERIoTEn = 1'b0,
   parameter bit          UseDWMult = 1'b0,
-  parameter kudu_cfg_t   CFG       = KuduCfg1
+  parameter kudu_cfg_t   CFG       = KuduCfg1x
 ) (
   // Clock and Reset
   input  logic                         clk_i,
@@ -98,7 +98,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   waw_act_t       waw_act;
   logic           cmt_err;  
   logic [31:0]    cmt_regwr;
-  cmt_err_info_t  cmt_err_info;
+  exc_info_t      cmt_err_info;
   logic [1:0]     sbdfifo_wr_valid, sbdfifo_rd_valid;  
   logic [1:0]     sbdfifo_wr_rdy, sbdfifo_rd_rdy;  
   sbd_fifo_t      sbdfifo_wdata0, sbdfifo_wdata1;  
@@ -117,18 +117,15 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   branch_info_t   branch_info;
   logic [2:0]     ir0_cjalr_err, ir1_cjalr_err;
 
-  logic             csr_op_en, csr_op_en_a, csr_op_en_b;
-  csr_op_e          csr_op, csr_op_a, csr_op_b;
-  logic             csr_access, csr_access_a, csr_access_b;
-  csr_num_e         csr_addr, csr_addr_a, csr_addr_b;
-  logic [FullW-1:0] csr_wdata, csr_wdata_a, csr_wdata_b;
-  logic             csr_cheri, csr_cheri_a, csr_cheri_b;
+  logic             csr_op_en;
+  csr_op_e          csr_op;
+  logic             csr_access;
+  csr_num_e         csr_addr;
+  logic [FullW-1:0] csr_wdata;
+  logic             csr_cheri;
   logic [RegW-1:0]  csr_rdata;
   logic             illegal_csr_insn;
 
-  logic            csr_set_mie;
-  logic            csr_clr_mie;
-                 
   logic            csr_mstatus_tw, csr_mstatus_mie;
   priv_lvl_e       priv_mode;
   logic            data_ind_timing;
@@ -138,18 +135,21 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   logic [31:0]     csr_mtvec;
   logic            csr_mtvec_init;
   logic [31:0]     csr_mepc;
-  logic [31:0]     csr_exc_pc;      
   logic            csr_restore_mret;
   logic            csr_restore_dret;
   logic            csr_save_cause;
-  logic            csr_mepcc_clrtag;
-  exc_cause_e      csr_exc_cause;
-  logic [31:0]     csr_mtval;
+  exc_info_t       csr_exc_info;
   logic            csr_lsu_wr_req;
   logic [31:0]     csr_lsu_addr;
                    
-  pcc_cap_t        pcc_cap_r, pcc_cap_w;
-  logic            cheri_pcc_set;
+  logic            ex1_cjalr_set_mie;
+  logic            ex1_cjalr_clr_mie;
+  pcc_cap_t        ex1_pcc_cap, ir_pcc_cap;
+  pcc_cap_t        ex1_cjalr_pcap;
+  logic            ex1_cjalr_pcc_set, ex1_mispredict;
+  logic            ir_cjalr_pcc_set;
+  reg_cap_t        ir_cjalr_rcap;
+
   logic            trvk_en;
   logic            trvk_clrtag, trvk_outstanding;
   logic [4:0]      trvk_addr;
@@ -173,7 +173,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   logic            cmplx_lsu_req_valid;
   lsu_req_info_t   cmplx_lsu_req_info;
 
-
+  logic [31:0]     cur_ra32;
   logic            cheri_tsafe_en;
 
   assign cheri_tsafe_en = 1'b1;   // QQQ for now - tie to an input or CSR?
@@ -210,9 +210,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .PredictBhtSize   (CFG.PredictBhtSize),
     .PrefetchDepth    (CFG.PrefetchDepth),
     .AltEnable        (CFG.AltEnable),
-    .PredictRA        (CFG.PredictRA),
-    .RALimitHi        (CFG.RALimitHi),
-    .RALimitLo        (CFG.RALimitLo)
+    .PredictRA        (CFG.PredictRA)
   ) if_stage_i(
     .clk_i                   (clk_i                   ),
     .rst_ni                  (rst_ni                  ),
@@ -236,16 +234,8 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .ex_bp_init_i            (ex_bp_init              ),
     .ex_bp_info_i            (ex_bp_info              ),
     .ex_alt_ctrl_i           (ex_alt_ctrl             ),
-    .if_busy_o               (                        ),
-    .rf_waddr0_i             (rf_waddr0               ),
-    .rf_wdata0_i             (rf_wdata0               ),
-    .rf_we0_i                (rf_we0                  ),       
-    .rf_waddr1_i             (rf_waddr1               ),
-    .rf_wdata1_i             (rf_wdata1               ),
-    .rf_we1_i                (rf_we1                  ),        
-    .rf_waddr2_i             (rf_waddr2               ),
-    .rf_wdata2_i             (rf_wdata2               ),
-    .rf_we2_i                (rf_we2                  )
+    .cur_ra32_i              (cur_ra32                ),
+    .if_busy_o               (                        )
   );                        
                            
   ir_stage # (
@@ -256,7 +246,9 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .RV32M        (CFG.RV32M),
     .RV32B        (CFG.RV32B),
     .RV32A        (CFG.RV32A),
-    .CsrUseLSU    (CFG.CsrUseLSU),
+    .PredictRA    (CFG.PredictRA),
+    .RALimitHi    (CFG.RALimitHi),
+    .RALimitLo    (CFG.RALimitLo),
     .DbgTriggerEn (CFG.DbgTriggerEn),
     .BrkptNum     (CFG.BrkptNum)    
   ) ir_stage_i (
@@ -264,7 +256,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .rst_ni             (rst_ni          ),
     .cheri_pmode_i      (cheri_pmode_i   ),
     .debug_mode_i       (1'b0            ),
-    .pcc_cap_i          (pcc_cap_r       ),
+    .pcc_cap_i          (ir_pcc_cap      ),
     .us_instr0_i        (if_instr0       ),   
     .us_instr1_i        (if_instr1       ),    
     .us_valid_i         (if_valid        ),
@@ -290,13 +282,16 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .ira_is0_o          (ira_is0         ),
     .ira_dec_o          (ira_dec         ),
     .irb_dec_o          (irb_dec         ),
-    .ira_op_rdata2_o    (ira_op_rdata2),  
-    .irb_op_rdata2_o    (irb_op_rdata2),
+    .ira_op_rdata2_o    (ira_op_rdata2   ),  
+    .irb_op_rdata2_o    (irb_op_rdata2   ),
     .trvk_en_i          (trvk_en         ), 
     .trvk_clrtag_i      (trvk_clrtag     ), 
     .trvk_addr_i        (trvk_addr       ),
     .tmatch_control_i   (tmatch_control  ),
-    .tmatch_value_i     (tmatch_value    )
+    .tmatch_value_i     (tmatch_value    ),
+    .cur_ra32_o         (cur_ra32        ),
+    .cjalr_pcc_set_o    (ir_cjalr_pcc_set),
+    .cjalr_rcap_o       (ir_cjalr_rcap   )
   );
 
   issuer #(
@@ -305,6 +300,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .LoadFiltEn (CHERIoTEn),
     .RV32A      (CFG.RV32A     ),
     .AltEnable  (CFG.AltEnable ),
+    .CJALRErrEn (CFG.CJALRErrEn),
     .DmHaltAddr (CFG.DmHaltAddr),
     .DmExcAddr  (CFG.DmExcAddr )
   ) issuer_i (
@@ -367,14 +363,12 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .csr_mstatus_mie_i         (csr_mstatus_mie         ),
     .csr_mtvec_i               (csr_mtvec               ),
     .csr_mepc_i                (csr_mepc                ),
-    .csr_exc_pc_o              (csr_exc_pc              ),
     .csr_mtvec_init_o          (csr_mtvec_init          ),
     .csr_save_cause_o          (csr_save_cause          ),
-    .csr_mepcc_clrtag_o        (csr_mepcc_clrtag        ),
+    .csr_exc_info_o            (csr_exc_info            ),
     .csr_restore_mret_o        (csr_restore_mret        ),
     .csr_restore_dret_o        (csr_restore_dret        ),
-    .csr_mcause_o              (csr_exc_cause           ),
-    .csr_mtval_o               (csr_mtval               ),
+    .csr_mispredict_o          (ex1_mispredict          ),
     .debug_req_i               (debug_req_i             ),
     .csr_depc_i                (csr_depc                ),
     .debug_single_step_i       (debug_single_step       ),
@@ -438,8 +432,8 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .instr_i           (ira_dec         ),
     .full_data2_i      (ira_full_data2_fwd),
     .waw_act_i         (waw_act         ),
-    .pcc_cap_i         (pcc_cap_r       ),
-    .csr_mstatus_mie_i (csr_mstatus_mie),
+    .pcc_cap_i         (ex1_pcc_cap     ),
+    .csr_mstatus_mie_i (csr_mstatus_mie ),
     .fwd_act_o         (alupl0_fwd_act  ),
     .fwd_info_o        (alupl0_fwd_info ),
     .ds_rdy_i          (cmt_alupl0_rdy  ),
@@ -458,7 +452,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .instr_i           (irb_dec         ),
     .full_data2_i      (irb_full_data2_fwd),
     .waw_act_i         (waw_act         ),
-    .pcc_cap_i         (pcc_cap_r       ),
+    .pcc_cap_i         (ex1_pcc_cap     ),
     .csr_mstatus_mie_i (csr_mstatus_mie ),
     .fwd_act_o         (alupl1_fwd_act  ),
     .fwd_info_o        (alupl1_fwd_info ),
@@ -517,13 +511,14 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .tsmap_cs_o            (tsmap_cs_o        ),
     .tsmap_addr_o          (tsmap_addr_o      ),
     .tsmap_rdata_i         (tsmap_rdata_i     ),   
-    .pcc_asr_i             (pcc_cap_r.perms[PERM_SR]),
-    .csr_access_o          (csr_access_a      ),
-    .csr_cheri_o           (csr_cheri_a       ),
-    .csr_op_en_o           (csr_op_en_a       ),
-    .csr_op_o              (csr_op_a          ),
-    .csr_addr_o            (csr_addr_a        ),
-    .csr_wdata_o           (csr_wdata_a       ),
+    .pcc_cap_i             (ex1_pcc_cap       ),
+    .csr_mstatus_mie_i     (csr_mstatus_mie   ),
+    .csr_access_o          (csr_access        ),
+    .csr_cheri_o           (csr_cheri         ),
+    .csr_op_en_o           (csr_op_en         ),
+    .csr_op_o              (csr_op            ),
+    .csr_addr_o            (csr_addr          ),
+    .csr_wdata_o           (csr_wdata         ),
     .csr_rdata_i           (csr_rdata         ),
     .illegal_csr_insn_i    (illegal_csr_insn  ),
     .csr_lsu_wr_req_o      (csr_lsu_wr_req    ),
@@ -548,27 +543,20 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .irb_dec_i          (irb_dec          ),
     .ira_full_data2_i   (ira_full_data2_fwd),
     .irb_full_data2_i   (irb_full_data2_fwd),
-    .pcc_asr_i          (pcc_cap_r.perms[PERM_SR]),
+    .ira_is0_i          (ira_is0          ),
+    .mis_jalr_i         (branch_info.mis_jalr),
     .waw_act_i          (waw_act          ),
     .fwd_act_o          (multpl_fwd_act   ),
     .fwd_info_o         (multpl_fwd_info  ),
     .ds_rdy_i           (cmt_multpl_rdy   ),
     .multpl_valid_o     (multpl_valid     ),
     .multpl_output_o    (multpl_output    ),
-    .csr_access_o       (csr_access_b     ),
-    .csr_cheri_o        (csr_cheri_b      ),
-    .csr_op_en_o        (csr_op_en_b      ),
-    .csr_op_o           (csr_op_b         ),
-    .csr_addr_o         (csr_addr_b       ),
-    .csr_wdata_o        (csr_wdata_b      ),
-    .csr_rdata_i        (csr_rdata        ),
-    .illegal_csr_insn_i (illegal_csr_insn ),
+    .pcc_cap_i          (ex1_pcc_cap      ),
     .csr_mstatus_mie_i  (csr_mstatus_mie  ),
-    .cheri_pcc_set_o    (cheri_pcc_set    ),
-    .pcc_cap_i          (pcc_cap_r        ),
-    .pcc_cap_o          (pcc_cap_w        ),
-    .csr_set_mie_o      (csr_set_mie      ),
-    .csr_clr_mie_o      (csr_clr_mie      )
+    .cjalr_pcc_set_o    (ex1_cjalr_pcc_set),
+    .cjalr_pcap_o       (ex1_cjalr_pcap   ),
+    .cjalr_set_mie_o    (ex1_cjalr_set_mie),
+    .cjalr_clr_mie_o    (ex1_cjalr_clr_mie)
   );
     
 
@@ -607,19 +595,13 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   );                  
   
   // Select which pipeline handles CSR/SCR read/write
-  assign csr_access = CFG.CsrUseLSU ? csr_access_a : csr_access_b;
-  assign csr_cheri  = CFG.CsrUseLSU ? csr_cheri_a  : csr_cheri_b;
-  assign csr_op_en  = CFG.CsrUseLSU ? csr_op_en_a  : csr_op_en_b;
-  assign csr_op     = CFG.CsrUseLSU ? csr_op_a     : csr_op_b;   
-  assign csr_addr   = CFG.CsrUseLSU ? csr_addr_a   : csr_addr_b; 
-  assign csr_wdata  = CFG.CsrUseLSU ? csr_wdata_a  : csr_wdata_b;
-
   cs_registers #(
     .CHERIoTEn    (CHERIoTEn),
     .DbgTriggerEn (CFG.DbgTriggerEn),
     .BrkptNum     (CFG.BrkptNum),    
     .RV32M        (CFG.RV32M),
-    .RV32B        (CFG.RV32B)
+    .RV32B        (CFG.RV32B),
+    .PredictRA    (CFG.PredictRA)
   ) cs_registers_i (
     .clk_i                        (clk_i),
     .rst_ni                       (rst_ni),
@@ -640,8 +622,6 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .csr_rdata_o                  (csr_rdata),
     .illegal_csr_insn_o           (illegal_csr_insn),
                                   
-    .csr_set_mie_i                (csr_set_mie),
-    .csr_clr_mie_i                (csr_clr_mie),
     .csr_lsu_wr_req_i             (csr_lsu_wr_req),
     .csr_lsu_addr_i               (csr_lsu_addr),
                                   
@@ -674,13 +654,10 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .icache_enable_o              (),
     .csr_shadow_err_o             (),
 
-    .csr_exc_pc_i                 (csr_exc_pc),
     .csr_save_cause_i             (csr_save_cause),
+    .csr_exc_info_i               (csr_exc_info),
     .csr_restore_mret_i           (csr_restore_mret),
     .csr_restore_dret_i           (csr_restore_dret),
-    .csr_mepcc_clrtag_i           (csr_mepcc_clrtag),
-    .csr_mcause_i                 (csr_exc_cause),
-    .csr_mtval_i                  (csr_mtval),
 
     .double_fault_seen_o          (),
 
@@ -698,9 +675,16 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .mul_wait_i                   (1'b0),
     .div_wait_i                   (1'b0),
 
-    .cheri_pcc_set_i              (cheri_pcc_set),
-    .pcc_cap_i                    (pcc_cap_w),
-    .pcc_cap_o                    (pcc_cap_r),
+    .ex1_cjalr_pcc_set_i          (ex1_cjalr_pcc_set),
+    .ex1_mispredict_i             (ex1_mispredict),
+    .ex1_cjalr_pcap_i             (ex1_cjalr_pcap),
+    .ex1_cjalr_set_mie_i          (ex1_cjalr_set_mie),
+    .ex1_cjalr_clr_mie_i          (ex1_cjalr_clr_mie),
+    .ir_flush_i                   (ex_ir_flush),
+    .ir_cjalr_pcc_set_i           (ir_cjalr_pcc_set),
+    .ir_cjalr_rcap_i              (ir_cjalr_rcap),
+    .ex1_pcc_cap_o                (ex1_pcc_cap),
+    .ir_pcc_cap_o                 (ir_pcc_cap),
     .csr_dbg_tclr_fault_o         (),
     .cheri_fatal_err_o            ()
   );

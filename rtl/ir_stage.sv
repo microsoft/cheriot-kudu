@@ -13,7 +13,9 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   parameter bit           RV32M          = 1'b1,
   parameter bit           RV32B          = 1'b1,
   parameter bit           RV32A          = 1'b1,
-  parameter bit           CsrUseLSU      = 1'b0,
+  parameter bit           PredictRA      = 1'b0,
+  parameter logic [20:0]  RALimitHi       = 21'h080040,  // in 4kB unit
+  parameter logic [20:0]  RALimitLo       = 21'h080000,
   parameter bit           DbgTriggerEn   = 1'b0,
   parameter int unsigned  BrkptNum       = 1
 ) (
@@ -25,12 +27,15 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
 
   // CSR interface
   input  pcc_cap_t         pcc_cap_i,
+  output logic             cjalr_pcc_set_o,
+  output reg_cap_t         cjalr_rcap_o,
 
   // IF interface
   input  ir_reg_t          us_instr0_i,       
   input  ir_reg_t          us_instr1_i,      
   input  logic [1:0]       us_valid_i,
   output logic [1:0]       ir_rdy_o,
+  output logic [31:0]      cur_ra32_o,
 
   // regfile interface
   input  rf_rdata2_t       rf_rdata2_p0_i,
@@ -190,6 +195,19 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
     return result;
   endfunction
 
+  function automatic ir_dec_t update_cjalr_instr (ir_dec_t dec_out, logic [RegW-1:0] ra, 
+                                                  logic is_cjalr, logic predict_ok);
+    ir_dec_t result;
+
+    result = dec_out;  
+    if (is_cjalr & predict_ok)
+      result.ptarget = ra;
+    else if (is_cjalr)
+      result.ptaken = 1'b0;   // bad prediction (RA changed)
+
+    return result;
+  endfunction
+
   logic fifo_mema_is0;
   logic cheri_pmode;
 
@@ -218,6 +236,8 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
 
   logic [1:0]  brkpt_match;
   logic        flush_s0;
+
+  logic [RegW-1:0] cur_ra;
 
   assign       flush_s0 = ir_flush_i | ir_flush_s0_i;
 
@@ -318,13 +338,11 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
     assign brkpt_match = 2'b00;
   end
     
-
   ir_decoder #(
     .CHERIoTEn (CHERIoTEn),
     .RV32M     (RV32M),   
     .RV32B     (RV32B),  
-    .RV32A     (RV32A),
-    .CsrUseLSU (CsrUseLSU)  
+    .RV32A     (RV32A)
   ) ir0_decoder_i (
     .clk_i         (clk_i),
     .rst_ni        (rst_ni),
@@ -340,8 +358,7 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
     .CHERIoTEn (CHERIoTEn),
     .RV32M     (RV32M),   
     .RV32B     (RV32B),  
-    .RV32A     (RV32A),  
-    .CsrUseLSU (CsrUseLSU)  
+    .RV32A     (RV32A)  
   ) ir1_decoder_i (
     .clk_i         (clk_i),
     .rst_ni        (rst_ni),
@@ -354,12 +371,16 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   );
  
   if (StageBypass[1]) begin : gen_no_stage1
-    assign s0_rd_rdy  = ds_rdy_i;
-    assign ir_valid_o = s0_rd_valid;
+    logic dec0_cjalr;
+    assign dec0_cjalr = (CHERIoTEn & PredictRA) & s0_rd_valid[0] & 
+                        (ira_is0_o ? dec_out0.is_jalr : dec_out1.is_jalr);
+
+    assign s0_rd_rdy  = {ds_rdy_i[1] & ~dec0_cjalr, ds_rdy_i[0]};
+    assign ir_valid_o = {s0_rd_valid[1] & ~dec0_cjalr, s0_rd_valid[0]};
+
     assign ira_is0_o  = s0_mema_is0;
     assign ira_dec_o  = dec_out0;
     assign irb_dec_o  = dec_out1;
-   
     
     assign rf_raddr2_p0_o.a0 = dec_out0.rs1;
     assign rf_raddr2_p0_o.a1 = dec_out0.rs2;
@@ -400,8 +421,31 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
 
   end else begin : gen_stage1
     // cascade wr/rd signals between 2 fifo stages 
-    assign s1_wr_valid = s0_rd_valid;
-    assign s0_rd_rdy   = s1_wr_rdy;
+    // makes cjalr single-issue if CJALR and PredictRA==1
+    //   ir0_is_cjalr    ir0_is_cjalr
+    //         0              0         no action
+    //         0              1         block ir1, updated predicted PCC
+    //         1              0         don't block, update predicted PCC
+    //         1              1         block ir1, update predicted PCC
+    logic [1:0] dec_cjalr, cjalr_predict_ok;
+    ir_dec_t    s1_wr_data0, s1_wr_data1;
+
+    assign dec_cjalr = {CHERIoTEn & dec_out1.is_jalr, CHERIoTEn & dec_out0.is_jalr};
+
+    assign s1_wr_valid = {s0_rd_valid[1] & ~dec_cjalr[0], s0_rd_valid[0]};
+    assign s0_rd_rdy   = {s1_wr_rdy[1] & ~dec_cjalr[0], s1_wr_rdy[0]};
+
+    assign cjalr_predict_ok[0] = dec_cjalr[0] & PredictRA & dec_out0.ptaken && 
+                                 (dec_out0.ptarget == cur_ra[31:0]);
+    assign cjalr_predict_ok[1] = dec_cjalr[1] & PredictRA & dec_out1.ptaken && 
+                                 (dec_out1.ptarget == cur_ra[31:0]);
+
+    assign cjalr_pcc_set_o = | (cjalr_predict_ok & s1_wr_valid & s1_wr_rdy);
+    assign cjalr_rcap_o    = unseal_rcap(cur_ra);
+ 
+    assign s1_wr_data0 = update_cjalr_instr (dec_out0, cur_ra, dec_cjalr[0], cjalr_predict_ok[0]); 
+    assign s1_wr_data1 = update_cjalr_instr (dec_out1, cur_ra, dec_cjalr[1], cjalr_predict_ok[1]); 
+ 
 
     stage_fifo # (.Width(irDecW), .PeekMem(1)) s1_fifo (
       .clk_i      (clk_i),
@@ -409,8 +453,8 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
       .flush_i    (ir_flush_i),
       .wr_hold_i  (ir_hold_i),
       .wr_valid_i (s1_wr_valid),
-      .wr_data0_i (dec_out0),  
-      .wr_data1_i (dec_out1), 
+      .wr_data0_i (s1_wr_data0),  
+      .wr_data1_i (s1_wr_data1), 
       .wr_rdy_o   (s1_wr_rdy), 
       .rd_rdy_i   (ds_rdy_i),
       .rd_valid_o (ir_valid_o),
@@ -514,5 +558,49 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
     end
   end // gen_stage1
 
+
+  if (PredictRA) begin : gen_predict_ra
+    logic [RegW-1:0] cur_ra_d, cur_ra_q;
+    logic [31:0]     cur_ra32_d, cur_ra32_q;
+
+    assign cur_ra = CHERIoTEn ? cur_ra_q : '0;
+    assign cur_ra32_o = cur_ra32_q;
+
+    always_comb begin
+      if (rf_we2_i && (rf_waddr2_i == 5'h1)) begin
+        cur_ra_d   = rf_wdata2_i;
+        cur_ra32_d = rf_wdata2_i[31:0];
+      end else if (rf_we1_i && (rf_waddr1_i == 5'h1)) begin
+        cur_ra_d   = rf_wdata1_i;
+        cur_ra32_d = rf_wdata1_i[31:0];
+      end else if (rf_we0_i && (rf_waddr0_i == 5'h1)) begin
+        cur_ra_d   = rf_wdata0_i;
+        cur_ra32_d = rf_wdata0_i[31:0];
+      end else begin
+        cur_ra_d   = cur_ra_q;
+        cur_ra32_d = cur_ra32_q;
+      end
+
+      // limit predicted return address to a memory range in case the memory system 
+      // can't handle acess to unpopulated space (e.g., hanging)
+      // separately flop the result to help instr_addr_o timing
+      if (({1'b0, cur_ra_d[31:12]} >= RALimitHi) || ({1'b0, cur_ra_d[31:12]} < RALimitLo))
+        cur_ra32_d = cur_ra32_q;
+       
+    end
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+      if (!rst_ni) begin
+        cur_ra_q   <= '0;
+        cur_ra32_q <= RALimitLo;
+      end else begin
+        cur_ra_q   <= cur_ra_d;
+        cur_ra32_q <= cur_ra32_d;
+      end
+    end
+  end else begin : gen_no_predict_ra
+    assign cur_ra     = '0;
+    assign cur_ra32_o = 32'h0;
+  end
 
 endmodule

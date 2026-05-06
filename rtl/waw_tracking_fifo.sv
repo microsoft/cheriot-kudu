@@ -72,7 +72,11 @@ module waw_tracking_fifo # (
   assign wr_rdy     = (cur_wr_depth <= DepthM1);
   assign rd_valid   = ~fifo_empty | (WrThrough & wr_valid_i);
 
-  assign rd_data_o  = (WrThrough & fifo_empty) ? wr_data_i : fifo_head_data;
+  if (WrThrough) begin
+    assign rd_data_o = fifo_empty ? wr_data_i : fifo_head_data & ~{waw_match_head, 5'h0}; 
+  end else begin
+    assign rd_data_o = fifo_head_data;
+  end
 
   assign fifo_head_data = fifo_mem[rd_mem_addr];
 

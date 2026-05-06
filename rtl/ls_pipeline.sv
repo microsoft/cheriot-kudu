@@ -71,7 +71,8 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   output logic [15:0]      tsmap_addr_o,
   input  logic [31:0]      tsmap_rdata_i,
 
-  input  logic             pcc_asr_i,
+  input  pcc_cap_t         pcc_cap_i,
+  input  logic             csr_mstatus_mie_i,
   output logic             csr_access_o,
   output logic             csr_cheri_o,
   output logic             csr_op_en_o,
@@ -169,12 +170,15 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
 
     lsu_req_dec = NULL_LSU_REQ_INFO;
 
+    lsu_req_dec.pc   = CHERIoTEn ? pcc2regcap(pcc_cap_i, instr_dec.pc, 1'b0) : 
+                      instr_dec.pc;
+    lsu_req_dec.mie  = csr_mstatus_mie_i;
+
     if (cmplx_lsu_req_valid_i) begin
       lsu_req_dec = cmplx_lsu_req_info_i;
     end else if (instr_dec.is_csr) begin
       lsu_req_dec.is_csr     = 1'b1;
       lsu_req_dec.rf_we      = instr_dec.rf_we;
-      lsu_req_dec.pc         = instr_dec.pc;
       lsu_req_dec.insn       = instr_dec.insn;
       lsu_req_dec.rs1        = instr_dec.rs1;
       lsu_req_dec.rd         = instr_dec.rd;
@@ -195,7 +199,6 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
       lsu_req_dec.clrperm    = debug_mode_i ? 4'h0 : {lc_ctag, 1'b0, lc_csdlm, lc_cglg};
       lsu_req_dec.sign_ext   = ~instr_dec.insn[14]; 
       lsu_req_dec.addr       = sel_ira_i ? ira_ls_addr : irb_ls_addr;
-      lsu_req_dec.pc         = instr_dec.pc;
       lsu_req_dec.insn       = instr_dec.insn;
       lsu_req_dec.rs1        = instr_dec.rs1;
       lsu_req_dec.rd         = instr_dec.rd;
@@ -289,7 +292,6 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     .lsu_resp_valid_o      (lsu_resp_valid    ),
     .lsu_resp_err_o        (lsu_resp_err      ),
     .lsu_resp_info_o       (lsu_resp_info     ),
-    .pcc_asr_i             (pcc_asr_i         ),
     .csr_access_o          (csr_access_o      ),
     .csr_cheri_o           (csr_cheri_o       ),
     .csr_op_en_o           (csr_op_en_o       ),

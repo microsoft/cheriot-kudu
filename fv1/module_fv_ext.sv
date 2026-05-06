@@ -51,7 +51,7 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   input  logic [31:0]    ir0_reg_wr_req, 
   input  logic [31:0]    ir1_reg_rd_req, 
   input  logic [31:0]    ir1_reg_wr_req,
-  input  logic [1:0]     branch_mispredict,
+  input  logic [1:0]     mispredict,
   input  logic           debug_ebreak
 );
 
@@ -69,7 +69,7 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   // IR1 should only be issued when IR0 is issued and there is no special case
   AssertIssue1NoErrOnly: assert property (@(posedge clk_i) 
     (ir1_issued |-> (ir0_issued && ~handle_special && ctrl_fsm_cs[CSM_DECODE]
-                    && ~branch_mispredict[0]) ));
+                    && ~mispredict[0] && ~ir0_dec.is_jalr) ));
 
   // if pc_set & ir_flush (from ir0 misprediction, etc), issuer_rdy_o[1] is a don't care
   AssertDequeueIR1: assert property (@(posedge clk_i) 
@@ -77,10 +77,6 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   AssertDequeueIR1Normal: assert property (@(posedge clk_i) 
     ((issuer_rdy_o[1] & ctrl_fsm_cs[CSM_DECODE]) |-> (ir1_issued | (pc_set_o & ir_flush_o)) ));
-
-  AssertDequeueIR1Special: assert property (@(posedge clk_i) 
-    ((issuer_rdy_o[1] & ~ir_flush_o & ctrl_fsm_cs[CSM_ISSUE_SPECIAL]) |-> 
-     (ir_valid_i[1] & (special_case_q == ICJALR)) ));
 
   // IR1 is only issued if no RAW or WAW hazard with IR0
   AssertIR1Hazard0: assert property (@(posedge clk_i) 
@@ -126,9 +122,9 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     (sbdfifo_wr_valid_o[1] |-> ir1_issued ));
   
   AssertMisPredict0: assert property (@(posedge clk_i) 
-    ((ir0_issued_normal & branch_mispredict[0]) |-> (pc_set_o & ~ir1_issued) ));
+    ((ir0_issued_normal & mispredict[0]) |-> (pc_set_o & ~ir1_issued) ));
   AssertMisPredict1: assert property (@(posedge clk_i) 
-    ((ir1_issued_normal & branch_mispredict[1]) |-> pc_set_o ));
+    ((ir1_issued_normal & mispredict[1]) |-> pc_set_o ));
 
   // 
   // "Special" issue case
@@ -140,15 +136,8 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   AssertIssueSpecialWait0: assert property (@(posedge clk_i) 
     (ctrl_fsm_cs[CSM_WAIT_CMT0]  |-> ((issuer_rdy_o == 2'b00) && ir_hold_o) ));
 
-  AssertIssueSpecialWait1: assert property (@(posedge clk_i) 
-    ((ctrl_fsm_cs[CSM_WAIT_CMT1]) |-> 
-    ((issuer_rdy_o == 2'b00) && ir_hold_o && ~pc_set_o) ));
-
   AssertIssueSpecial0: assert property (@(posedge clk_i) 
     (ir0_issued_special  |-> issuer_rdy_o[0]  ));
-
-  AssertIssueSpecial1: assert property (@(posedge clk_i) 
-    (ir0_issued_special  |-> ((special_case_q == ICJALR)||(special_case_q == SYSCTL)||(special_case_q == CMPLX)) ));
 
   logic [1:0] pc_set_cnt;
   logic       special_in_progress, special_issued;
@@ -175,16 +164,8 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     end
   end
 
-  // a special case can only have max 2 pc_set (1st being CJALR speculative)
-  AssertPCSetSPecial0: assert property (@(posedge clk_i) ((pc_set_cnt <= 2)));
-
-  AssertPCSetSPecial1: assert property (@(posedge clk_i)
-    ((pc_set_cnt == 2) |-> ((special_case_q == EXEC) || (special_case_q == IRQ) || (special_case_q == DEBUG))  ));
-
-  // if CJALR did the speculative pc_set earlier then it can't do pc_set again at issue-time
-  AssertPCSetCJALR: assert property (@(posedge clk_i) 
-    (((special_case_q == ICJALR) && special_issued) |-> (pc_set_cnt == 1)));
-
+  // a special case can only have max 1 pc_set (1st being CJALR speculative)
+  AssertPCSetSPecial0: assert property (@(posedge clk_i) ((pc_set_cnt <= 1)));
 
 `endif
 
@@ -264,7 +245,7 @@ module committer_fv_ext import super_pkg::*; (
   input  logic              cmt_flush_i,
   input  logic [31:0]       cmt_regwr_o,
   input  logic              cmt_err_o,
-  input  cmt_err_info_t     cmt_err_info_o,
+  input  exc_info_t         cmt_err_info_o,
   input  logic [4:0]        rf_waddr0_o,
   input  logic [RegW-1:0]   rf_wdata0_o,
   input  logic              rf_we0_o,
@@ -483,28 +464,30 @@ endmodule
 ////////////////////////////////////////////////////////////////
 
 module prefetch_fv_ext import super_pkg::*; (
-  input  logic        clk_i,
-  input  logic        rst_ni,
-  input  logic        cheri_const_fetch_i,  
-  input  logic        req_i,
+  input  logic          clk_i,
+  input  logic          rst_ni,
+  input  logic          cheri_const_fetch_i,  
+  input  logic          req_i,
+                        
+  input  logic          branch_i,
+  input  logic [31:0]   addr_i,
+  input  ex_alt_ctrl_t  ex_alt_ctrl_i,
+  input  logic          alloc_alt_i, 
 
-  input  logic        branch_i,
-  input  logic [31:0] addr_i,
-
-  input  logic [1:0]  ready_i,
-  input  logic [1:0]  valid_o,
-  input  ir_reg_t     instr0_o,
-  input  ir_reg_t     instr1_o,
-  input  logic [31:0] instr1_pc_spec0_o,
-  input  logic [31:0] instr1_pc_spec1_o,
+  input  logic [1:0]    ready_i,
+  input  logic [1:0]    valid_o,
+  input  ir_reg_t       instr0_o,
+  input  ir_reg_t       instr1_o,
+  input  logic [31:0]   instr1_pc_spec0_o,
+  input  logic [31:0]   instr1_pc_spec1_o,
 
   // goes to instruction memory / instruction cache
-  input  logic        instr_req_o,
-  input  logic        instr_gnt_i,
-  input  logic [31:0] instr_addr_o,
-  input  logic [63:0] instr_rdata_i,
-  input  logic        instr_err_i,
-  input  logic        instr_rvalid_i
+  input  logic          instr_req_o,
+  input  logic          instr_gnt_i,
+  input  logic [31:0]   instr_addr_o,
+  input  logic [63:0]   instr_rdata_i,
+  input  logic          instr_err_i,
+  input  logic          instr_rvalid_i
 );
 
 `ifdef KUDU_FORMAL_G3
@@ -627,6 +610,9 @@ module prefetch_fv_ext import super_pkg::*; (
     end
   end
 
+  //
+  // memory interface assumptions
+  //
   AssumeInstrGnt0: assume property (instr_req_o |-> ##[0:3] instr_gnt_i);
   AssumeInstrGnt1: assume property ((~rst_ni | ~instr_req_o) |-> ~instr_gnt_i);
   //AssumeInstrGntNoDly0:   assume property (instr_req_o |-> instr_gnt_i);
@@ -634,6 +620,12 @@ module prefetch_fv_ext import super_pkg::*; (
   AssumeInstrValid:       assume property (instr_rvalid_i == instr_rvalid_mem);
   AssumeInstrErr:         assume property (instr_err_i == instr_err_mem);
   AssumeFetchedInstr:     assume property (instr_rdata_i == instr_rdata_mem);
+
+  //
+  // Assuming no ALT (runtime too long)
+  //
+  AssumeNoALT0:  assume property (ex_alt_ctrl_i.apply == '0);
+  AssumeNoALT1:  assume property (alloc_alt_i == 1'b0);
  
   AssertFetchInstr0PC:  assert property (@(posedge clk_i) 
     (valid_o[0] |-> (instr0_o.pc == exp_pc0) ));
@@ -644,7 +636,38 @@ module prefetch_fv_ext import super_pkg::*; (
   AssertFetchInstr0Data16:  assert property (@(posedge clk_i) 
     ( (valid_o[0] && (exp_insn0[1:0] != 2'b11)) |-> (instr0_o.insn[15:0] == exp_insn0[15:0])));
 
-  AssertFetchInstr0Data32:  assert property (@(posedge clk_i) 
+  AssertFetchInstr0Data32:  assert property 
+  //
+  // check if the top/base_cor bits in the forwarded op_cap are always consistent with
+  // its reg_cap fields
+  //
+
+  function automatic logic check_fwd_op (op_cap_t in_ocap);
+    logic result;
+    op_cap_t tcap;
+
+    if (in_ocap.valid) begin 
+      tcap = reg2opcap(in_ocap[RegW-1:0]);
+      result = (in_ocap == tcap);
+    end else begin
+      result = 1'b1;    
+    end
+
+    return result;
+  endfunction
+
+  full_cap_t ref_cs1_fcap, ref_cs2_fcap;
+  assign ref_cs1_fcap = op2fullcap(reg2opcap((full_data2_i.d0[RegW-1:0])));
+  assign ref_cs2_fcap = op2fullcap(reg2opcap((full_data2_i.d1[RegW-1:0])));
+
+
+  AssumeCS1CapOK: assume property (ref_cs1_fcap.valid |-> (ref_cs1_fcap == full_data2_i.d0));
+  AssumeCS2CapOK: assume property (ref_cs2_fcap.valid |-> (ref_cs2_fcap == full_data2_i.d1));
+
+  AssertOpRegsOkALU0: assert property (@(posedge clk_i) 
+    (fwd_info_o.valid[1] |-> check_fwd_op(fwd_info_o.data1)) );
+
+(@(posedge clk_i) 
     ( (valid_o[0] && (exp_insn0[1:0] == 2'b11)) |-> (instr0_o.insn == exp_insn0)));
 
   AssertFetchInstr1Data16:  assert property (@(posedge clk_i) 
@@ -778,10 +801,10 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   // This checks one-to-one mapping between LS instructions (requests) and results (responses)
   // - use a short sequence number to reduce runtime
   AssertLSInstrSeq: assert property (@(posedge clk_i) 
-    ((lspl_valid_o & ds_rdy_i) |-> (lspl_output_o.pc == {24'h0, instr_seq_exp}) ));
+    ((lspl_valid_o & ds_rdy_i) |-> (lspl_output_o.pc[31:0] == {24'h0, instr_seq_exp}) ));
 
   AssertLSReqSeq: assert property (@(posedge clk_i) 
-    ((lsu_req) |-> (lsu_req_info.pc == {24'h0, req_seq_exp}) ));
+    ((lsu_req) |-> (lsu_req_info.pc[31:0] == {24'h0, req_seq_exp}) ));
 
   // 
   // memory interface and LSU interface protocol checking
@@ -995,6 +1018,36 @@ module mult_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr
 
   AssertMultFwdActOk: assert property (@(posedge clk_i) (fwd_act_o == fwd_act_exp));
 
+  //
+  // check if the top/base_cor bits in the forwarded op_cap are always consistent with
+  // its reg_cap fields
+  //
+
+  function automatic logic check_fwd_op (op_cap_t in_ocap);
+    logic result;
+    op_cap_t tcap;
+
+    if (in_ocap.valid) begin 
+      tcap = reg2opcap(in_ocap[RegW-1:0]);
+      result = (in_ocap == tcap);
+    end else begin
+      result = 1'b1;    
+    end
+
+    return result;
+  endfunction
+
+  full_cap_t ref_cs1_fcap, ref_cs2_fcap;
+  assign ref_cs1_fcap = op2fullcap(reg2opcap((full_data2.d0[RegW-1:0])));
+  assign ref_cs2_fcap = op2fullcap(reg2opcap((full_data2.d1[RegW-1:0])));
+
+
+  AssumeCS1CapOK: assume property (ref_cs1_fcap.valid |-> (ref_cs1_fcap == full_data2.d0));
+  AssumeCS2CapOK: assume property (ref_cs2_fcap.valid |-> (ref_cs2_fcap == full_data2.d1));
+
+  AssertOpRegsOkMult0: assert property (@(posedge clk_i) 
+    (fwd_info_o.valid[1] |-> check_fwd_op(fwd_info_o.data1)) );
+
 
 `endif
 endmodule
@@ -1107,7 +1160,38 @@ module alu_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; (
                        (fwd_info_o.valid[1] && (fwd_info_o.addr1 == i));
     end
   end
+
   AssertALUFwdActOk: assert property (@(posedge clk_i) (fwd_act_o == fwd_act_exp));
+
+  //
+  // check if the top/base_cor bits in the forwarded op_cap are always consistent with
+  // its reg_cap fields
+  //
+
+  function automatic logic check_fwd_op (op_cap_t in_ocap);
+    logic result;
+    op_cap_t tcap;
+
+    if (in_ocap.valid) begin 
+      tcap = reg2opcap(in_ocap[RegW-1:0]);
+      result = (in_ocap == tcap);
+    end else begin
+      result = 1'b1;    
+    end
+
+    return result;
+  endfunction
+
+  full_cap_t ref_cs1_fcap, ref_cs2_fcap;
+  assign ref_cs1_fcap = op2fullcap(reg2opcap((full_data2_i.d0[RegW-1:0])));
+  assign ref_cs2_fcap = op2fullcap(reg2opcap((full_data2_i.d1[RegW-1:0])));
+
+
+  AssumeCS1CapOK: assume property (ref_cs1_fcap.valid |-> (ref_cs1_fcap == full_data2_i.d0));
+  AssumeCS2CapOK: assume property (ref_cs2_fcap.valid |-> (ref_cs2_fcap == full_data2_i.d1));
+
+  AssertOpRegsOkALU0: assert property (@(posedge clk_i) 
+    (fwd_info_o.valid[1] |-> check_fwd_op(fwd_info_o.data1)) );
 
 `endif
 endmodule
@@ -1138,6 +1222,12 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   input  logic           rst_ni,
   input  logic           cheri_pmode_i,
   input  logic [31:0]    boot_addr_i,
+  input  logic           instr_req_o,
+  input  logic           instr_gnt_i,
+  input  logic [31:0]    instr_addr_o,
+  input  logic [63:0]    instr_rdata_i,
+  input  logic           instr_err_i,
+  input  logic           instr_rvalid_i,
   input  logic           data_req_o,
   input  logic           data_gnt_i,
   input  logic           data_rvalid_i,
@@ -1149,15 +1239,60 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   input  pl_out_t        lspl_output,
   input  logic           csr_restore_mret,
   input  logic           csr_save_cause,                
-  input  logic           cheri_pcc_set,
+  input  logic           ex1_cjalr_pcc_set,
   input  logic           ex_pc_set,
-  input  logic [1:0]     sbdfifo_rd_valid
+  input  logic [1:0]     sbdfifo_rd_valid,
+  input  pcc_cap_t       ex1_pcc_cap,
+  input  pcc_cap_t       ir_pcc_cap,
+  input  pl_fwd_t        alupl0_fwd_info,
+  input  pl_fwd_t        alupl1_fwd_info,
+  input  pl_fwd_t        lspl_fwd_info,
+  input  pl_fwd_t        multpl_fwd_info,
+  input  logic [31:0]    alupl0_fwd_act,
+  input  logic [31:0]    alupl1_fwd_act,
+  input  logic [31:0]    lspl_fwd_act,
+  input  logic [31:0]    multpl_fwd_act
 );
 
- AssumeKTopCfgCheriMode:   assume property (cheri_pmode_i == 1'b1);
- AssumeKTopCfgBootAddr:    assume property (boot_addr_i == 32'h8000_0000);
+  AssumeKTopCfgCheriMode:   assume property (cheri_pmode_i == 1'b1);
+  AssumeKTopCfgBootAddr:    assume property (boot_addr_i == 32'h8000_0000);
 
-`ifdef KUDU_FORMAL_G0
+`ifdef KUDU_FORMAL_G0_0
+  `define KUDU_TOP_ASSUMPTIONS
+`endif 
+
+`ifdef KUDU_FORMAL_G0_1
+  `define KUDU_TOP_ASSUMPTIONS
+`endif 
+
+`ifdef KUDU_TOP_ASSUMPTIONS
+  //
+  // Data memory inteface handshaking and sequence
+  //
+  logic       data_rvalid_mem, instr_rvalid_mem;
+
+  always @(posedge clk_i, negedge rst_ni) begin
+    if (~rst_ni)  begin
+      instr_rvalid_mem <= 1'b0;
+      data_rvalid_mem  <= 1'b0;
+    end else begin
+      instr_rvalid_mem <= instr_req_o & instr_gnt_i;
+      data_rvalid_mem  <= data_req_o & data_gnt_i;
+    end
+  end
+
+  AssumeDataGnt0:   assume property (data_req_o |-> ##[0:1] data_gnt_i);
+  AssumeDataGnt1:   assume property ((~rst_ni|~data_req_o) |-> ~data_gnt_i);
+  AssumeDataValid:  assume property (data_rvalid_i == data_rvalid_mem);
+  // AssumeDataErr:    assume property (data_err_i == 1'b0);
+ 
+  AssumeInstrGnt0:  assume property (instr_req_o |-> ##[0:3] instr_gnt_i);
+  AssumeInstrGnt1:  assume property ((~rst_ni | ~instr_req_o) |-> ~instr_gnt_i);
+  AssumeInstrValid: assume property (instr_rvalid_i == instr_rvalid_mem);
+  //AssumeInstrErr:   assume property (instr_err_i == 1'b0);
+`endif
+ 
+`ifdef KUDU_FORMAL_G0_0
   // 
   //  Register pre-loading logic in IR stage
   //  This should be eqivalent to read regfile combinatorially in Issuer stage
@@ -1217,29 +1352,84 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
     (cmt_err |-> ##[0:3] cmt_flush));
 
   //
-  // Cheriot checks
+  // Basic CHERIoT PCC checks
   //
 
   // All instructions in EX stages must be flushed when PCC changes 
-  logic pcc_change_all, pcc_change_cjalr, pcc_change_other;
-  assign pcc_change_all   = csr_save_cause | csr_restore_mret | cheri_pcc_set;
-  assign pcc_change_cjalr = cheri_pcc_set;
-  assign pcc_change_other = csr_save_cause | csr_restore_mret;
+  logic pcc_change_exc, pcc_change_cjalr, pcc_change_other;
+  assign pcc_change_exc   = csr_save_cause | csr_restore_mret;
+  assign pcc_change_cjalr = ex1_cjalr_pcc_set;
 
-  AssertPccChangeAll0: assert property (@(posedge clk_i) 
-    (pcc_change_all |-> ((sbdfifo_rd_valid == 2'b00) || cmt_flush) ));
+  AssertPccChangeEXC0: assert property (@(posedge clk_i) 
+    (pcc_change_exc |-> ((sbdfifo_rd_valid == 2'b00) || cmt_flush) ));
 
   // When pcc changes, the cheri fetch checks should be done after change (based on new PCC)
-  AssertPccChangeAll1: assert property (@(posedge clk_i) 
-    (pcc_change_all |-> (ir_stage_i.gen_stage1.s1_fifo.wr_hold_i || ir_stage_i.gen_stage1.s1_fifo.flush_i) ));
+  AssertPccChangeEXC1: assert property (@(posedge clk_i) 
+    (pcc_change_exc |-> (ir_stage_i.gen_stage1.s1_fifo.wr_hold_i || ir_stage_i.gen_stage1.s1_fifo.flush_i) ));
 
-  AssertPccChangeCJALR0: assert property (@(posedge clk_i) 
-    (pcc_change_cjalr |-> (sbdfifo_rd_valid == 2'b00)));
+`endif
 
-  AssertPccChangeOther0: assert property (@(posedge clk_i) 
-    (pcc_change_other |-> (((sbdfifo_rd_valid == 2'b00) || cmt_flush) & ex_pc_set) ));
+`ifdef KUDU_FORMAL_G0_1
+  // 
+  // Each register can only be active (forwarding) in at most 1 EX pipelines 
+  //
+  logic [3:0] reg1_fwd_active = {multpl_fwd_act[1], lspl_fwd_act[1], alupl1_fwd_act[1], alupl0_fwd_act[1]};
+
+  // prove one register is good enough (all registers are identical for this purpose)
+  // QQQ this reaches only 33 cycles after running overnight
+  AssertFwdActOK1: assert property (@(posedge clk_i) $onehot0(reg1_fwd_active));
+
+  //
+  // Cheriot PCC checks
+  //
+
+  pcc_cap_t s1_m_rd_data0, s1_m_rd_data1;
+  logic [1:0] s1_m_rd_valid, s1_m_rd_rdy;
+
+  assign s1_m_rd_rdy = ir_stage_i.ds_rdy_i;
+
+    
+  // mirroring the stage_fifo in RTL
+  stage_fifo # (.Width(PccCapW), .PeekMem(0)) s1_fifo_mirror (
+      .clk_i      (clk_i),
+      .rst_ni     (rst_ni),
+      .flush_i    (ir_stage_i.ir_flush_i),
+      .wr_hold_i  (ir_stage_i.ir_hold_i),
+      .wr_valid_i (ir_stage_i.s1_wr_valid),
+      .wr_data0_i (ir_pcc_cap),  
+      .wr_data1_i (ir_pcc_cap), 
+      .wr_rdy_o   (), 
+      .rd_rdy_i   (s1_m_rd_rdy),
+      .rd_valid_o (s1_m_rd_valid),
+      .rd_data0_o (s1_m_rd_data0),
+      .rd_data1_o (s1_m_rd_data1),
+      .mema_is0_o (),
+      .wr_mema_o  (),
+      .wr_memb_o  (),
+      .wr_ptr_o   (),
+      .mema_o     (),
+      .memb_o     ()
+    );
+
+  op_cap_t fwd_alu0_ocap, fwd_alu1_ocap;
+  op_cap_t fwd_mult_ocap, fwd_ls_ocap;
+  assign fwd_alu0_ocap = reg2opcap(alupl0_fwd_info.data1[RegW-1:0]);
+  assign fwd_alu1_ocap = reg2opcap(alupl1_fwd_info.data1[RegW-1:0]);
+  assign fwd_ls_ocap   = reg2opcap(lspl_fwd_info.data1[RegW-1:0]);
+  assign fwd_mult_ocap = reg2opcap(mult_fwd_info.data1[RegW-1:0]);
+
+  // AssumeFwdCapOK0: assume property (fwd_alu0_ocap == alupl0_fwd_info.data1);
+  // AssumeFwdCapOK1: assume property (fwd_alu1_ocap == alupl1_fwd_info.data1);
+  // AssumeFwdCapOK2: assume property (fwd_ls_ocap   == lspl_fwd_info.data1);
+  // AssumeFwdCapOK3: assume property (fwd_mult_ocap == multpl_fwd_info.data1);
   
-  
+  // predicted PCC (used for fetched instruction checking) equals to actual EX PCC
+  // QQQ this reaches only 14 cycles after running overnight
+  AssertPccCorrect0: assert property (@(posedge clk_i) 
+    (s1_m_rd_valid[0] && (s1_m_rd_data0 != ex1_pcc_cap)) |-> 
+    (issuer_i.mispredict[0] | issuer_i.handle_special) );
+  //  ((s1_m_rd_valid[0] & s1_m_rd_rdy[0]) |-> (s1_m_rd_data0 == ex1_pcc_cap)) );
+ 
 `endif
 
 endmodule
