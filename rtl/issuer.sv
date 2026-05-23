@@ -494,7 +494,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic [1:0]      ir_any_err, ir_sysctl, ir_cmplx;
   logic            handle_special, handle_err, handle_irq, handle_debug, handle_sysctl, handle_cmplx;
   sysctl_t         sysctl_q;
-  logic [31:0]     special_pc_q, last_set_pc_q;
+  logic [31:0]     special_pc_q, ir0_nxt_pc_q;
   special_case_e   special_case_comb, special_case_q;
   logic            special_setpc_q;
 
@@ -600,6 +600,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign csr_mispredict_o = ctrl_fsm_cs[CSM_DECODE] & 
                             (mispredict[0] && ir0_issued) || (mispredict[1] && ir1_issued);
 
+  assign ir_flush_o = pc_set_o;   // always flush IR/fetch stage for explicit pc_set
+
   always_comb begin
 
     unique case (1'b1)
@@ -608,7 +610,6 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         // pc_target_o = { boot_addr_i[31:8], 8'h80 };
         pc_target_o = special_pc_q;
         ir_hold_o   = 1'b0;
-        ir_flush_o  = 1'b0;
       end 
       ctrl_fsm_cs[CSM_DECODE] : begin
         pc_set_o = (mispredict[0] && ir0_issued) || (mispredict[1] && ir1_issued);
@@ -618,32 +619,27 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         else
           pc_target_o = ir1_target;
 
-        ir_flush_o = pc_set_o;
         ir_hold_o  = 1'b0;
       end
       ctrl_fsm_cs[CSM_CMT_FLUSH] : begin
         pc_set_o    = 1'b1;
         pc_target_o = special_pc_q;
         ir_hold_o   = 1'b0;
-        ir_flush_o  = 1'b1;
       end
       ctrl_fsm_cs[CSM_WAIT_CMT0]: begin
         pc_set_o    = 1'b0;
         pc_target_o = special_pc_q;
         ir_hold_o   = 1'b1;                 // hold stage_fifo while flushing the earlier stages
-        ir_flush_o  = 1'b0;
       end
       ctrl_fsm_cs[CSM_ISSUE_SPECIAL] :  begin
         pc_set_o    = special_setpc_q;      
         pc_target_o = special_pc_q;
         ir_hold_o   = 1'b1;                 // can't update IR yet since PCC is not yet updated
-        ir_flush_o  = special_setpc_q;       
       end
       default : begin
         pc_set_o    = 1'b0;
         pc_target_o = { boot_addr_i[31:8], 8'h80 };
         ir_hold_o   = 1'b0;
-        ir_flush_o  = 1'b0;
       end
     endcase
 
@@ -830,16 +826,29 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     end   // posedge clk
   end
 
+  function automatic logic [31:0] resolve_nxt_pc (ir_dec_t ir_dec);
+    logic [31:0] result;
+    // what is the next pc after this instruction, assume no misprediction
+    if ((ir_dec.is_branch | ir_dec.is_jal | ir_dec.is_jalr) & ir_dec.ptaken)
+      result = ir_dec.ptarget;
+    else 
+      result = ir_dec.pc_nxt;
+    return result;
+  endfunction
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (~rst_ni) begin
-      last_set_pc_q       <= 32'h0; 
+      ir0_nxt_pc_q       <= 32'h0; 
     end else begin
+      // tracking the nxt PC for IR0 (currently in the fetching or IR stages)
       // if there is IRQ when current IR.pc is not valid (b/c pc_set causing the IR/IF to be flushed),
       // use the last pc_set target value as the return address from ISR
-      if (ctrl_fsm_cs[CSM_BOOT_SET])
-        last_set_pc_q <= boot_addr_i;
-      else if (pc_set_o)
-        last_set_pc_q <= pc_target_o;
+      if (pc_set_o)        // this covers all misprediction cases
+        ir0_nxt_pc_q <= pc_target_o;
+      else if (ir1_issued)
+        ir0_nxt_pc_q <= resolve_nxt_pc(ir1_dec);
+      else if (ir0_issued)
+        ir0_nxt_pc_q <= resolve_nxt_pc(ir0_dec);
     end
   end
   
@@ -942,7 +951,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       end
     end else if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == IRQ)) begin
       csr_save_cause_o      = 1'b1;
-      csr_exc_info_o.pc     = ir_valid_i[0] ? ir0_dec.pc : last_set_pc_q;
+      csr_exc_info_o.pc     = ir_valid_i[0] ? ir0_dec.pc : ir0_nxt_pc_q;
       if (irqs_i.irq_fast != 15'b0) 
         // generate exception cause ID from fast interrupt ID:
         // - first bit distinguishes interrupts from exceptions,

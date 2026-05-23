@@ -26,5 +26,5 @@ proc run_all {} {
   redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G6"}
   redirect -file jp_out.log -append {run_fv  "+define+KUDU_FORMAL_G7"}
 
-  redirect -file jp_out.log -force  {run_fv  "+define+KUDU_FORMAL_G0_1"}
+  redirect -file jp_out.log -force  {run_fv  "+define+KUDU_FORMAL_G0_0"}
 }

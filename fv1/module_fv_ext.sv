@@ -52,7 +52,8 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   input  logic [31:0]    ir1_reg_rd_req, 
   input  logic [31:0]    ir1_reg_wr_req,
   input  logic [1:0]     mispredict,
-  input  logic           debug_ebreak
+  input  logic           debug_ebreak,
+  input  logic [31:0]    ir0_nxt_pc_q
 );
 
 `ifdef KUDU_FORMAL_G1_0
@@ -212,8 +213,6 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     (irq_case1  |-> (##[1:5] irq_handled_or_disabled) ));
   AssertIssueIRQNull: assert property (@(posedge clk_i) 
     ( (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == NULL)) |-> (~pc_set_o && ~csr_save_cause_o) ));
-
-
 
 `endif
 endmodule
@@ -1251,8 +1250,11 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   input  logic [31:0]    alupl0_fwd_act,
   input  logic [31:0]    alupl1_fwd_act,
   input  logic [31:0]    lspl_fwd_act,
-  input  logic [31:0]    multpl_fwd_act
+  input  logic [31:0]    multpl_fwd_act,
+  input  logic [1:0]     ir_valid
 );
+
+  defparam if_stage_i.AltEnable = 1'b0;
 
   AssumeKTopCfgCheriMode:   assume property (cheri_pmode_i == 1'b1);
   AssumeKTopCfgBootAddr:    assume property (boot_addr_i == 32'h8000_0000);
@@ -1369,7 +1371,9 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
 
 `endif
 
-`ifdef KUDU_FORMAL_G0_1
+`ifdef KUDU_FORMAL_G0_Long
+  // Runtime is too long..
+
   // 
   // Each register can only be active (forwarding) in at most 1 EX pipelines 
   //
@@ -1429,7 +1433,15 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
     (s1_m_rd_valid[0] && (s1_m_rd_data0 != ex1_pcc_cap)) |-> 
     (issuer_i.mispredict[0] | issuer_i.handle_special) );
   //  ((s1_m_rd_valid[0] & s1_m_rd_rdy[0]) |-> (s1_m_rd_data0 == ex1_pcc_cap)) );
+  
+  //
+  // ir0_nxt_pc_q tracks the next pc for ir0, used to update mepc if an interrupt occurs
+  // and ir_valid[0] == 0
+  // QQQ this reaches only 18 cycles after an overnight run
+  AssertIR0PC: assert property (@(posedge clk_i) 
+    (ir_valid[0] |-> (issuer_i.ir0_nxt_pc_q[31:1] == issuer_i.ir0_dec.pc[31:1])));
  
+
 `endif
 
 endmodule
