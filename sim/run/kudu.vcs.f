@@ -36,8 +36,8 @@ $rtlRoot/cs_registers.sv
 $rtlRoot/cmplx_unit.sv
 $rtlRoot/kudu_top.sv
 $rtlRoot/tracer_pkg.sv
+$rtlRoot/tracer_dpi.cpp
 $rtlRoot/tracer.sv
-$rtlRoot/tracer_wrapper.sv
 $verifRoot/tb/kudu_dv_pkg.sv
 $verifRoot/tb/mem_obi_if.sv
 $verifRoot/tb/data_mem_model.sv

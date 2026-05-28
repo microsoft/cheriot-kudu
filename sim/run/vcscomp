@@ -5,6 +5,7 @@ VlogDef2="+define+KUDU_PPL_CFG=1"
 VlogDef3=""
 VlogDef4=""
 VlogDef5=""
+VlogDef6=""
 FileList="kudu.vcs.f"
 OutFile="./simv"
 CompDir="simv.daidir"
@@ -32,13 +33,16 @@ for arg in "$@"; do
       VlogDef5="+define+DII_SIM"
       RunDII="true"
       ;;
+    -trace_dpi)
+      VlogDef3="+define+TraceDPI"
+      ;;
     *)
       echo "Warning: Unknown option $arg" >&2
       ;;
   esac
 done
 
-VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3 $VlogDef4 $VlogDef5"
+VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3 $VlogDef4 $VlogDef5 $VlogDef6"
 echo "VlogDefs=$VlogDefs  FileList=$FileList"
 
 

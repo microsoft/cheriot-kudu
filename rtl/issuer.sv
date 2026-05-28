@@ -1025,8 +1025,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic [1:0]  jalr_mispredict_event;
 
   logic        ctrl_fsm_err;
-  logic        pc_set_trap_event;
   logic        ir0_trap_event;
+  logic        intr_event;
   logic        ir0_amo_issued;
 
   assign ctrl_fsm_err    = ($countbits(ctrl_fsm_cs, '1) > 1) || (ctrl_fsm_cs == 0);
@@ -1047,12 +1047,12 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign branch_mispredict_event = mispredict & ex_bp_info_o.is_branch;
   assign jal_mispredict_event    = mispredict & ex_bp_info_o.is_jal;
 
-  assign pc_set_trap_event =  (ctrl_fsm_cs_dec == CSM_CMT_FLUSH) || 
-                              ((ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && 
-                               ((special_case_q == EXEC) || (special_case_q == IRQ)  ||
-                                ((special_case_q == SYSCTL) & (sysctl_q.ebrk | sysctl_q.ecall))));
+  assign ir0_trap_event = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && 
+                          ((special_case_q == EXEC) || 
+                           ((special_case_q == SYSCTL) & (sysctl_q.ebrk | sysctl_q.ecall)));
 
-  assign ir0_trap_event = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && (special_case_q == EXEC);
+  assign intr_event = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && (special_case_q == IRQ); 
+
   assign ir0_amo_issued = (ctrl_fsm_cs_dec == CSM_ISSUE_SPECIAL) && (special_case_q == CMPLX) &&
                           (ir0_dec.insn[6:0] == OPCODE_AMO);
   

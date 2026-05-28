@@ -710,7 +710,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   );
 
 `ifdef  RVFI
-  tracer_wrapper  tracer_wrapper_i (
+  tracer  tracer_i (
     .clk_i         (clk_i         ),
     .rst_ni        (rst_ni        ),
     .cheri_pmode_i (cheri_pmode_i )
