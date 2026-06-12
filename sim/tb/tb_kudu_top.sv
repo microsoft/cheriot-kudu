@@ -1,20 +1,17 @@
 // Copyright Microsoft Corporation
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
-
+`ifndef VERILATOR
 `timescale 1ns/1ps
+`endif
 //`define BOOT_ADDR 32'h8000_0000
 `define BOOT_ADDR 32'h8000_0000
 
-`ifdef DII_SIM
-import "DPI-C" function int instr_mem_init(string infile_name, string log_name);
-import "DPI-C" function int instr_mem_dump(string filename);
-`endif
-
 module tb_kudu_top; 
 `ifndef IBEX
-  import kudu_cfg_pkg::*;
+  import cheri_pkg::*;
   import super_pkg::*;
+  import kudu_cfg_pkg::*;
   localparam DBusW = MemW;
 `else
   import ibex_pkg::*;
@@ -195,6 +192,38 @@ module tb_kudu_top;
                                     (`KUDU_PPL_CFG == 3) ? KuduCfg3 : 
                                     KuduCfg1;
 
+`ifdef DII_SIM
+  defparam u_data_mem.UseSparseMem = 1'b1;
+
+
+  // initilizing ibex regfile/CSR to match sail by forcing for now
+  initial begin
+    int i;
+
+    while (1) begin
+      @(posedge rst_n);    // handle multipe-reset case
+
+      force dut.regfile_i.rf_reg_q = {15{TM_ROOT_RCAP}};
+            
+      force dut.cs_registers_i.mepc_q[31:0] = 32'h8000_0000;
+
+      force dut.cs_registers_i.init_mtvec32 = 32'h0000_0000;
+      // cheriot-sail configuration doesn't support PRIV_LVL_U
+      force dut.cs_registers_i.mstatus_q[3:2] = 2'b11;
+
+      @(posedge clk);
+      @(posedge clk);
+      release dut.regfile_i.rf_reg_q; 
+
+      release dut.cs_registers_i.mepc_q[31:0];
+    end 
+  end
+
+`else
+  defparam u_data_mem.UseSparseMem = 1'b0;
+`endif  //DII_SIM
+  
+
   kudu_top #(
     .CHERIoTEn   (`KUDU_CHERIOT_EN),
     .UseDWMult   (`KUDU_DW_MULT),
@@ -244,6 +273,8 @@ module tb_kudu_top;
   assign cycle100 = (cycle_cnt == 100);
   assign stat_start_stop = stat_mcycle ? mcycle_rd_event : cycle100;
 
+
+  `ifndef VERILATOR
   kudu_stats kudu_stats_i (
     .clk_i      (clk),
     .rst_ni     (rst_n),
@@ -256,8 +287,9 @@ module tb_kudu_top;
     .rst_ni     (rst_n),
     .start_stop (mcycle_rd_event)
   );
+  `endif
 
-`endif
+`endif    // kudu
 
 `ifdef IBEX
   logic [31:0] instr_rdata_ibex;
@@ -349,14 +381,16 @@ module tb_kudu_top;
   assign mcycle_rd_event = (dut.u_ibex_top.u_ibex_core.csr_op == 0) && 
                            (dut.u_ibex_top.u_ibex_core.csr_addr == 12'hB00);
 
+  `ifndef VERILATOR
   ibex_stats ibex_stats_i (
     .clk_i      (clk),
     .rst_ni     (rst_n),
     .start_stop (mcycle_rd_event),
     .print_req  (stat_print_req)
   );
+  `endif
 
-`endif
+`endif  // ibex
 
 `ifndef NO_FSDB
   initial begin
@@ -378,7 +412,7 @@ module tb_kudu_top;
   //
   string test_name, vhx_path;
   string dbgrom_name, dbg_vhx_path, instr_dii_path;
-  
+
 
   initial begin
     bit cont_flag;
@@ -393,10 +427,11 @@ module tb_kudu_top;
 
 `ifdef DII_SIM
     $sformat(instr_dii_path, "./bin/%s.dii", test_name);
+    $display("TB> Loading DII test %s", test_name);
 `else
     $sformat(vhx_path, "./bin/%s.vhx", test_name);
-`endif
     $display("TB> Loading test %s", test_name);
+`endif
     $display("TB> Test timeout = %d", timeout);
 
     config_tb();
@@ -404,13 +439,15 @@ module tb_kudu_top;
     {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable, cfg_cap_err_enable} = 4'h0;
 
     stat_print_req = 1'b0;
-    cycle_cnt     = 0;
+    cycle_cnt      = 0;
+
     rst_n = 1'b1;
-    #1;
+    repeat (2) @(posedge clk);
     rst_n = 1'b0;
+
 `ifdef DII_SIM
-    instr_mem_init(instr_dii_path, "./instr_mem_init.log");
-    instr_mem_dump("./instr_mem_dump.log");
+    sparse_mem_init(instr_dii_path);
+    sparse_mem_dump("./instr_mem_dump.log");
 `else
     //$readmemh(vhx_path, u_instr_mem.iram, 'h0);   // load main executable
     $readmemh(vhx_path, u_data_mem.dram, 'h0);   // load main executable
@@ -434,6 +471,7 @@ module tb_kudu_top;
     while (cont_flag) begin
       @(posedge clk);
       cycle_cnt ++;
+      // if ((cycle_cnt %1000) == 0) $display("cycle_cnt = %d", cycle_cnt);
       if (cycle_cnt > timeout) begin
         cont_flag = 0;
         $display("TB> Simulation timed out after %d cycles", cycle_cnt);

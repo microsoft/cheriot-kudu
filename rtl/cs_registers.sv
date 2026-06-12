@@ -1606,6 +1606,9 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   //  MTVEC/MTCC
   // 
 
+  logic [31:0] init_mtvec32;
+  assign  init_mtvec32 = {boot_addr_i[31:2], 1'b0, 1'b0};  
+
   always_comb begin
     if (csr_wr_rv32 && (csr_addr_i == CSR_MTVEC)) begin
       mtvec_en = 1'b1;
@@ -1616,10 +1619,10 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     end else if (CHERIoTEn & csr_mtvec_init_i) begin
       mtvec_en = 1'b1;
       mtvec_d  = mtvec_q;
-      mtvec_d[31:0] = {boot_addr_i[31:2], 1'b0, 1'b0};  
+      mtvec_d[31:0] = init_mtvec32;  
     end else if (~CHERIoTEn & csr_mtvec_init_i) begin
       mtvec_en = 1'b1;
-      mtvec_d  = {boot_addr_i[31:2], 1'b0, 1'b0};
+      mtvec_d  = init_mtvec32;
     end else begin
       mtvec_en = 1'b0;
       mtvec_d  = mtvec_q;

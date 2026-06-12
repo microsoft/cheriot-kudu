@@ -5,23 +5,34 @@
 #include <string>
 #include <iostream>
 #include <map>
+#include <iomanip>
 
 /* ------------------------------------------------------------
- * Global sparse instruction memory
- *   key   : 64-bit aligned byte address
- *   value : 64-bit data word
+ * Global sparse memory model
+ *   data map : 32-bit byte-addressed, byte data
+ *   tag  map : 32-bit byte-addressed, byte tag
+ *
+ * Uninitialized reads return 0.
  * ------------------------------------------------------------ */
-static std::unordered_map<uint64_t, uint64_t> instr_mem;
+static std::unordered_map<uint32_t, uint8_t> sparse_mem_data;
+static std::unordered_map<uint32_t, uint8_t> sparse_mem_tag;
 
 /* ------------------------------------------------------------
- * instr_mem_init
- *  - Input file: 64-bit byte addr, 16-bit data
- *  - Accumulates into 64-bit aligned words
- *  - Missing lanes default to zero
+ * sparse_mem_init
+ *  - Input file format follows the old instr_mem input:
+ *      mem[X,0xADDR] -> 0xDATA16
+ *  - ADDR is a byte address.
+ *  - DATA16 is 16-bit hex data.
+ *  - Input is assumed 16-bit aligned.
+ *  - Packs into byte map:
+ *      lower 8 bits  -> sparse_mem_data[ADDR]
+ *      upper 8 bits  -> sparse_mem_data[ADDR + 1]
+ *  - Clears all previous data and tags.
  * ------------------------------------------------------------ */
-extern "C" int instr_mem_init(const char* infile_name)
+extern "C" int sparse_mem_init(const char* infile_name)
 {
-    instr_mem.clear();
+    sparse_mem_data.clear();
+    sparse_mem_tag.clear();
 
     std::ifstream infile(infile_name);
     if (!infile.is_open())
@@ -38,74 +49,115 @@ extern "C" int instr_mem_init(const char* infile_name)
         if (!std::regex_search(line, m, line_re))
             continue;
 
-        uint64_t addr = std::stoull(m[1], nullptr, 16);
+        uint32_t addr =
+            static_cast<uint32_t>(std::stoul(m[1], nullptr, 16));
         uint16_t data16 =
             static_cast<uint16_t>(std::stoul(m[2], nullptr, 16));
 
-        /* 64-bit aligned base address */
-        uint64_t aligned_addr = addr & ~0x7ULL;
+        if (addr & 0x1u) {
+            std::cerr << "sparse_mem_init: warning: unaligned 16-bit address 0x"
+                      << std::hex << addr << std::dec << "\n";
+        }
 
-        /* 16-bit lane inside the 64-bit word */
-        uint64_t lane = (addr & 0x7ULL) >> 1;  // 0..3
-
-        if (lane >= 4)
-            continue;  // should never happen for halfword-aligned input
-
-        /* Fetch existing word (default = 0) */
-        uint64_t word = instr_mem[aligned_addr];
-
-        /* Clear and insert 16-bit lane */
-        uint64_t shift = lane * 16;
-        word &= ~(0xFFFFULL << shift);
-        word |= (uint64_t(data16) << shift);
-
-        instr_mem[aligned_addr] = word;
+        sparse_mem_data[addr]     = static_cast<uint8_t>(data16 & 0xffu);
+        sparse_mem_data[addr + 1] = static_cast<uint8_t>((data16 >> 8) & 0xffu);
     }
 
     return 0;
 }
 
 /* ------------------------------------------------------------
- * instr_mem_read64
- *  - addr must be 64-bit aligned
- *  - returns assembled 64-bit word
+ * sparse_mem_read_data
+ *  - Byte-addressed data read.
+ *  - Uninitialized location returns 0.
  * ------------------------------------------------------------ */
-extern "C" uint64_t instr_mem_read64(uint64_t addr)
+extern "C" uint8_t sparse_mem_read_data(uint32_t addr)
 {
-    if (addr & 0x7) {
-        std::cerr << "instr_mem_read64: unaligned address 0x"
-                  << std::hex << addr << std::dec << "\n";
-        return 0;
-    }
+    std::unordered_map<uint32_t, uint8_t>::const_iterator it =
+        sparse_mem_data.find(addr);
 
-    auto it = instr_mem.find(addr);
-    if (it != instr_mem.end())
+    if (it != sparse_mem_data.end())
         return it->second;
 
     return 0;
 }
 
 /* ------------------------------------------------------------
- * instr_mem_dump
- *  - Dumps assembled 64-bit words sorted by address
+ * sparse_mem_read_tag
+ *  - Byte-addressed tag read.
+ *  - Uninitialized location returns 0.
  * ------------------------------------------------------------ */
-extern "C" int instr_mem_dump(const char* filename)
+extern "C" uint8_t sparse_mem_read_tag(uint32_t addr)
+{
+    std::unordered_map<uint32_t, uint8_t>::const_iterator it =
+        sparse_mem_tag.find(addr);
+
+    if (it != sparse_mem_tag.end())
+        return it->second;
+
+    return 0;
+}
+
+/* ------------------------------------------------------------
+ * sparse_mem_write_data
+ *  - Byte-addressed data write.
+ * ------------------------------------------------------------ */
+extern "C" void sparse_mem_write_data(uint32_t addr, uint8_t data)
+{
+    sparse_mem_data[addr] = data;
+}
+
+/* ------------------------------------------------------------
+ * sparse_mem_write_tag
+ *  - Byte-addressed tag write.
+ * ------------------------------------------------------------ */
+extern "C" void sparse_mem_write_tag(uint32_t addr, uint8_t tag)
+{
+    sparse_mem_tag[addr] = tag;
+}
+
+/* ------------------------------------------------------------
+ * sparse_mem_dump
+ *  - Dumps data byte map and tag byte map separately.
+ *  - Both sections are sorted by byte address.
+ * ------------------------------------------------------------ */
+extern "C" int sparse_mem_dump(const char* filename)
 {
     std::ofstream ofs(filename);
     if (!ofs.is_open())
         return -1;
 
-    ofs << "INSTRUCTION MEMORY DUMP\n";
-    ofs << "Entries: " << instr_mem.size() << "\n\n";
-
-    std::map<uint64_t, uint64_t> ordered(
-        instr_mem.begin(), instr_mem.end()
+    std::map<uint32_t, uint8_t> ordered_data(
+        sparse_mem_data.begin(), sparse_mem_data.end()
     );
 
-    for (const auto& [addr, data] : ordered) {
-        ofs << "addr=0x" << std::hex << addr
-            << " data=0x" << data
-            << std::dec << "\n";
+    std::map<uint32_t, uint8_t> ordered_tag(
+        sparse_mem_tag.begin(), sparse_mem_tag.end()
+    );
+
+    ofs << "SPARSE MEMORY DUMP\n";
+    ofs << "\n";
+
+    ofs << "DATA BYTE MAP\n";
+    ofs << "Entries: " << ordered_data.size() << "\n";
+    for (std::map<uint32_t, uint8_t>::const_iterator it = ordered_data.begin();
+         it != ordered_data.end(); ++it) {
+        ofs << "addr=0x" << std::hex << it->first
+            << " data=0x" << std::setw(2) << std::setfill('0')
+            << static_cast<unsigned int>(it->second)
+            << std::setfill(' ') << std::dec << "\n";
+    }
+
+    ofs << "\n";
+
+    ofs << "TAG BYTE MAP\n";
+    ofs << "Entries: " << ordered_tag.size() << "\n";
+    for (std::map<uint32_t, uint8_t>::const_iterator it = ordered_tag.begin();
+         it != ordered_tag.end(); ++it) {
+        ofs << "addr=0x" << std::hex << it->first
+            << " tag=0x" << std::setw(2) << std::setfill('0')
+            << static_cast<unsigned int>(it->second)
+            << std::setfill(' ') << std::dec << "\n";
     }
 
     return 0;

@@ -710,6 +710,12 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   );
 
 `ifdef  RVFI
+  `ifdef DII_SIM
+  defparam tracer_i.RvfiDumpEn = 1'b1;
+  `else
+  defparam tracer_i.RvfiDumpEn = 1'b0;
+  `endif
+
   tracer  tracer_i (
     .clk_i         (clk_i         ),
     .rst_ni        (rst_ni        ),

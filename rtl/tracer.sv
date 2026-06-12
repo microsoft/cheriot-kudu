@@ -12,7 +12,11 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   input logic        cheri_pmode_i
 );
 
-// synthesis translate_off
+  // synthesis translate_off
+  parameter bit     RvfiDumpEn   = 1'b0;
+  parameter string  TraceLogFile = "trace_kudu_core.log";
+  parameter string  RvfiLogFile  = "rvfi_kudu_core.log";
+
 `ifdef TraceDPI
   `include "tracer_dpi_wrapper.sv"
 `endif
@@ -238,8 +242,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     return result;
   endfunction
 
-  int          file_handle;
-  string       file_name;
+  int          trace_file_handle, rvfi_file_handle;
 
   int unsigned cycle;
   logic        insn_is_compressed;
@@ -254,7 +257,39 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
 `endif
     //$display("%x: %x", instr_in.rvfi.pc_rdata, instr_in.rvfi.insn);
 
-    $fwrite(file_handle, "%15t\t%d\t%s\n", $time, cycle, disp_str);
+    $fwrite(trace_file_handle, "%15t\t%d\t%s\n", $time, cycle, disp_str);
+  endfunction
+
+  function automatic void print_rvfi_packet(
+    input rvfi_t           rvfi,
+    input longint unsigned packet_num
+  );
+    int unsigned rbyte_count;
+    int unsigned wbyte_count;
+
+    rbyte_count = $countones(rvfi.mem_rmask);
+    wbyte_count = $countones(rvfi.mem_wmask);
+
+    $fdisplay(rvfi_file_handle,"# --- RVFI packet %0d ---", packet_num);
+    $fdisplay(rvfi_file_handle,"order     : %0d",                  rvfi.order);
+    $fdisplay(rvfi_file_handle,"halt      : 0x%02h",               rvfi.halt);
+    $fdisplay(rvfi_file_handle,"trap      : 0x%02h",               rvfi.trap);
+    $fdisplay(rvfi_file_handle,"intr      : 0x%02h",               rvfi.intr);
+    $fdisplay(rvfi_file_handle,"pc_rdata  : 0x%08h",               rvfi.pc_rdata);
+    $fdisplay(rvfi_file_handle,"pc_wdata  : 0x%08h",               rvfi.pc_wdata);
+    $fdisplay(rvfi_file_handle,"insn      : 0x%08h",               rvfi.insn);
+    $fdisplay(rvfi_file_handle,"rs1       : x%02d  rdata=0x%016h", rvfi.rs1_addr, rvfi.rs1_rdata);
+    $fdisplay(rvfi_file_handle,"rs1       : x%02d  rdata=0x%016h", rvfi.rs2_addr, rvfi.rs2_rdata);
+    $fdisplay(rvfi_file_handle,"rd        : x%02d  wdata=0x%016h", rvfi.rd_addr,  rvfi.rd_wdata);
+    $fdisplay(rvfi_file_handle,"mem_addr  : 0x%016h",              rvfi.mem_addr);
+    $fdisplay(rvfi_file_handle,"mem_rmask : 0b%08b (%0d byte(s))", rvfi.mem_rmask, rbyte_count);
+    $fdisplay(rvfi_file_handle,"mem_rdata : 0x%016h",              
+                              ((rvfi.mem_rmask == 0) ? '0 : rvfi.mem_rdata));
+    $fdisplay(rvfi_file_handle,"mem_wmask : 0b%08b (%0d byte(s))", rvfi.mem_wmask, wbyte_count);
+    $fdisplay(rvfi_file_handle,"mem_wdata : 0x%016h",               
+                              ((rvfi.mem_wmask == 0) ? '0 : rvfi.mem_wdata)); 
+    $fdisplay(rvfi_file_handle,"");               
+        
   endfunction
 
   // case 0: normal ex/commit
@@ -331,13 +366,18 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   //
   // writing issued instructions into FIFO, read committed instructions out
   //
+  int unsigned rvfi_pkt_cnt;
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (~rst_ni) begin
-      wr_ptr     <= '0;
-      rd_ptr     <= '0;
-      amo_state  <= AMO_T_IDLE;  
+      wr_ptr       <= '0;
+      rd_ptr       <= '0;
+      amo_state    <= AMO_T_IDLE;  
+      rvfi_pkt_cnt <= 0;
       for (int i = 0; i < 16; i++) instr_trace_fifo [i] <= '0;  // not really necessary ??
     end else begin
+      int unsigned nxt_rvfi_pkt_cnt;
+
       if (cmt_flush) begin
         wr_ptr <= 0;
       end else if (~issue_cmplx & issued_instr[0].rvfi.valid & issued_instr[1].rvfi.valid) begin
@@ -354,9 +394,16 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
       else
         rd_ptr <= rd_ptr_nxt;
 
+      nxt_rvfi_pkt_cnt = rvfi_pkt_cnt;
+
       for (int i = rd_ptr; i != rd_ptr_nxt; i = (i+1) %16) begin
-        if (~instr_trace_fifo[i].is_amo)
-          print_line (fill_cmt_info(instr_trace_fifo[i], is_cmt0[i], 1'b0));
+        if (~instr_trace_fifo[i].is_amo) begin
+          instr_trace_t instr_tmp;
+          instr_tmp = fill_cmt_info(instr_trace_fifo[i], is_cmt0[i], 1'b0);
+          print_line (instr_tmp);
+          if (RvfiDumpEn) print_rvfi_packet(instr_tmp.rvfi, nxt_rvfi_pkt_cnt);
+          nxt_rvfi_pkt_cnt += 1;
+        end
       end
 
       if (issue_cmplx) begin
@@ -367,20 +414,29 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         amo_state   <= AMO_T_WAIT1;
         amo_instr_q <= fill_cmt_info(amo_instr_q, 1'b1, 1'b0);
       end else if ((amo_state == AMO_T_WAIT1) && cmt_good[0]) begin
+        instr_trace_t instr_tmp;
         amo_state   <= AMO_T_IDLE;
-        print_line (fill_cmt_info(amo_instr_q, 1'b1, 1'b1));
+        instr_tmp    = fill_cmt_info(amo_instr_q, 1'b1, 1'b1);
+        print_line (instr_tmp);
+        if (RvfiDumpEn) print_rvfi_packet(instr_tmp.rvfi, nxt_rvfi_pkt_cnt);
+        nxt_rvfi_pkt_cnt += 1;
       end
+
+      rvfi_pkt_cnt <= nxt_rvfi_pkt_cnt;
     end
   end
-
 
   // Data items accessed during this instruction
 
   initial begin
-    file_name   = "trace_kudu_core.log";
-    file_handle = $fopen(file_name, "w");
-    $display("%m: Writing execution trace to %s", file_name);
-    $fwrite(file_handle, "Time\t\t\tCycle\tPC\t\tInsn\tDecoded instruction\tRegister and memory contents\n");
+    $display("%m: Writing execution trace to %s", TraceLogFile);
+    trace_file_handle = $fopen(TraceLogFile, "w");
+    $fwrite(trace_file_handle,
+            "Time\t\t\tCycle\tPC\t\tInsn\tDecoded instruction\tRegister and memory contents\n");
+    if (RvfiDumpEn) begin
+      $display("%m: Writing rvfi trace to %s", RvfiLogFile);
+      rvfi_file_handle = $fopen(RvfiLogFile, "w");
+    end
   end
 
   // cycle counter
@@ -394,8 +450,11 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
 
   // close output file for writing
   final begin
-    if (file_handle != 32'h0) begin
-      $fclose(file_handle);
+    if (trace_file_handle != 32'h0) begin
+      $fclose(trace_file_handle);
+    end
+    if (rvfi_file_handle != 32'h0) begin
+      $fclose(rvfi_file_handle);
     end
   end
 
