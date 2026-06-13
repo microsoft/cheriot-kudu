@@ -55,12 +55,12 @@ function automatic string decode_rvfi_instr_dpi(
   longint unsigned mem_rdata_hi;
   longint unsigned mem_wdata_hi;
 
-  rs1_rdata_hi = trace_reg_fmt(rvfi_data.rs1_rdata);
-  rs2_rdata_hi = trace_reg_fmt(rvfi_data.rs2_rdata);
-  rs3_rdata_hi = trace_reg_fmt(rvfi_data.rs3_rdata);
-  rd_wdata_hi  = trace_reg_fmt(rvfi_data.rd_wdata);
-  mem_rdata_hi = trace_reg_fmt(rvfi_data.mem_rdata);  // rvfi_t defines mem_rdata as REG_W
-  mem_wdata_hi = trace_mem_fmt(rvfi_data.mem_wdata);
+  rs1_rdata_hi = rvfi_data.rs1_rdata[64:32];
+  rs2_rdata_hi = rvfi_data.rs2_rdata[64:32];
+  rs3_rdata_hi = rvfi_data.rs3_rdata[64:32];
+  rd_wdata_hi  = rvfi_data.rd_wdata[64:32];
+  mem_rdata_hi = rvfi_data.mem_rdata[64:32];  // rvfi_t defines mem_rdata as REG_W
+  mem_wdata_hi = rvfi_data.mem_wdata[64:32];
   //$display("mem_rdata=%x, mem_rdata_hi = %x", rvfi_data.mem_rdata, mem_rdata_hi);
 
   rs1_rdata_lo = rvfi_data.rs1_rdata[31:0];  

@@ -414,17 +414,17 @@ package tracer_pkg;
     logic [ 4:0]     rs1_addr;
     logic [ 4:0]     rs2_addr;
     logic [ 4:0]     rs3_addr;
-    logic [RegW-1:0] rs1_rdata;
-    logic [RegW-1:0] rs2_rdata;
-    logic [RegW-1:0] rs3_rdata;
+    logic [MemW-1:0] rs1_rdata;
+    logic [MemW-1:0] rs2_rdata;
+    logic [MemW-1:0] rs3_rdata;
     logic [ 4:0]     rd_addr;
-    logic [RegW-1:0] rd_wdata;
+    logic [MemW-1:0] rd_wdata;
     logic [31:0]     pc_rdata;
     logic [31:0]     pc_wdata;
     logic [31:0]     mem_addr;
     logic [ 3:0]     mem_rmask;
     logic [ 3:0]     mem_wmask;
-    logic [RegW-1:0] mem_rdata;
+    logic [MemW-1:0] mem_rdata;
     logic [MemW-1:0] mem_wdata;
     logic            mem_is_cap;
   } rvfi_t;
@@ -704,7 +704,7 @@ package tracer_pkg;
     string rvfi_insn_str;
     string disp_str;
     string prefix_str;
-    logic [32:0] tmp33;
+    logic [64:0] tmp65;
     logic insn_is_compressed;
 
     insn_is_compressed = (rvfi_data.insn[1:0] != 2'b11);
@@ -727,8 +727,8 @@ package tracer_pkg;
     end
 
     if ((data_accessed & CS1) != 0) begin
-      tmp33 = (RegW >= 65) ? trace_reg_fmt(rvfi_data.rs1_rdata) : 0;
-      disp_str = {disp_str, $sformatf(" %s:0x%08x+0x%09x", reg_addr_to_str(rvfi_data.rs1_addr), rvfi_data.rs1_rdata[31:0], tmp33)};
+      tmp65 = rvfi_data.rs1_rdata;
+      disp_str = {disp_str, $sformatf(" %s:0x%08x+0x%09x", reg_addr_to_str(rvfi_data.rs1_addr), tmp65[31:0], tmp65[64:32])};
     end
 
     if ((data_accessed & RS2) != 0) begin
@@ -736,8 +736,8 @@ package tracer_pkg;
     end
 
     if ((data_accessed & CS2) != 0) begin
-      tmp33 = (RegW >= 65) ? trace_reg_fmt(rvfi_data.rs2_rdata) : 0;
-      disp_str = {disp_str, $sformatf(" %s:0x%08x+0x%09x", reg_addr_to_str(rvfi_data.rs2_addr), rvfi_data.rs2_rdata[31:0], tmp33)};
+      tmp65 = rvfi_data.rs2_rdata;
+      disp_str = {disp_str, $sformatf(" %s:0x%08x+0x%09x", reg_addr_to_str(rvfi_data.rs2_addr), tmp65[31:0], tmp65[64:32])};
     end
 
     if ((data_accessed & RS3) != 0) begin
@@ -749,8 +749,8 @@ package tracer_pkg;
     end
 
     if ((data_accessed & CD) != 0) begin
-      tmp33 = (RegW >= 65) ? trace_reg_fmt(rvfi_data.rd_wdata) : 0;
-      disp_str = {disp_str, $sformatf(" %s=0x%08x+0x%09x", reg_addr_to_str(rvfi_data.rd_addr), rvfi_data.rd_wdata[31:0], tmp33)};
+      tmp65 = rvfi_data.rd_wdata;
+      disp_str = {disp_str, $sformatf(" %s=0x%08x+0x%09x", reg_addr_to_str(rvfi_data.rd_addr), tmp65[31:0], tmp65[64:32])};
     end
 
     if ((data_accessed & MEM) != 0) begin
@@ -772,11 +772,11 @@ package tracer_pkg;
       disp_str = {disp_str, $sformatf(" PA:0x%08x", rvfi_data.mem_addr)};
 
       if (rvfi_data.mem_wmask != 0) begin
-        tmp33 = (MemW == 65) ? trace_mem_fmt(rvfi_data.mem_wdata) : 0;
-        disp_str = {disp_str, $sformatf(" store:0x%08x+0x%09x", rvfi_data.mem_wdata[31:0], tmp33)};
+        tmp65 = rvfi_data.mem_wdata;
+        disp_str = {disp_str, $sformatf(" store:0x%08x+0x%09x", tmp65[31:0], tmp65[64:32])};
       end else begin
-        tmp33 = (MemW == 65) ? trace_reg_fmt(rvfi_data.mem_rdata) : 0;
-        disp_str = {disp_str, $sformatf(" load:0x%08x+0x%09x", rvfi_data.mem_rdata[31:0], tmp33)};
+        tmp65 = rvfi_data.mem_rdata;
+        disp_str = {disp_str, $sformatf(" load:0x%08x+0x%09x", tmp65[31:0], tmp65[64:32])};
       end
     end
 

@@ -623,8 +623,8 @@ static std::string get_csr_name(uint32_t csr_addr) {
 static std::string build_disp_str(const std::string& decode_str, const RvfiData& d,
                                   uint16_t data_accessed) {
   std::ostringstream oss;
-  oss << std::hex << std::nouppercase << d.pc_rdata << "\t";
-
+  //  oss << std::hex << std::nouppercase << d.pc_rdata << "\t";
+  oss << std::hex  << std::nouppercase  << std::setw(8) << std::setfill('0') << d.pc_rdata << "\t";
 
   if ((d.insn & 0x3u) != 0x3u) {
     oss << "    " << std::setw(4) << std::setfill('0') << (d.insn & 0xffffu);

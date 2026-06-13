@@ -824,38 +824,17 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
 
   // for trace file compatibility only, convert the reg (IT8) format to 
   // the non-IT8 memory format.
-  function automatic logic[32:0] trace_reg_fmt (reg_cap_t reg_cap);
+  function automatic mem_cap_t reg2mcap (reg_cap_t reg_cap);
     op_cap_t     op_cap;       
     mem_cap_t    mem_cap;
 
-    logic [32:0] msw, msw2;
-
-    op_cap      = reg2opcap(reg_cap);
-
-    // tranlate to the "canonical" format
-    msw[32]     = op_cap.valid;
-    msw[31]     = op_cap.rsvd;
-    msw[30:25]  = op_cap.cperms;
-    msw[24:22]  = op_cap.otype;
-    msw[21:18]  = (op_cap.exp == 24) ? 4'hf : op_cap.exp[3:0];
-    msw[17:9]   = op_cap.top9;
-    msw[8:0]    = op_cap.base9;
+    op_cap   = reg2opcap(reg_cap);
 
     // "raw" format (as seen in the actual memory)
     mem_cap  = op2memcap(op_cap);
-    msw2     = mem_cap[64:32];
-    // return msw;
-    return msw2;
 
+    return mem_cap;
   endfunction
-
-  function automatic logic[32:0] trace_mem_fmt (mem_cap_t mem_cap);
-    logic [32:0] msw;
-
-    msw  = trace_reg_fmt(mem2regcap(mem_cap, 0));
-    return msw;
-  endfunction
-
 
   // 
   function automatic op_cap_t and_opcap_tag (op_cap_t in_cap, logic tag_mask);
