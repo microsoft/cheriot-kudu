@@ -71,8 +71,8 @@ function automatic string decode_rvfi_instr_dpi(
   rd_wdata_lo  = rvfi_data.rd_wdata[31:0];
   //$display("rs1_rdata=%x, rs1_rdata_hi = %x", rvfi_data.rs1_rdata, rs1_rdata_hi);
 
-  if (rvfi_data.trap && (rvfi_data.insn[6:0] == 7'h03))
-    $display("load fault: pc = %x, PA = %x", rvfi_data.pc_rdata, rvfi_data.mem_addr);
+  // if (rvfi_data.trap && (rvfi_data.insn[6:0] == 7'h03))
+  //  $display("load fault: pc = %x, PA = %x", rvfi_data.pc_rdata, rvfi_data.mem_addr);
 
   return decode_rvfi_instr(
       rvfi_data.insn,

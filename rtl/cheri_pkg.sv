@@ -475,7 +475,7 @@ package cheri_pkg;
     logic             ovrflw, topoff1, topoff2, topoff;
     logic             baseoff1, baseoff2, baseoff;
     logic             tophi1, tophi2, tophi;
-    logic             in_bound;
+    logic             in_bound, is_sealed;
 
     result.fcap  = in_cap;
 
@@ -534,8 +534,9 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
     // also compare address >= old base 32 to handle exp=24 case
     //   exp = 24 case: can have addr < base (not covered by representibility checking);
     //   other exp cases: always addr >= base when result.fcap.tag == 1
+    is_sealed = (in_cap.otype != 0);
 
-    if (~in_bound |(req_exact & (topoff | baseoff))) result.fcap.valid = 1'b0;
+    if (~in_bound | is_sealed | (req_exact & (topoff | baseoff))) result.fcap.valid = 1'b0;
 
     return result;
   endfunction
