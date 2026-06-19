@@ -423,14 +423,15 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
 `ifndef SYNTHESIS
    logic [31:0]      rvfi_mem_addr;
    logic [MemW-1:0]  rvfi_mem_wdata;
-   logic [MemW+31:0] rvfi_fifo_rdata;
+   logic [MemW+32:0] rvfi_fifo_rdata;
+   logic             rvfi_mem_is_cap;
 
-   wt_fifo # (.Depth(8), .Width(MemW+32)) rvfi_fifo_i (
+   wt_fifo # (.Depth(8), .Width(MemW+32+1)) rvfi_fifo_i (
     .clk_i       (clk_i          ),
     .rst_ni      (rst_ni         ),
     .flush_i     (flush_i        ),
     .wr_valid_i  ((lsu_req & lsu_req_done)),
-    .wr_data_i   ({lsu_req_info.wdata, lsu_req_info.addr}),
+    .wr_data_i   ({lsu_req_info.is_cap, lsu_req_info.wdata, lsu_req_info.addr}),
     .wr_rdy_o    (), 
     .wr_rdy2_o   (),
     .rd_rdy_i    (ds_rdy_i       ),
@@ -438,8 +439,9 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     .rd_data_o   (rvfi_fifo_rdata )
     );
 
-   assign rvfi_mem_addr  = rvfi_fifo_rdata[31:0];
-   assign rvfi_mem_wdata = rvfi_fifo_rdata[MemW+31: 32];
+   assign rvfi_mem_addr   = rvfi_fifo_rdata[31:0];
+   assign rvfi_mem_wdata  = rvfi_fifo_rdata[MemW+31: 32];
+   assign rvfi_mem_is_cap = rvfi_fifo_rdata[MemW+32];
 
 `endif
 

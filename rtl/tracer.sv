@@ -170,6 +170,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     logic [MemW-1:0] mem_wdata;
     logic [RegW-1:0] reg_wdata;
     logic [31:0]     mem_addr;
+    logic            mem_is_cap;
     logic [2:0]      rf_we_vec;
     logic            rf_we, load_waddr_conflict;
     logic [RegW-1:0] tr0, tr1;
@@ -182,6 +183,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
 
     mem_addr   = `TOP_PATH.ls_pipeline_i.rvfi_mem_addr;
     mem_wdata  = `TOP_PATH.ls_pipeline_i.rvfi_mem_wdata;
+    mem_is_cap = `TOP_PATH.ls_pipeline_i.rvfi_mem_is_cap;
     reg_wdata  = `TOP_PATH.lspl_output.wdata;
 
     // figure out the rf_we status for instr_b
@@ -216,6 +218,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         result.rvfi.mem_addr   = mem_addr;
         result.rvfi.mem_wdata  = (is_load & ~is_sc) ? 0 : mem_wdata;
         result.rvfi.mem_rdata  = reg2mcap(tr0);
+        result.rvfi.mem_is_cap = mem_is_cap;
         result.rvfi.trap       = instr_in.rvfi.trap | `TOP_PATH.lspl_output.err;
       end else if (instr_in.pl[4]) begin
         tr0                    = `TOP_PATH.multpl_output.wdata;
@@ -271,11 +274,21 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     input rvfi_t           rvfi,
     input longint unsigned packet_num
   );
+    logic [7:0]  mem_rmask, mem_wmask;
     int unsigned rbyte_count;
     int unsigned wbyte_count;
 
-    rbyte_count = $countones(rvfi.mem_rmask);
-    wbyte_count = $countones(rvfi.mem_wmask);
+    mem_rmask = rvfi.mem_rmask;
+    mem_wmask = rvfi.mem_wmask;
+
+    if (rvfi.mem_is_cap & (mem_rmask != 0))   // cap should have rmask as 8'hff (same as sail behavior) 
+      mem_rmask = 8'hff;
+
+    if (rvfi.mem_is_cap & (mem_wmask != 0))
+      mem_wmask = 8'hff;
+
+    rbyte_count = $countones(mem_rmask);
+    wbyte_count = $countones(mem_wmask);
 
     $fdisplay(rvfi_file_handle,"# --- RVFI packet %0d ---", packet_num);
     $fdisplay(rvfi_file_handle,"order     : %0d",                  rvfi.order);
@@ -288,11 +301,11 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     $fdisplay(rvfi_file_handle,"rs1       : x%02d  rdata=0x%017h", rvfi.rs1_addr, rvfi.rs1_rdata);
     $fdisplay(rvfi_file_handle,"rs1       : x%02d  rdata=0x%017h", rvfi.rs2_addr, rvfi.rs2_rdata);
     $fdisplay(rvfi_file_handle,"rd        : x%02d  wdata=0x%017h", rvfi.rd_addr,  rvfi.rd_wdata);
-    $fdisplay(rvfi_file_handle,"mem_addr  : 0x%08h",              rvfi.mem_addr);
-    $fdisplay(rvfi_file_handle,"mem_rmask : 0b%08b (%0d byte(s))", rvfi.mem_rmask, rbyte_count);
+    $fdisplay(rvfi_file_handle,"mem_addr  : 0x%08h",               rvfi.mem_addr);
+    $fdisplay(rvfi_file_handle,"mem_rmask : 0b%08b (%0d byte(s))", mem_rmask, rbyte_count);
     $fdisplay(rvfi_file_handle,"mem_rdata : 0x%017h",              
                               ((rvfi.mem_rmask == 0) ? '0 : rvfi.mem_rdata));
-    $fdisplay(rvfi_file_handle,"mem_wmask : 0b%08b (%0d byte(s))", rvfi.mem_wmask, wbyte_count);
+    $fdisplay(rvfi_file_handle,"mem_wmask : 0b%08b (%0d byte(s))", mem_wmask, wbyte_count);
     $fdisplay(rvfi_file_handle,"mem_wdata : 0x%017h",               
                               ((rvfi.mem_wmask == 0) ? '0 : rvfi.mem_wdata)); 
     $fdisplay(rvfi_file_handle,"");               
