@@ -166,11 +166,16 @@ module compressed_decoder import super_pkg::*;  # (
             unique case (insn16[11:10])
               2'b00,
               2'b01: begin
+                logic [5:0] nzuimm;
+                logic [4:0] rd_dec;
                 // 00: c.srli -> srli rd, rd, shamt
                 // 01: c.srai -> srai rd, rd, shamt
-                // (c.srli/c.srai hints are translated into a srli/srai hint)
+                // (c.srli64/c.srai64 hints are translated into a srli/srai hint)
+                nzuimm = {insn16[12], insn16[6:2]};
+                rd_dec = (nzuimm == 0)? 5'h0 : {2'b01, insn16[9:7]};
+                
                 insn32 = {1'b0, insn16[10], 5'b0, insn16[6:2], 2'b01, insn16[9:7],
-                           3'b101, 2'b01, insn16[9:7], {OPCODE_OP_IMM}};
+                           3'b101, rd_dec, {OPCODE_OP_IMM}};
                 if (insn16[12] == 1'b1)  illegal_c_insn = 1'b1;
               end
 
