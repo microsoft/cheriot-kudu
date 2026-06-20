@@ -1,4 +1,4 @@
-#!/usr/local/bin/bash
+#!/usr/bin/env bash
 #
 VlogDef1="+define+CHERIoT"
 VlogDef2="+define+KUDU_PPL_CFG=1"
