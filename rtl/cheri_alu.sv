@@ -154,7 +154,7 @@ module cheri_alu import super_pkg::*; import cheri_pkg::*; (
                            (&(cs1_fcap.perms | ~cs2_fcap.perms));
        
       instr_i.cheri_op.cseteqx :
-        imd_fcap.addr[0] = (cs1_fcap[MemW-1:0] == cs2_fcap[MemW-1:0]);
+        imd_fcap.addr[0] = (cs1_fcap[RegW-1:0] == cs2_fcap[RegW-1:0]);
 
       instr_i.cheri_op.csethigh :
         imd_fcap[RegW-1:0] = mem2regcap({1'b0, cs2_fcap.addr, cs1_fcap.addr}, 4'h0);
