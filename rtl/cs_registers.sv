@@ -787,7 +787,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
   // MSTATUS
   localparam status_t MSTATUS_RST_VAL = '{mie:  1'b0,
-                                          mpie: 1'b1,
+                                          mpie: 1'b0,     // this is the sail behavior
+                                          // mpie: 1'b1,  // this is the ibex behavior
                                           mpp:  PRIV_LVL_U,
                                           mprv: 1'b0,
                                           tw:   1'b0};
