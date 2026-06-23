@@ -248,6 +248,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     if (result.rvfi.trap) result.rvfi.mem_wmask = 0;
 
     if (~RvfiDumpEn) begin
+      //if (result.rvfi.trap == 1) result.rvfi.mem_addr = 0;     // sail doesn't zero out mem_addr
       if (result.rvfi.rd_addr == 0) result.rvfi.mem_rdata = 0; // sail doesn't zero out mem_rdata
     end
 
@@ -333,7 +334,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   instr_trace_t [1:0] issued_instr;
   instr_trace_t       amo_instr_q;
   
-  logic [1:0]      cmt_good;
+  logic [1:0]      cmt_valid;
   logic [1:0]      cmt_instr_err;
   logic [4:0]      cmt_pl0, cmt_pl1;
   logic [31:0]     cmt_pc0, cmt_pc1;
@@ -351,8 +352,8 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   assign cmt_instr_err[0] = `COMMITTER_PATH.instr_err[0];
   assign cmt_instr_err[1] = `COMMITTER_PATH.instr_err[1];
 
-  assign cmt_good[0] = `TOP_PATH.sbdfifo_rd_valid[0] & `TOP_PATH.sbdfifo_rd_rdy[0];
-  assign cmt_good[1] = `TOP_PATH.sbdfifo_rd_valid[1] & `TOP_PATH.sbdfifo_rd_rdy[1] & ~cmt_instr_err[0];
+  assign cmt_valid[0] = `TOP_PATH.sbdfifo_rd_valid[0] & `TOP_PATH.sbdfifo_rd_rdy[0];
+  assign cmt_valid[1] = `TOP_PATH.sbdfifo_rd_valid[1] & `TOP_PATH.sbdfifo_rd_rdy[1] & ~cmt_instr_err[0];
 
   assign issue_cmplx = `ISSUER_PATH.cmplx_instr_start_o;
 
@@ -368,24 +369,30 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
 
   always_comb begin
     int   ex_cnt, cmt_num;
-    logic rd_flag;
+    logic rd_flag, stop_cond, cmt_err, cmt_err_q;
 
     rd_ptr_nxt = rd_ptr;
     is_cmt0    = 16'h0;
     ex_cnt     = 0;
-    cmt_num    = cmt_good[1] ? 2 : (cmt_good[0] ? 1 : 0);
+    cmt_num    = cmt_valid[1] ? 2 : (cmt_valid[0] ? 1 : 0);
     
     for (int i = 0; i < 16; i++) begin
       ex_flag[i] = instr_trace_fifo[i].is_ex;
     end
 
-    // only read fifo if there are committed EX instructions (to resolve err/trap so we 
-    // can "cancel" earlier instructions if needed
+    // keep reading the fifo. if a commit error found, stop there
+    // otherwise keepgoing until stopped by a uncommited EX instruction
+    rd_flag   = 1'b1;
+    cmt_err_q = 1'b0;
     for (int i = rd_ptr; i != wr_ptr; i = (i+1) %16) begin
-      rd_flag    = (ex_cnt < cmt_num) ? 1'b1 : 1'b0;
-      rd_ptr_nxt = rd_ptr_nxt + rd_flag;
       is_cmt0[i] = ex_flag[i] && (ex_cnt == 0);
+      cmt_err    = (ex_cnt == 0) ? (cmt_valid[0] & cmt_instr_err[0] & ex_flag[i]) : 
+                                   (cmt_valid[1] & cmt_instr_err[1] & ex_flag[i]);
+      stop_cond  = (ex_flag[i] & (ex_cnt >= cmt_num)) | cmt_err_q;
+      rd_flag    = rd_flag & ~stop_cond; 
+      rd_ptr_nxt = rd_ptr_nxt + rd_flag;
       if (ex_flag[i]) ex_cnt = ex_cnt + 1;
+      cmt_err_q  = cmt_err;
     end
     
   end
@@ -436,10 +443,10 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         // complex case is serialized and handled separatedly
         amo_state   <= AMO_T_WAIT0;
         amo_instr_q <=  issued_instr[0];
-      end else if ((amo_state == AMO_T_WAIT0) && cmt_good[0]) begin
+      end else if ((amo_state == AMO_T_WAIT0) && cmt_valid[0]) begin
         amo_state   <= AMO_T_WAIT1;
         amo_instr_q <= fill_cmt_info(amo_instr_q, 1'b1, 1'b0);
-      end else if ((amo_state == AMO_T_WAIT1) && cmt_good[0]) begin
+      end else if ((amo_state == AMO_T_WAIT1) && cmt_valid[0]) begin
         instr_trace_t instr_tmp;
         amo_state   <= AMO_T_IDLE;
         instr_tmp    = fill_cmt_info(amo_instr_q, 1'b1, 1'b1);
