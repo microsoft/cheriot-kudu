@@ -244,10 +244,12 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
 
     // match ibex RVFI implementation
     if (result.rvfi.rd_addr == 0) result.rvfi.rd_wdata = 0;
-    if (result.rvfi.rd_addr == 0) result.rvfi.mem_rdata = 0; 
     if (result.rvfi.trap) result.rvfi.mem_rmask = 0;
     if (result.rvfi.trap) result.rvfi.mem_wmask = 0;
 
+    if (~RvfiDumpEn) begin
+      if (result.rvfi.rd_addr == 0) result.rvfi.mem_rdata = 0; // sail doesn't zero out mem_rdata
+    end
 
     return result;
   endfunction
@@ -393,7 +395,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   //
   int unsigned rvfi_pkt_cnt;
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
+  always @(posedge clk_i or negedge rst_ni) begin
     if (~rst_ni) begin
       wr_ptr       <= '0;
       rd_ptr       <= '0;
@@ -420,7 +422,6 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         rd_ptr <= rd_ptr_nxt;
 
       nxt_rvfi_pkt_cnt = rvfi_pkt_cnt;
-
       for (int i = rd_ptr; i != rd_ptr_nxt; i = (i+1) %16) begin
         if (~instr_trace_fifo[i].is_amo) begin
           instr_trace_t instr_tmp;
