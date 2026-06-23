@@ -332,7 +332,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   instr_trace_t       amo_instr_q;
   
   logic [1:0]      cmt_good;
-  logic            cmt_flush;
+  logic [1:0]      cmt_instr_err;
   logic [4:0]      cmt_pl0, cmt_pl1;
   logic [31:0]     cmt_pc0, cmt_pc1;
   logic            issue_cmplx;
@@ -346,8 +346,11 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   assign cmt_pc1     = `TOP_PATH.sbdfifo_rdata1.pc;
 
   // note in committer if instr0 is erred we still dequeue instr1 from SBD fifo but won't write regfile
+  assign cmt_instr_err[0] = `COMMITTER_PATH.instr_err[0];
+  assign cmt_instr_err[1] = `COMMITTER_PATH.instr_err[1];
+
   assign cmt_good[0] = `TOP_PATH.sbdfifo_rd_valid[0] & `TOP_PATH.sbdfifo_rd_rdy[0];
-  assign cmt_good[1] = `TOP_PATH.sbdfifo_rd_valid[1] & `TOP_PATH.sbdfifo_rd_rdy[1] & ~`COMMITTER_PATH.instr_err[0];
+  assign cmt_good[1] = `TOP_PATH.sbdfifo_rd_valid[1] & `TOP_PATH.sbdfifo_rd_rdy[1] & ~cmt_instr_err[0];
 
   assign issue_cmplx = `ISSUER_PATH.cmplx_instr_start_o;
 
@@ -362,23 +365,25 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   end
 
   always_comb begin
-    int   ex_cnt, cmt_cnt;
+    int   ex_cnt, cmt_num;
     logic rd_flag;
 
     rd_ptr_nxt = rd_ptr;
     is_cmt0    = 16'h0;
     ex_cnt     = 0;
-    cmt_cnt    = cmt_good[1] ? 2 : (cmt_good[0] ? 1 : 0);
+    cmt_num    = cmt_good[1] ? 2 : (cmt_good[0] ? 1 : 0);
     
     for (int i = 0; i < 16; i++) begin
       ex_flag[i] = instr_trace_fifo[i].is_ex;
     end
 
+    // only read fifo if there are committed EX instructions (to resolve err/trap so we 
+    // can "cancel" earlier instructions if needed
     for (int i = rd_ptr; i != wr_ptr; i = (i+1) %16) begin
-      if (ex_flag[i]) ex_cnt = ex_cnt + 1;
-      rd_flag    = (ex_cnt <= cmt_cnt) ? 1'b1 : 1'b0;
+      rd_flag    = (ex_cnt < cmt_num) ? 1'b1 : 1'b0;
       rd_ptr_nxt = rd_ptr_nxt + rd_flag;
-      is_cmt0[i] = ex_flag[i] && (ex_cnt <= 1);
+      is_cmt0[i] = ex_flag[i] && (ex_cnt == 0);
+      if (ex_flag[i]) ex_cnt = ex_cnt + 1;
     end
     
   end
@@ -398,7 +403,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     end else begin
       int unsigned nxt_rvfi_pkt_cnt;
 
-      if (cmt_flush) begin
+      if (|cmt_instr_err) begin
         wr_ptr <= 0;
       end else if (~issue_cmplx & issued_instr[0].rvfi.valid & issued_instr[1].rvfi.valid) begin
         wr_ptr <= wr_ptr + 2;
@@ -409,7 +414,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         instr_trace_fifo[wr_ptr]        <= issued_instr[0];
       end 
 
-      if (cmt_flush) 
+      if (|cmt_instr_err) 
         rd_ptr <= 0;
       else
         rd_ptr <= rd_ptr_nxt;
