@@ -254,9 +254,13 @@ module compressed_decoder import super_pkg::*;  # (
       2'b10: begin
         unique case (insn16[15:13])
           3'b000: begin
+            logic [5:0] nzuimm;
+            logic [4:0] rd_dec;
             // c.slli -> slli rd, rd, shamt
-            // (c.ssli hints are translated into a slli hint)
-            insn32 = {7'b0, insn16[6:2], insn16[11:7], 3'b001, insn16[11:7], {OPCODE_OP_IMM}};
+            // (c.slli and c.slli64 hints are translated into a slli hint)
+            nzuimm = {insn16[12], insn16[6:2]};
+            rd_dec = (nzuimm == 0) ? 5'h0 : insn16[11:7];  // slli64 is a hint in rv32
+            insn32 = {7'b0, insn16[6:2], insn16[11:7], 3'b001, rd_dec, {OPCODE_OP_IMM}};
             if (insn16[12] == 1'b1)  illegal_c_insn = 1'b1; // reserved for custom extensions
           end
 
