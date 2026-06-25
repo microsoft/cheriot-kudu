@@ -753,7 +753,7 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
 
     reg_cap.rsvd   = mem_cap.rsvd;
     reg_cap.otype  = mem_cap.otype;
-    reg_cap.exp    =  cexp ^ {5{~denorm}};      // this is the ^0b11111 part (map cexp==31 to exp==0 in norm case
+    reg_cap.exp    = cexp ^ {5{~denorm}};      // this is the ^0b11111 part (map cexp==31 to exp==0 in norm case
     reg_cap.top9   = {ttop, mem_cap.top8};    // 9-bit
     reg_cap.base9  = mem_cap.base9;
     reg_cap.addr   = mem_cap.addr;
