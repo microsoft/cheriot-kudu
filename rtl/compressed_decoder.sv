@@ -120,11 +120,11 @@ module compressed_decoder import super_pkg::*;  # (
         unique case (insn16[15:13])
           3'b000: begin
             // c.addi -> addi rd, rd, nzimm
-            // c.nop now maps to NOP in CHERIoT mode
+            // c.nop and c.addi.hint now maps to NOP 
             logic [4:0] rd_dec;
             logic [5:0] nzimm;
             nzimm   = {insn16[12], insn16[6:2]};
-            rd_dec  = (CHERIoTEn & cheri_pmode_i && (nzimm == 6'h0)) ? 5'h0 : insn16[11:7];
+            rd_dec  = (nzimm == 6'h0) ? 5'h0 : insn16[11:7];
             insn32 = {{6 {insn16[12]}}, insn16[12], insn16[6:2],
                        insn16[11:7], 3'b0, rd_dec, {OPCODE_OP_IMM}};
           end
@@ -282,9 +282,13 @@ module compressed_decoder import super_pkg::*;  # (
           3'b100: begin
             if (insn16[12] == 1'b0) begin
               if (insn16[6:2] != 5'b0) begin
+                logic [4:0] rs2_dec, rd_dec;
                 // c.mv -> add rd/rs1, x0, rs2
-                // (c.mv hints are translated into an add hint)
-                insn32 = {7'b0, insn16[6:2], 5'b0, 3'b0, insn16[11:7], {OPCODE_OP}};
+                // (c.mv hints are translated into an add hint). 
+                // zero out MSB of rs2 to make sure c.mv.hint also workin cheriot (when rs2 > 15)
+                rd_dec = insn16[11:7];
+                rs2_dec = (cheri_pmode_i && (rd_dec == 0)) ? {1'b0, insn16[5:2]} : insn16[6:2];
+                insn32 = {7'b0, rs2_dec, 5'b0, 3'b0, rd_dec, {OPCODE_OP}};
               end else begin
                 // c.jr -> jalr x0, rd/rs1, 0
                 insn32 = {12'b0, insn16[11:7], 3'b0, 5'b0, {OPCODE_JALR}};

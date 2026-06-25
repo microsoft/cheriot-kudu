@@ -417,22 +417,28 @@ module tb_kudu_top;
   initial begin
     bit cont_flag;
     int i, timeout;
+    int rvfi_max;
 
-    timeout = 20*1000*1000;   // default timeout
-    timeout = 1000* 1000;   // default timeout
+    timeout  = 1000* 1000;   // default timeout
+    rvfi_max = 1000;
 
     i = $value$plusargs("TEST=%s", test_name);
     if (i == 0) $sformat(test_name, "hello_world");
+
     i = $value$plusargs("TIMEOUT=%d", timeout);
+    i = $value$plusargs("RVFI_MAX=%d", rvfi_max);
 
 `ifdef DII_SIM
     $sformat(instr_dii_path, "./bin/%s.dii", test_name);
     $display("TB> Loading DII test %s", test_name);
+    $display("TB> Test timeout = %d", timeout);
+    $display("TB> RVFI packet count max = %d", rvfi_max);
 `else
     $sformat(vhx_path, "./bin/%s.vhx", test_name);
     $display("TB> Loading test %s", test_name);
-`endif
     $display("TB> Test timeout = %d", timeout);
+`endif
+
 
     config_tb();
     print_dut_cfg();
@@ -487,6 +493,13 @@ module tb_kudu_top;
         stat_print_req = 1'b0;
 
       end
+
+`ifdef DII_SIM
+      if (dut.tracer_i.rvfi_pkt_cnt >= rvfi_max) begin
+        $display("TB> Simulation stopped after %d RVFI packets", dut.tracer_i.rvfi_pkt_cnt);
+        $finish();
+      end
+`endif
     end
     
     repeat (5) @(posedge clk);
