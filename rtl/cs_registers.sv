@@ -1543,6 +1543,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
         CSR_DSCRATCH1: csr_rdata_cheri = debug_mode_i ? dscratch1_q : RegW'(0);
         default:       illegal_csr_cheri = 1'b1;
       endcase   
+      illegal_csr_cheri |= ~debug_mode_i & ((csr_addr_i == CSR_DSCRATCH0) || (csr_addr_i == CSR_DSCRATCH1));
     end else begin
       unique case (csr_addr_i)
         CHERI_SCR_MEPCC:      csr_rdata_cheri = debug_mode_i ? depc_q : mepc_q;
@@ -1554,7 +1555,10 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
         CHERI_SCR_MSCRATCHC:  csr_rdata_cheri = mscratchc_q;
         default:              illegal_csr_cheri = 1'b1;
       endcase   
+      illegal_csr_cheri |= ~debug_mode_i & ((csr_addr_i == CHERI_SCR_DSCRATCHC0) ||
+                            (csr_addr_i == CHERI_SCR_DSCRATCHC1) || (csr_addr_i == CHERI_SCR_DEPCC));
     end
+
   end
 
   // legalize CSR wdata values for MTTC/MVTVEC and MEPCC
