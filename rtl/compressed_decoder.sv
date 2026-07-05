@@ -126,7 +126,7 @@ module compressed_decoder import super_pkg::*;  # (
             nzimm   = {insn16[12], insn16[6:2]};
             rd_dec  = (nzimm == 6'h0) ? 5'h0 : insn16[11:7];
             insn32 = {{6 {insn16[12]}}, insn16[12], insn16[6:2],
-                       insn16[11:7], 3'b0, rd_dec, {OPCODE_OP_IMM}};
+                       rd_dec, 3'b0, rd_dec, {OPCODE_OP_IMM}};
           end
 
           3'b001, 3'b101: begin
