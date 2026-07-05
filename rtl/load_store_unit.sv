@@ -626,7 +626,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     lsu_err_mtval  = 32'h0;
 
     if (cheri_ls_err & ls_align_err_only) begin
-      lsu_err_mcause = EXC_CAUSE_LOAD_ADDR_MISALIGN;
+      lsu_err_mcause = lsu_req_info_q.is_load ? EXC_CAUSE_LOAD_ADDR_MISALIGN : EXC_CAUSE_STORE_ADDR_MISALIGN;
       lsu_err_mtval  = addr_last_q;
     end else if (cheri_ls_err) begin
       // CHERIoT requires rs1 as part of MTVAL info for cheri faults
