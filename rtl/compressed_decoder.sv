@@ -123,8 +123,8 @@ module compressed_decoder import super_pkg::*;  # (
             // c.nop and c.addi.hint now maps to NOP 
             logic [4:0] rd_dec;
             logic [5:0] nzimm;
-            nzimm   = {insn16[12], insn16[6:2]};
-            rd_dec  = (nzimm == 6'h0) ? 5'h0 : insn16[11:7];
+            nzimm  = {insn16[12], insn16[6:2]};
+            rd_dec = (nzimm == 6'h0) ? 5'h0 : insn16[11:7];
             insn32 = {{6 {insn16[12]}}, insn16[12], insn16[6:2],
                        rd_dec, 3'b0, rd_dec, {OPCODE_OP_IMM}};
           end
@@ -174,7 +174,7 @@ module compressed_decoder import super_pkg::*;  # (
                 nzuimm = {insn16[12], insn16[6:2]};
                 rd_dec = (nzuimm == 0)? 5'h0 : {2'b01, insn16[9:7]};
                 
-                insn32 = {1'b0, insn16[10], 5'b0, insn16[6:2], 2'b01, insn16[9:7],
+                insn32 = {1'b0, insn16[10], 5'b0, insn16[6:2], rd_dec,
                            3'b101, rd_dec, {OPCODE_OP_IMM}};
                 if (insn16[12] == 1'b1)  illegal_c_insn = 1'b1;
               end
@@ -260,7 +260,7 @@ module compressed_decoder import super_pkg::*;  # (
             // (c.slli and c.slli64 hints are translated into a slli hint)
             nzuimm = {insn16[12], insn16[6:2]};
             rd_dec = (nzuimm == 0) ? 5'h0 : insn16[11:7];  // slli64 is a hint in rv32
-            insn32 = {7'b0, insn16[6:2], insn16[11:7], 3'b001, rd_dec, {OPCODE_OP_IMM}};
+            insn32 = {7'b0, insn16[6:2], rd_dec, 3'b001, rd_dec, {OPCODE_OP_IMM}};
             if (insn16[12] == 1'b1)  illegal_c_insn = 1'b1; // reserved for custom extensions
           end
 
@@ -291,7 +291,7 @@ module compressed_decoder import super_pkg::*;  # (
                 // (c.mv hints are translated into an add hint). 
                 // zero out MSB of rs2 to make sure c.mv.hint also workin cheriot (when rs2 > 15)
                 rd_dec = insn16[11:7];
-                rs2_dec = (cheri_pmode_i && (rd_dec == 0)) ? {1'b0, insn16[5:2]} : insn16[6:2];
+                rs2_dec = (rd_dec == 0) ? 5'h0 : insn16[6:2];
                 insn32 = {7'b0, rs2_dec, 5'b0, 3'b0, rd_dec, {OPCODE_OP}};
               end else begin
                 // c.jr -> jalr x0, rd/rs1, 0
