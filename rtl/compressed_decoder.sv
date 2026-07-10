@@ -300,9 +300,12 @@ module compressed_decoder import super_pkg::*;  # (
               end
             end else begin
               if (insn16[6:2] != 5'b0) begin
+                logic [4:0] rs2_dec, rd_dec;
                 // c.add -> add rd, rd, rs2
                 // (c.add hints are translated into an add hint)
-                insn32 = {7'b0, insn16[6:2], insn16[11:7], 3'b0, insn16[11:7], {OPCODE_OP}};
+                rd_dec = insn16[11:7];
+                rs2_dec = (rd_dec == 0) ? 5'h0 : insn16[6:2];
+                insn32 = {7'b0, rs2_dec, rd_dec, 3'b0, rd_dec, {OPCODE_OP}};
               end else begin
                 if (insn16[11:7] == 5'b0) begin
                   // c.ebreak -> ebreak
