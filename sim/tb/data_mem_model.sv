@@ -87,8 +87,9 @@ module data_mem_model import kudu_dv_pkg::*; # (
     addr64 = {address[31:3], 3'b000};
     addr32 = {address[31:2], 2'b00};
 
+    sparse_mem_write_tag(addr64, tag);
+
     if (is_cap) begin
-      sparse_mem_write_tag(addr64, tag);
       for (int i = 0; i < 8; i++) sparse_mem_write_data(addr64+i, bytes[i]);
     end else begin
       for (int i = 0; i < 4; i++) begin
@@ -215,7 +216,6 @@ module data_mem_model import kudu_dv_pkg::*; # (
         end
       end
     end
-
 
   end else begin : g_data_rw
     //
