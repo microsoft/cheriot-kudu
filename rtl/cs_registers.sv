@@ -1519,16 +1519,16 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   localparam logic [RegW-1:0] MSCRATCHC_RESET_VAL = CHERIoTEn ?  TS_ROOT_RCAP : '0; 
 
   reg_cap_t        pcc_exc_rcap;
-  logic            csr_wr_rv32, csr_wr_cheri;
+  logic            scr_wr_rv32, scr_wr_cheri;
   logic [4:0]      scr_addr;
   logic [RegW-1:0] mtdc_q, mscratchc_q;
   
 
   assign csr_addr_is_cheri = csr_cheri_i | (csr_addr_i == CSR_MTVEC) | (csr_addr_i == CSR_MEPC);
 
-  assign csr_wr_rv32  = csr_op_en_i & (~CHERIoTEn | ~cheri_pmode_i) &&
+  assign scr_wr_rv32  = csr_op_en_i & (~CHERIoTEn | ~cheri_pmode_i) &&
                         (csr_op_i inside {CSR_OP_WRITE, CSR_OP_SET, CSR_OP_CLEAR}) ;
-  assign csr_wr_cheri = csr_op_en_i & CHERIoTEn & cheri_pmode_i & (csr_op_i == CSR_OP_WRITE);
+  assign scr_wr_cheri = csr_op_en_i & CHERIoTEn & cheri_pmode_i & (csr_op_i == CSR_OP_WRITE);
   assign scr_addr     = csr_addr_i[4:0];
 
   always_comb begin
@@ -1574,10 +1574,10 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   // 
 
   always_comb begin
-    if (csr_wr_rv32 && (csr_addr_i == CSR_MEPC)) begin
+    if (scr_wr_rv32 && (csr_addr_i == CSR_MEPC)) begin
       mepc_en = 1'b1;
       mepc_d  = {csr_wdata32[31:1], 1'b0};
-    end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
       mepc_en = 1'b1;
       mepc_d  = csr_wdata_cheri;
     end else if (CHERIoTEn & cheri_pmode_i & csr_save_cause_i & ~debug_mode_i) begin
@@ -1615,10 +1615,10 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   assign  init_mtvec32 = {boot_addr_i[31:2], 1'b0, 1'b0};  
 
   always_comb begin
-    if (csr_wr_rv32 && (csr_addr_i == CSR_MTVEC)) begin
+    if (scr_wr_rv32 && (csr_addr_i == CSR_MTVEC)) begin
       mtvec_en = 1'b1;
       mtvec_d  = {csr_wdata32[31:2], 2'b00};
-    end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MTCC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTCC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
       mtvec_en = 1'b1;
       mtvec_d  = csr_wdata_cheri;
     end else if (CHERIoTEn & csr_mtvec_init_i) begin
@@ -1653,10 +1653,10 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   //
 
   always_comb begin
-    if (csr_wr_rv32 && (csr_addr_i == CSR_MEPC) & debug_mode_i) begin
+    if (scr_wr_rv32 && (csr_addr_i == CSR_MEPC) & debug_mode_i) begin
       depc_en = 1'b1;
       depc_d  = {csr_wdata32[31:1], 1'b0};
-    end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && debug_mode_i) begin
+    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && debug_mode_i) begin
       depc_en = 1'b1;
       depc_d  = {csr_wdata_cheri[RegW-1:1], 1'b0};
     end else if (CHERIoTEn & cheri_pmode_i & csr_save_cause_i & debug_csr_save_i) begin
@@ -1670,10 +1670,10 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       depc_d  = depc_q;
     end
 
-    if (csr_wr_rv32 && (csr_addr_i == CSR_DSCRATCH0) & debug_mode_i) begin
+    if (scr_wr_rv32 && (csr_addr_i == CSR_DSCRATCH0) & debug_mode_i) begin
       dscratch0_en = 1'b1;
       dscratch0_d  = csr_wdata32;
-    end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC0) && debug_mode_i) begin
+    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC0) && debug_mode_i) begin
       dscratch0_en = 1'b1;
       dscratch0_d  = csr_wdata_cheri;
     end else begin
@@ -1681,10 +1681,10 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       dscratch0_d  = dscratch0_q;
     end
 
-    if (csr_wr_rv32 && (csr_addr_i == CSR_DSCRATCH1) & debug_mode_i) begin
+    if (scr_wr_rv32 && (csr_addr_i == CSR_DSCRATCH1) & debug_mode_i) begin
       dscratch1_en = 1'b1;
       dscratch1_d  = csr_wdata32;
-    end else if (csr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC1) && debug_mode_i) begin
+    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC1) && debug_mode_i) begin
       dscratch1_en = 1'b1;
       dscratch1_d  = csr_wdata_cheri;
     end else begin
@@ -1810,7 +1810,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     // MTDC and MScratchC
     
     always_comb begin
-      if (csr_wr_cheri && (scr_addr == CHERI_SCR_MTDC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+      if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTDC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
         mtdc_en = 1'b1;
         mtdc_d  = csr_wdata_cheri;
       end else begin
@@ -1818,7 +1818,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
         mtdc_d  = mtdc_q;
       end
 
-      if (csr_wr_cheri && (scr_addr == CHERI_SCR_MSCRATCHC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+      if (scr_wr_cheri && (scr_addr == CHERI_SCR_MSCRATCHC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
         mscratchc_en = 1'b1;
         mscratchc_d  = csr_wdata_cheri;
       end else begin
