@@ -428,6 +428,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
 
       OPCODE_SYSTEM: begin
         if (instr[14:12] == 3'b000) begin
+
           pl_type = PL_LOCAL;
           // non CSR related SYSTEM instructions
           unique case (instr[31:20])
@@ -453,7 +454,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
           endcase
 
           // rs1 and rd must be 0
-          if (ir_dec_o.rs1 != 5'b0 || ir_dec_o.rd != 5'b0) begin
+          if (instr[19:7] != 0) begin
             illegal_insn = 1'b1;
           end
         end else begin
