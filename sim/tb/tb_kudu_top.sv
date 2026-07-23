@@ -207,7 +207,7 @@ module tb_kudu_top;
             
       // force dut.cs_registers_i.mepc_q[31:0] = 32'h8000_0000;
 
-      // force dut.cs_registers_i.init_mtvec32 = 32'h0000_0000;
+      force dut.cs_registers_i.init_mtvec32 = 32'h807f_0000;
       // cheriot-sail configuration doesn't support PRIV_LVL_U
       force dut.cs_registers_i.mstatus_q[3:2] = 2'b11;
 
