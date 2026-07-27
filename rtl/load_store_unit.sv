@@ -593,7 +593,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign pcc_perms   = expand_perms(tr_cap.cperms);
   assign pcc_asr_bit = ~cheri_pmode | pcc_perms[PERM_SR];
 
-  assign csr_cheri_asr_err   = cheri_pmode & csr_go_q & ~pcc_asr_bit & ~csr_cheri_always_ok;
+  assign csr_cheri_asr_err   = cheri_pmode & csr_go_q & ~debug_mode_i & ~pcc_asr_bit & ~csr_cheri_always_ok;
 
   assign csr_err  = ~debug_mode_i & lsu_req_info_q.is_csr & (illegal_csr_insn_i | csr_cheri_asr_err);
 

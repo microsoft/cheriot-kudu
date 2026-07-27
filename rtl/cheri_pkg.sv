@@ -823,8 +823,6 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
     return reg_cap;
   endfunction
 
-  // for trace file compatibility only, convert the reg (IT8) format to 
-  // the non-IT8 memory format.
   function automatic mem_cap_t reg2mcap (reg_cap_t reg_cap);
     op_cap_t     op_cap;       
     mem_cap_t    mem_cap;
@@ -846,6 +844,24 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
     return out_cap;
 
   endfunction
+
+  //
+  // single-step setbound operation (used for verification)
+  //
+  function automatic full_cap_t set_bounds_1step (full_cap_t in_cap, logic [31:0] length, logic req_exact);
+    full_cap_t      result;
+    setbounds_req_t tmp1;
+    setbounds_out_t tmp2;
+
+    tmp1 = prep_bound_req(in_cap, length);
+    tmp2 = set_bounds (in_cap, tmp1, req_exact);
+    
+    result = tmp2.fcap;
+
+    return result;
+  endfunction
+
+
 
   // parameters and constants
 

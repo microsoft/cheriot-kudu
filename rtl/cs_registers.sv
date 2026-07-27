@@ -1577,7 +1577,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     if (scr_wr_rv32 && (csr_addr_i == CSR_MEPC)) begin
       mepc_en = 1'b1;
       mepc_d  = {csr_wdata32[31:1], 1'b0};
-    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC)) begin
       mepc_en = 1'b1;
       mepc_d  = csr_wdata_cheri;
     end else if (CHERIoTEn & cheri_pmode_i & csr_save_cause_i & ~debug_mode_i) begin
@@ -1618,7 +1618,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     if (scr_wr_rv32 && (csr_addr_i == CSR_MTVEC)) begin
       mtvec_en = 1'b1;
       mtvec_d  = {csr_wdata32[31:2], 2'b00};
-    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTCC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTCC)) begin
       mtvec_en = 1'b1;
       mtvec_d  = csr_wdata_cheri;
     end else if (CHERIoTEn & csr_mtvec_init_i) begin
@@ -1810,7 +1810,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     // MTDC and MScratchC
     
     always_comb begin
-      if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTDC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+      if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTDC)) begin
         mtdc_en = 1'b1;
         mtdc_d  = csr_wdata_cheri;
       end else begin
@@ -1818,7 +1818,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
         mtdc_d  = mtdc_q;
       end
 
-      if (scr_wr_cheri && (scr_addr == CHERI_SCR_MSCRATCHC) && (ex1_pcc_cap_q.perms[PERM_SR] | debug_mode_i)) begin
+      // perm ASR has been checked by execution pipelines alredy
+      if (scr_wr_cheri && (scr_addr == CHERI_SCR_MSCRATCHC)) begin
         mscratchc_en = 1'b1;
         mscratchc_d  = csr_wdata_cheri;
       end else begin
