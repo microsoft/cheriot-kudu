@@ -173,6 +173,13 @@ module tb_kudu_top;
 
   assign {irq_timer, irq_software,  irq_external} = irq_vec; 
 
+`ifdef DII_SIM
+  defparam u_data_mem.UseSparseMem = 1'b1;
+`else
+  defparam u_data_mem.UseSparseMem = 1'b0;
+`endif  //DII_SIM
+  
+
 `ifndef IBEX
   `ifndef KUDU_PPL_CFG
     `define KUDU_PPL_CFG 1
@@ -192,10 +199,7 @@ module tb_kudu_top;
                                     (`KUDU_PPL_CFG == 3) ? KuduCfg3 : 
                                     KuduCfg1;
 
-`ifdef DII_SIM
-  defparam u_data_mem.UseSparseMem = 1'b1;
-
-
+  `ifdef DII_SIM
   // initilizing ibex regfile/CSR to match sail by forcing for now
   initial begin
     int i;
@@ -218,11 +222,8 @@ module tb_kudu_top;
       release dut.cs_registers_i.mepc_q[31:0];
     end 
   end
+  `endif
 
-`else
-  defparam u_data_mem.UseSparseMem = 1'b0;
-`endif  //DII_SIM
-  
 
   kudu_top #(
     .CHERIoTEn   (`KUDU_CHERIOT_EN),
@@ -390,6 +391,28 @@ module tb_kudu_top;
   );
   `endif
 
+  `ifdef DII_SIM
+  // initilizing ibex regfile/CSR to match sail by forcing for now
+  initial begin
+    int i;
+
+    while (1) begin
+      @(posedge rst_n);    // handle multipe-reset case
+
+      // force dut.regfile_i.rf_reg_q = {15{TM_ROOT_RCAP}};
+            
+      // force dut.cs_registers_i.mepc_q[31:0] = 32'h8000_0000;
+
+      force dut.u_ibex_top.u_ibex_core.cs_registers_i.mtvec_d[31:0] = 32'h807f_0000;
+      // cheriot-sail configuration doesn't support PRIV_LVL_U
+      force  dut.u_ibex_top.u_ibex_core.cs_registers_i.mstatus_q[3:2] = 2'b11;
+
+      @(posedge clk);
+      @(posedge clk);
+
+    end 
+  end
+  `endif
 `endif  // ibex
 
 `ifndef NO_FSDB
@@ -495,10 +518,12 @@ module tb_kudu_top;
       end
 
 `ifdef DII_SIM
+  `ifndef IBEX
       if (dut.tracer_i.rvfi_pkt_cnt >= rvfi_max) begin
         $display("TB> Simulation stopped after %d RVFI packets", dut.tracer_i.rvfi_pkt_cnt);
         $finish();
       end
+  `endif
 `endif
     end
     

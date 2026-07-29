@@ -23,6 +23,7 @@ module signed_mult_33x33_wallace #(
 ) (
     input  logic                    clk_i,
     input  logic                    rst_ni,
+    input  logic                    en_i,
     input  logic signed [32:0]      a,
     input  logic signed [32:0]      b,
     output logic signed [65:0]      product
@@ -119,8 +120,7 @@ module signed_mult_33x33_wallace #(
                     for (k = 0; k < 22; k++) begin
                         stage1[k] <= '0;
                     end
-                end
-                else begin
+                end else if (en_i) begin
                     for (k = 0; k < 22; k++) begin
                         stage1[k] <= stage1_comb[k];
                     end
@@ -166,8 +166,7 @@ module signed_mult_33x33_wallace #(
                     for (k = 0; k < 15; k++) begin
                         stage2[k] <= '0;
                     end
-                end
-                else begin
+                end else if (en_i) begin
                     for (k = 0; k < 15; k++) begin
                         stage2[k] <= stage2_comb[k];
                     end
@@ -211,8 +210,7 @@ module signed_mult_33x33_wallace #(
                     for (k = 0; k < 10; k++) begin
                         stage3[k] <= '0;
                     end
-                end
-                else begin
+                end else if (en_i) begin
                     for (k = 0; k < 10; k++) begin
                         stage3[k] <= stage3_comb[k];
                     end
@@ -258,8 +256,7 @@ module signed_mult_33x33_wallace #(
                     for (k = 0; k < 7; k++) begin
                         stage4[k] <= '0;
                     end
-                end
-                else begin
+                end else if (en_i) begin
                     for (k = 0; k < 7; k++) begin
                         stage4[k] <= stage4_comb[k];
                     end
@@ -305,8 +302,7 @@ module signed_mult_33x33_wallace #(
                     for (k = 0; k < 5; k++) begin
                         stage5[k] <= '0;
                     end
-                end
-                else begin
+                end else if (en_i) begin
                     for (k = 0; k < 5; k++) begin
                         stage5[k] <= stage5_comb[k];
                     end
@@ -353,8 +349,7 @@ module signed_mult_33x33_wallace #(
                     for (k = 0; k < 4; k++) begin
                         stage6[k] <= '0;
                     end
-                end
-                else begin
+                end else if (en_i) begin
                     for (k = 0; k < 4; k++) begin
                         stage6[k] <= stage6_comb[k];
                     end
@@ -396,8 +391,7 @@ module signed_mult_33x33_wallace #(
                     for (k = 0; k < 3; k++) begin
                         stage7[k] <= '0;
                     end
-                end
-                else begin
+                end else if (en_i) begin
                     for (k = 0; k < 3; k++) begin
                         stage7[k] <= stage7_comb[k];
                     end
@@ -437,8 +431,7 @@ module signed_mult_33x33_wallace #(
                     for (k = 0; k < 2; k++) begin
                         stage8[k] <= '0;
                     end
-                end
-                else begin
+                end else if (en_i) begin
                     for (k = 0; k < 2; k++) begin
                         stage8[k] <= stage8_comb[k];
                     end
@@ -465,6 +458,7 @@ endmodule
 module multdiv32 # (parameter bit UseDWMult = 1'b0) (
   input  logic              clk_i,
   input  logic              rst_ni,
+  input  logic              flush_i,
   input  logic              mult_en_i,  // dynamic enable signal, for FSM control
   input  logic              div_en_i,   // dynamic enable signal, for FSM control
   input  super_pkg::md_op_e operator_i,
@@ -557,6 +551,7 @@ module multdiv32 # (parameter bit UseDWMult = 1'b0) (
     signed_mult_33x33_wallace #( .plStageNum (5)) mult33_i (
         .clk_i   (clk_i),
         .rst_ni  (rst_ni),
+        .en_i    (mult_en_i),
         .a       (mult_a),
         .b       (mult_b),
         .product (mult_result)
@@ -593,7 +588,7 @@ module multdiv32 # (parameter bit UseDWMult = 1'b0) (
 
   assign md_adder_ext     = $unsigned(alu_operand_a) + $unsigned(alu_operand_b);
   assign md_adder_out     = md_adder_ext[32:1];
-  assign md_equal_to_zero = (alu_operand_a == alu_operand_b);
+  assign md_equal_to_zero = (md_adder_out == 0);
 
   // Intermediate value register for DIV only
   assign imd_val_d[0]  = op_remainder_d;
@@ -672,102 +667,106 @@ module multdiv32 # (parameter bit UseDWMult = 1'b0) (
     div_valid        = 1'b0;
     div_by_zero_d    = div_by_zero_q;
 
-    unique case (md_state_q)
-      MD_IDLE: begin
-        if (operator_i == MD_OP_DIV) begin
-          // Check if the Denominator is 0
-          // quotient for division by 0 is specified to be -1
-          // Note with data-independent time option, the full divide operation will proceed as
-          // normal and will naturally return -1
-          op_remainder_d = '1;
-          md_state_d     = (!data_ind_timing_i && md_equal_to_zero) ? MD_FINISH : MD_ABS_A;
-          // Record that this is a div by zero to stop the sign change at the end of the
-          // division (in data_ind_timing mode).
-          div_by_zero_d  = md_equal_to_zero;
-        end else begin
-          // Check if the Denominator is 0
-          // remainder for division by 0 is specified to be the numerator (operand a)
-          // Note with data-independent time option, the full divide operation will proceed as
-          // normal and will naturally return operand a
-          op_remainder_d = {2'b0, op_a_i};
-          md_state_d     = (!data_ind_timing_i && md_equal_to_zero) ? MD_FINISH : MD_ABS_A;
+    if (flush_i) begin
+      md_state_d = MD_IDLE;
+    end else begin
+      unique case (md_state_q)
+        MD_IDLE: begin
+          if (operator_i == MD_OP_DIV) begin
+            // Check if the Denominator is 0
+            // quotient for division by 0 is specified to be -1
+            // Note with data-independent time option, the full divide operation will proceed as
+            // normal and will naturally return -1
+            op_remainder_d = '1;
+            md_state_d     = (!data_ind_timing_i && md_equal_to_zero) ? MD_FINISH : MD_ABS_A;
+            // Record that this is a div by zero to stop the sign change at the end of the
+            // division (in data_ind_timing mode).
+            div_by_zero_d  = md_equal_to_zero;
+          end else begin
+            // Check if the Denominator is 0
+            // remainder for division by 0 is specified to be the numerator (operand a)
+            // Note with data-independent time option, the full divide operation will proceed as
+            // normal and will naturally return operand a
+            op_remainder_d = {2'b0, op_a_i};
+            md_state_d     = (!data_ind_timing_i && md_equal_to_zero) ? MD_FINISH : MD_ABS_A;
+          end
+          // 0 - B = 0 iff B == 0
+          alu_operand_a  = {32'h0  , 1'b1};
+          alu_operand_b  = {~op_b_i, 1'b1};
+          div_counter_d    = 5'd31;
         end
-        // 0 - B = 0 iff B == 0
-        alu_operand_a  = {32'h0  , 1'b1};
-        alu_operand_b  = {~op_b_i, 1'b1};
-        div_counter_d    = 5'd31;
-      end
 
-      MD_ABS_A: begin
-        // quotient
-        op_quotient_d   = '0;
-        // A abs value
-        op_numerator_d  = div_sign_a ? md_adder_out : op_a_q;
-        md_state_d      = MD_ABS_B;
-        div_counter_d   = 5'd31;
-        // ABS(A) = 0 - A
-        alu_operand_a = {32'h0  , 1'b1};
-        alu_operand_b = {~op_a_q, 1'b1};
-      end
-
-      MD_ABS_B: begin
-        // remainder
-        op_remainder_d   = { 33'h0, op_numerator_q[31]};
-        // B abs value
-        op_denominator_d = div_sign_b ? md_adder_out : op_b_q;
-        md_state_d       = MD_COMP;
-        div_counter_d    = 5'd31;
-        // ABS(B) = 0 - B
-        alu_operand_a  = {32'h0  , 1'b1};
-        alu_operand_b  = {~op_b_q, 1'b1};
-      end
-
-      MD_COMP: begin
-        op_remainder_d  = {1'b0, next_remainder[31:0], op_numerator_q[div_counter_d]};
-        op_quotient_d   = next_quotient[31:0];
-        md_state_d      = (div_counter_q == 5'd1) ? MD_LAST : MD_COMP;
-        // Division
-        alu_operand_a = {imd_val_q[0][31:0], 1'b1}; // it contains the remainder
-        alu_operand_b = {~op_denominator_q[31:0], 1'b1};  // -denominator two's compliment
-      end
-
-      MD_LAST: begin
-        if (operator_q == MD_OP_DIV) begin
-          // this time we save the quotient in op_remainder_d (i.e. imd_val_q[0]) since
-          // we do not need anymore the remainder
-          op_remainder_d = {1'b0, next_quotient};
-        end else begin
-          // this time we do not save the quotient anymore since we need only the remainder
-          op_remainder_d = {2'b0, next_remainder[31:0]};
+        MD_ABS_A: begin
+          // quotient
+          op_quotient_d   = '0;
+          // A abs value
+          op_numerator_d  = div_sign_a ? md_adder_out : op_a_q;
+          md_state_d      = MD_ABS_B;
+          div_counter_d   = 5'd31;
+          // ABS(A) = 0 - A
+          alu_operand_a = {32'h0  , 1'b1};
+          alu_operand_b = {~op_a_q, 1'b1};
         end
-        // Division
-        alu_operand_a  = {imd_val_q[0][31:0], 1'b1}; // it contains the remainder
-        alu_operand_b  = {~op_denominator_q[31:0], 1'b1};  // -denominator two's compliment
 
-        md_state_d = MD_CHANGE_SIGN;
-      end
-
-      MD_CHANGE_SIGN: begin
-        md_state_d  = MD_FINISH;
-        if (operator_q == MD_OP_DIV) begin
-          op_remainder_d = (div_change_sign) ? {2'h0, md_adder_out} : imd_val_q[0];
-        end else begin
-          op_remainder_d = (rem_change_sign) ? {2'h0, md_adder_out} : imd_val_q[0];
+        MD_ABS_B: begin
+          // remainder
+          op_remainder_d   = { 33'h0, op_numerator_q[31]};
+          // B abs value
+          op_denominator_d = div_sign_b ? md_adder_out : op_b_q;
+          md_state_d       = MD_COMP;
+          div_counter_d    = 5'd31;
+          // ABS(B) = 0 - B
+          alu_operand_a  = {32'h0  , 1'b1};
+          alu_operand_b  = {~op_b_q, 1'b1};
         end
-        // ABS(Quotient) = 0 - Quotient (or Remainder)
-        alu_operand_a  = {32'h0  , 1'b1};
-        alu_operand_b  = {~imd_val_q[0][31:0], 1'b1};
-      end
 
-      MD_FINISH: begin
-        md_state_d = MD_IDLE;
-        div_valid   = 1'b1;
-      end
+        MD_COMP: begin
+          op_remainder_d  = {1'b0, next_remainder[31:0], op_numerator_q[div_counter_d]};
+          op_quotient_d   = next_quotient[31:0];
+          md_state_d      = (div_counter_q == 5'd1) ? MD_LAST : MD_COMP;
+          // Division
+          alu_operand_a = {imd_val_q[0][31:0], 1'b1}; // it contains the remainder
+          alu_operand_b = {~op_denominator_q[31:0], 1'b1};  // -denominator two's compliment
+        end
 
-      default: begin
-        md_state_d = MD_IDLE;
-      end
-    endcase // md_state_q
+        MD_LAST: begin
+          if (operator_q == MD_OP_DIV) begin
+            // this time we save the quotient in op_remainder_d (i.e. imd_val_q[0]) since
+            // we do not need anymore the remainder
+            op_remainder_d = {1'b0, next_quotient};
+          end else begin
+            // this time we do not save the quotient anymore since we need only the remainder
+            op_remainder_d = {2'b0, next_remainder[31:0]};
+          end
+          // Division
+          alu_operand_a  = {imd_val_q[0][31:0], 1'b1}; // it contains the remainder
+          alu_operand_b  = {~op_denominator_q[31:0], 1'b1};  // -denominator two's compliment
+
+          md_state_d = MD_CHANGE_SIGN;
+        end
+
+        MD_CHANGE_SIGN: begin
+          md_state_d  = MD_FINISH;
+          if (operator_q == MD_OP_DIV) begin
+            op_remainder_d = (div_change_sign) ? {2'h0, md_adder_out} : imd_val_q[0];
+          end else begin
+            op_remainder_d = (rem_change_sign) ? {2'h0, md_adder_out} : imd_val_q[0];
+          end
+          // ABS(Quotient) = 0 - Quotient (or Remainder)
+          alu_operand_a  = {32'h0  , 1'b1};
+          alu_operand_b  = {~imd_val_q[0][31:0], 1'b1};
+        end
+
+        MD_FINISH: begin
+          md_state_d = MD_IDLE;
+          div_valid   = 1'b1;
+        end
+
+        default: begin
+          md_state_d = MD_IDLE;
+        end
+      endcase // md_state_q
+    end
   end
 
   assign div_valid_o = div_valid;

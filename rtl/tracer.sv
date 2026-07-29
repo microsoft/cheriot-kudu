@@ -327,9 +327,11 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   } amo_state_e;
 
 
-  instr_trace_t instr_trace_fifo[16];
-  logic [3:0]   wr_ptr;
-  logic [3:0]   rd_ptr, rd_ptr_nxt;
+  // upsize this FIFO to 64 (originally we have 16 but it could overrun if an instruction takes
+  // too long to run, e.g., div/rem)
+  instr_trace_t instr_trace_fifo[64];
+  logic [5:0]   wr_ptr;
+  logic [5:0]   rd_ptr, rd_ptr_nxt;
 
   instr_trace_t [1:0] issued_instr;
   instr_trace_t       amo_instr_q;
@@ -341,7 +343,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   logic            issue_cmplx;
   amo_state_e      amo_state;
 
-  logic [15:0]     ex_flag, is_cmt0;
+  logic [63:0]     ex_flag, is_cmt0;
 
   assign cmt_pl0     = `TOP_PATH.sbdfifo_rdata0.pl;
   assign cmt_pl1     = `TOP_PATH.sbdfifo_rdata1.pl;
@@ -372,11 +374,11 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     logic rd_flag, stop_cond, cmt_err, cmt_err_q;
 
     rd_ptr_nxt = rd_ptr;
-    is_cmt0    = 16'h0;
+    is_cmt0    = 64'h0;
     ex_cnt     = 0;
     cmt_num    = cmt_valid[1] ? 2 : (cmt_valid[0] ? 1 : 0);
     
-    for (int i = 0; i < 16; i++) begin
+    for (int i = 0; i < 64; i++) begin
       ex_flag[i] = instr_trace_fifo[i].is_ex;
     end
 
@@ -384,7 +386,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     // otherwise keepgoing until stopped by a uncommited EX instruction
     rd_flag   = 1'b1;
     cmt_err_q = 1'b0;
-    for (int i = rd_ptr; i != wr_ptr; i = (i+1) %16) begin
+    for (int i = rd_ptr; i != wr_ptr; i = (i+1) %64) begin
       is_cmt0[i] = ex_flag[i] && (ex_cnt == 0);
       cmt_err    = (ex_cnt == 0) ? (cmt_valid[0] & cmt_instr_err[0] & ex_flag[i]) : 
                                    (cmt_valid[1] & cmt_instr_err[1] & ex_flag[i]);
@@ -408,7 +410,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
       rd_ptr       <= '0;
       amo_state    <= AMO_T_IDLE;  
       rvfi_pkt_cnt <= 0;
-      for (int i = 0; i < 16; i++) instr_trace_fifo [i] <= '0;  // not really necessary ??
+      for (int i = 0; i < 64; i++) instr_trace_fifo [i] <= '0;  // not really necessary ??
     end else begin
       int unsigned nxt_rvfi_pkt_cnt;
 
@@ -417,7 +419,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
       end else if (~issue_cmplx & issued_instr[0].rvfi.valid & issued_instr[1].rvfi.valid) begin
         wr_ptr <= wr_ptr + 2;
         instr_trace_fifo[wr_ptr]        <= issued_instr[0];
-        instr_trace_fifo[(wr_ptr+1)%16] <= issued_instr[1];
+        instr_trace_fifo[(wr_ptr+1)%64] <= issued_instr[1];
       end else if (~issue_cmplx & issued_instr[0].rvfi.valid) begin
         wr_ptr <= wr_ptr + 1;
         instr_trace_fifo[wr_ptr]        <= issued_instr[0];
@@ -429,7 +431,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         rd_ptr <= rd_ptr_nxt;
 
       nxt_rvfi_pkt_cnt = rvfi_pkt_cnt;
-      for (int i = rd_ptr; i != rd_ptr_nxt; i = (i+1) %16) begin
+      for (int i = rd_ptr; i != rd_ptr_nxt; i = (i+1) %64) begin
         if (~instr_trace_fifo[i].is_amo) begin
           instr_trace_t instr_tmp;
           instr_tmp = fill_cmt_info(instr_trace_fifo[i], is_cmt0[i], 1'b0);

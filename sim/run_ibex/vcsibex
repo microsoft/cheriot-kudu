@@ -1,6 +1,49 @@
+#!/usr/local/bin/bash
+#
+VlogDef1="+define+CHERIoT"
+VlogDef2=""
+VlogDef3=""
+VlogDef4=""
+VlogDef5=""
+VlogDef6=""
+FileList="ibexc.vcs.f"
+OutFile="./simv"
+CompDir="simv.daidir"
+RunDII="false"
+
+# Loop over args
+for arg in "$@"; do
+  case "$arg" in
+    -rv32)  
+      VlogDef1="" 
+      OutFile="./simv32"
+      CompDir="simv32.daidir"
+      ;;
+    -riscv_test) VlogDef4="+define+RISCV_TEST_SUITE" ;;
+    -dii)
+      #VlogDef5="+define+DII_SIM -LDFLAGS \"-L. -lsparse_mem\""
+      VlogDef5="+define+DII_SIM"
+      RunDII="true"
+      ;;
+    *)
+      echo "Warning: Unknown option $arg" >&2
+      ;;
+  esac
+done
+
+VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3 $VlogDef4 $VlogDef5 $VlogDef6"
+echo "VlogDefs=$VlogDefs  FileList=$FileList"
+
 export rtlRoot=/home/kunyanliu/riscdev/ibexc_local/rtl
 export primRoot=../../prim
 export dvutilsRoot=../../dv_utils
 export verifRoot=..
 
-vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L +define+CHERIoT -timescale=1ns/1ps -debug_acc+all -f ibexc.vcs.f $*
+rm $CompDir/.vcs.timestamp
+
+#if [[ "$RunDII" == "true" ]]; then
+  #echo "Compling CPP models for DII sim"
+  #g++ -std=c++17 -fPIC -shared  ../tb/sparse_mem.cpp -o libsparse_mem.so
+#fi
+
+vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps -debug_acc+all -o $OutFile $VlogDefs -f $FileList

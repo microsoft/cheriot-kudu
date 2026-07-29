@@ -463,6 +463,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     multdiv32 #(.UseDWMult(UseDWMult))  multdiv32_i (
       .clk_i               (clk_i              ),
       .rst_ni              (rst_ni             ),
+      .flush_i             (flush_i            ),
       .mult_en_i           (md_mult_en         ),
       .div_en_i            (md_div_en          ),
       .operator_i          (md_operator        ),
