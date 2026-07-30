@@ -89,7 +89,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   logic [31:0] md_mult_result, md_div_result;
   logic        md_mult_valid, md_div_valid;
 
-  logic        op_done, op_done_q;
+  logic        op_done;
   logic        ex2wb_valid;
 
   logic        ex2_fwd_ok;
@@ -311,22 +311,21 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   logic        ex2_waw_match;
   logic        ex2_err; 
-  logic        div_valid_q;
+  logic        div_done_q;
   logic [5:0]  ex2_err_type;
 
 
   assign ex2_rdy      = ~ex2_valid | (op_done & wb_rdy);
   assign op_done      = ex2_reg.flags.is_cjalr | (|ex2_reg.cheri_op) | ex2_reg.flags.is_mult | 
-                        (ex2_reg.flags.is_div & div_valid_q) | op_done_q;
+                        (ex2_reg.flags.is_div & div_done_q);
   assign ex2wb_valid  = ex2_valid & op_done;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (~rst_ni) begin
       ex2_valid   <= 1'b0;
       ex2_reg     <= DEF_PL_REG;
-      op_done_q   <= 1'b0;
       ex2_fwd_ok  <= 1'b0;
-      div_valid_q <= 1'b0;
+      div_done_q  <= 1'b0;
     end else begin
       if (flush_i) begin
         ex2_valid  <= 1'b0;
@@ -339,16 +338,15 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
         ex2_fwd_ok <= 1'b0;
       end
 
-      // latch op_done status in case wb is not ready
+      // latch div_valid status in case wb is not ready
+      // also delay md_div_valid for 1 cycle (otherwise div unit won't be reqdy for next instr)
       if (flush_i) 
-        op_done_q <= 1'b0;
+        div_done_q <= 1'b0;
+      else if (md_div_valid) 
+        div_done_q <= 1'b1;
       else if (wb_rdy)
-        op_done_q <= 1'b0;
-      else if (op_done) 
-        op_done_q <= 1'b1;
+        div_done_q <= 1'b0;
 
-      // wait 1 cycle (div FSM to IDLE)
-      div_valid_q <= md_div_valid;
     end
   end
 
