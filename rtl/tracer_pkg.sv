@@ -774,7 +774,7 @@ package tracer_pkg;
       if (rvfi_data.mem_wmask != 0) begin
         tmp65 = rvfi_data.mem_wdata;
         disp_str = {disp_str, $sformatf(" store:0x%08x+0x%09x", tmp65[31:0], tmp65[64:32])};
-      end else begin
+      end else if (rvfi_data.mem_rmask != 0) begin
         tmp65 = rvfi_data.mem_rdata;
         disp_str = {disp_str, $sformatf(" load:0x%08x+0x%09x", tmp65[31:0], tmp65[64:32])};
       end

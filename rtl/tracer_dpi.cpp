@@ -683,7 +683,7 @@ static std::string build_disp_str(const std::string& decode_str, const RvfiData&
     if (d.mem_wmask != 0) {
       oss << " store:0x" << std::setw(8) << std::setfill('0') << reg_lo32(d.mem_wdata_lo)
           << "+0x" << std::setw(9) << std::setfill('0') << d.mem_wdata_hi;
-    } else {
+    } else if (d.mem_rmask != 0) {
       oss << " load:0x" << std::setw(8) << std::setfill('0') << reg_lo32(d.mem_rdata_lo)
           << "+0x" << std::setw(9) << std::setfill('0') << d.mem_rdata_hi;
       //printf("PA = %x, mem_rdata_hi = %x\n", d.mem_addr, d.mem_rdata_hi);
