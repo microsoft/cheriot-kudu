@@ -20,7 +20,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   parameter bit               DataIndTiming     = 1'b0,
   parameter bit               ShadowCSR         = 1'b0,
   parameter bit               ICache            = 1'b0,
-  parameter int unsigned      MHPMCounterNum    = 10,
+  parameter int unsigned      MHPMCounterNum    = 0,
   parameter int unsigned      MHPMCounterWidth  = 40,
   parameter bit               PMPEnable         = 0,
   parameter int unsigned      PMPGranularity    = 0,
@@ -440,6 +440,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       CSR_MHPMEVENT24, CSR_MHPMEVENT25, CSR_MHPMEVENT26, CSR_MHPMEVENT27,
       CSR_MHPMEVENT28, CSR_MHPMEVENT29, CSR_MHPMEVENT30, CSR_MHPMEVENT31: begin
         csr_rdata32 = mhpmevent[mhpmcounter_idx];
+        illegal_csr = mhpmcounter_idx > (MHPMCounterNum + 2);
       end
 
       CSR_MCYCLE,
@@ -453,6 +454,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       CSR_MHPMCOUNTER24, CSR_MHPMCOUNTER25, CSR_MHPMCOUNTER26, CSR_MHPMCOUNTER27,
       CSR_MHPMCOUNTER28, CSR_MHPMCOUNTER29, CSR_MHPMCOUNTER30, CSR_MHPMCOUNTER31: begin
         csr_rdata32 = mhpmcounter[mhpmcounter_idx][31:0];
+        illegal_csr = mhpmcounter_idx > (MHPMCounterNum + 2);
       end
 
       CSR_MCYCLEH,
@@ -466,6 +468,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       CSR_MHPMCOUNTER24H, CSR_MHPMCOUNTER25H, CSR_MHPMCOUNTER26H, CSR_MHPMCOUNTER27H,
       CSR_MHPMCOUNTER28H, CSR_MHPMCOUNTER29H, CSR_MHPMCOUNTER30H, CSR_MHPMCOUNTER31H: begin
         csr_rdata32 = mhpmcounter[mhpmcounter_idx][63:32];
+        illegal_csr = mhpmcounter_idx > (MHPMCounterNum + 2);
       end
 
       // Debug triggers
