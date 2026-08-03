@@ -399,30 +399,105 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       end
 
       // PMP registers
-      CSR_PMPCFG0:   csr_rdata32 = {pmp_cfg_rdata[3],  pmp_cfg_rdata[2],
-                                      pmp_cfg_rdata[1],  pmp_cfg_rdata[0]};
-      CSR_PMPCFG1:   csr_rdata32 = {pmp_cfg_rdata[7],  pmp_cfg_rdata[6],
-                                      pmp_cfg_rdata[5],  pmp_cfg_rdata[4]};
-      CSR_PMPCFG2:   csr_rdata32 = {pmp_cfg_rdata[11], pmp_cfg_rdata[10],
-                                      pmp_cfg_rdata[9],  pmp_cfg_rdata[8]};
-      CSR_PMPCFG3:   csr_rdata32 = {pmp_cfg_rdata[15], pmp_cfg_rdata[14],
-                                      pmp_cfg_rdata[13], pmp_cfg_rdata[12]};
-      CSR_PMPADDR0:  csr_rdata32 = pmp_addr_rdata[0];
-      CSR_PMPADDR1:  csr_rdata32 = pmp_addr_rdata[1];
-      CSR_PMPADDR2:  csr_rdata32 = pmp_addr_rdata[2];
-      CSR_PMPADDR3:  csr_rdata32 = pmp_addr_rdata[3];
-      CSR_PMPADDR4:  csr_rdata32 = pmp_addr_rdata[4];
-      CSR_PMPADDR5:  csr_rdata32 = pmp_addr_rdata[5];
-      CSR_PMPADDR6:  csr_rdata32 = pmp_addr_rdata[6];
-      CSR_PMPADDR7:  csr_rdata32 = pmp_addr_rdata[7];
-      CSR_PMPADDR8:  csr_rdata32 = pmp_addr_rdata[8];
-      CSR_PMPADDR9:  csr_rdata32 = pmp_addr_rdata[9];
-      CSR_PMPADDR10: csr_rdata32 = pmp_addr_rdata[10];
-      CSR_PMPADDR11: csr_rdata32 = pmp_addr_rdata[11];
-      CSR_PMPADDR12: csr_rdata32 = pmp_addr_rdata[12];
-      CSR_PMPADDR13: csr_rdata32 = pmp_addr_rdata[13];
-      CSR_PMPADDR14: csr_rdata32 = pmp_addr_rdata[14];
-      CSR_PMPADDR15: csr_rdata32 = pmp_addr_rdata[15];
+      CSR_PMPCFG0: begin
+        csr_rdata32 = {pmp_cfg_rdata[3], pmp_cfg_rdata[2], pmp_cfg_rdata[1], pmp_cfg_rdata[0]};
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPCFG1: begin
+        csr_rdata32 = {pmp_cfg_rdata[7], pmp_cfg_rdata[6], pmp_cfg_rdata[5], pmp_cfg_rdata[4]};
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPCFG2: begin
+        csr_rdata32 = {pmp_cfg_rdata[11], pmp_cfg_rdata[10], pmp_cfg_rdata[9],  pmp_cfg_rdata[8]};
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPCFG3: begin
+        csr_rdata32 = {pmp_cfg_rdata[15], pmp_cfg_rdata[14], pmp_cfg_rdata[13], pmp_cfg_rdata[12]};
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR0: begin
+        csr_rdata32 = pmp_addr_rdata[0];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR1: begin
+        csr_rdata32 = pmp_addr_rdata[1];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR2: begin
+        csr_rdata32 = pmp_addr_rdata[2];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR3: begin
+        csr_rdata32 = pmp_addr_rdata[3];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR4: begin
+        csr_rdata32 = pmp_addr_rdata[4];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR5: begin
+        csr_rdata32 = pmp_addr_rdata[5];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR6: begin
+        csr_rdata32 = pmp_addr_rdata[6];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR7: begin
+        csr_rdata32 = pmp_addr_rdata[7];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR8: begin
+        csr_rdata32 = pmp_addr_rdata[8];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR9: begin
+        csr_rdata32 = pmp_addr_rdata[9];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR10: begin
+        csr_rdata32 = pmp_addr_rdata[10];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR11: begin
+        csr_rdata32 = pmp_addr_rdata[11];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR12: begin
+        csr_rdata32 = pmp_addr_rdata[12];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR13: begin
+        csr_rdata32 = pmp_addr_rdata[13];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR14: begin
+        csr_rdata32 = pmp_addr_rdata[14];
+        illegal_csr = ~PMPEnable;
+      end
+
+      CSR_PMPADDR15: begin
+        csr_rdata32 = pmp_addr_rdata[15];
+        illegal_csr = ~PMPEnable;
+      end
 
       CSR_DCSR: begin
         csr_rdata32 = dcsr_q;
