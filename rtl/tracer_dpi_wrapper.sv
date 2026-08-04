@@ -6,6 +6,8 @@
 // only scalar fields; capability payloads are passed as packed bit vectors so
 // the C++ side can reproduce cheri_pkg::trace_reg_fmt/trace_mem_fmt exactly.
 //
+localparam int unsigned metaHi = (MemW == 32) ? 0 : 64; 
+localparam int unsigned metaLo = (MemW == 32) ? 0 : 32; 
 
 import "DPI-C" function string decode_rvfi_instr(
     input int unsigned     insn,
@@ -15,23 +17,23 @@ import "DPI-C" function string decode_rvfi_instr(
     input byte unsigned    rs2_addr,
     input byte unsigned    rs3_addr,
     input int  unsigned    rs1_rdata_lo,
-    input int unsigned       rs2_rdata_lo,
-    input int unsigned       rs3_rdata_lo,
-    input longint unsigned       rs1_rdata_hi,
-    input longint unsigned       rs2_rdata_hi,
-    input longint unsigned       rs3_rdata_hi,
+    input int unsigned     rs2_rdata_lo,
+    input int unsigned     rs3_rdata_lo,
+    input longint unsigned rs1_rdata_hi,
+    input longint unsigned rs2_rdata_hi,
+    input longint unsigned rs3_rdata_hi,
     input byte unsigned    rd_addr,
-    input int unsigned       rd_wdata_lo,
-    input longint unsigned       rd_wdata_hi,
+    input int unsigned     rd_wdata_lo,
+    input longint unsigned rd_wdata_hi,
     input int unsigned     pc_rdata,
     input int unsigned     pc_wdata,
     input int unsigned     mem_addr,
     input byte unsigned    mem_rmask,
     input byte unsigned    mem_wmask,
-    input int unsigned       mem_rdata_lo,
-    input int unsigned       mem_wdata_lo,
-    input longint unsigned       mem_rdata_hi,
-    input longint unsigned       mem_wdata_hi,
+    input int unsigned     mem_rdata_lo,
+    input int unsigned     mem_wdata_lo,
+    input longint unsigned mem_rdata_hi,
+    input longint unsigned mem_wdata_hi,
     input byte unsigned    cheri_pmode
 );
 
@@ -40,27 +42,27 @@ function automatic string decode_rvfi_instr_dpi(
     input rvfi_t rvfi_data,
     input logic  cheri_pmode
 );
-  int unsigned rs1_rdata_lo;
-  int unsigned rs2_rdata_lo;
-  int unsigned rs3_rdata_lo;
+  int unsigned     rs1_rdata_lo;
+  int unsigned     rs2_rdata_lo;
+  int unsigned     rs3_rdata_lo;
   longint unsigned rs1_rdata_hi;
   longint unsigned rs2_rdata_hi;
   longint unsigned rs3_rdata_hi;
 
-  int unsigned rd_wdata_lo;
+  int unsigned     rd_wdata_lo;
   longint unsigned rd_wdata_hi;
 
-  int unsigned mem_rdata_lo;
-  int unsigned mem_wdata_lo;
+  int unsigned     mem_rdata_lo;
+  int unsigned     mem_wdata_lo;
   longint unsigned mem_rdata_hi;
   longint unsigned mem_wdata_hi;
 
-  rs1_rdata_hi = rvfi_data.rs1_rdata[64:32];
-  rs2_rdata_hi = rvfi_data.rs2_rdata[64:32];
-  rs3_rdata_hi = rvfi_data.rs3_rdata[64:32];
-  rd_wdata_hi  = rvfi_data.rd_wdata[64:32];
-  mem_rdata_hi = rvfi_data.mem_rdata[64:32];  // rvfi_t defines mem_rdata as REG_W
-  mem_wdata_hi = rvfi_data.mem_wdata[64:32];
+  rs1_rdata_hi = (MemW == 32) ? 0 : rvfi_data.rs1_rdata[metaHi:metaLo];
+  rs2_rdata_hi = (MemW == 32) ? 0 : rvfi_data.rs2_rdata[metaHi:metaLo];
+  rs3_rdata_hi = (MemW == 32) ? 0 : rvfi_data.rs3_rdata[metaHi:metaLo];
+  rd_wdata_hi  = (MemW == 32) ? 0 : rvfi_data.rd_wdata[metaHi:metaLo];
+  mem_rdata_hi = (MemW == 32) ? 0 : rvfi_data.mem_rdata[metaHi:metaLo];  // rvfi_t defines mem_rdata as REG_W
+  mem_wdata_hi = (MemW == 32) ? 0 : rvfi_data.mem_wdata[metaHi:metaLo];
   //$display("mem_rdata=%x, mem_rdata_hi = %x", rvfi_data.mem_rdata, mem_rdata_hi);
 
   rs1_rdata_lo = rvfi_data.rs1_rdata[31:0];  

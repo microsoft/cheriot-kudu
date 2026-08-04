@@ -207,7 +207,9 @@ module tb_kudu_top;
     while (1) begin
       @(posedge rst_n);    // handle multipe-reset case
 
-      force dut.regfile_i.rf_reg_q = {15{TM_ROOT_RCAP}};
+      `ifdef CHERIoT
+         force dut.regfile_i.rf_reg_q = {15{TM_ROOT_RCAP}};
+      `endif
             
       // force dut.cs_registers_i.mepc_q[31:0] = 32'h8000_0000;
 
