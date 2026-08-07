@@ -689,7 +689,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .cheri_fatal_err_o            ()
   );
 
-  cmplx_unit # (.RV32A(CFG.RV32A)) comlx_unit_i (
+  cmplx_unit # (.CHERIoTEn(CHERIoTEn), .RV32A(CFG.RV32A)) comlx_unit_i (
     .clk_i                 (clk_i              ),    
     .rst_ni                (rst_ni             ),
     .flush_i               (cmt_flush        ),
@@ -698,6 +698,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .irb_dec_i             (irb_dec            ),
     .ira_full_data2_i      (ira_full_data2_fwd ),
     .irb_full_data2_i      (irb_full_data2_fwd ),
+    .pcc_cap_i             (ex1_pcc_cap        ),
     .cmplx_instr_start_i   (cmplx_instr_start  ), 
     .cmplx_instr_done_o    (cmplx_instr_done   ),
     .cmplx_sbd_wr_o        (cmplx_sbd_wr       ),

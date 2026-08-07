@@ -7,6 +7,7 @@
 //
 //  ir0 is always the 1st (earlier) instruction. Fifo logic handles switching.
 module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
+  parameter bit          CHERIoTEn  = 1'b1,
   parameter bit          RV32A      = 1'b1
 ) (
   input  logic             clk_i,
@@ -19,6 +20,7 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   input  ir_dec_t          irb_dec_i,
   input  full_data2_t      ira_full_data2_i,
   input  full_data2_t      irb_full_data2_i,
+  input  pcc_cap_t         pcc_cap_i,
 
   input  logic             cmplx_instr_start_i, 
   output logic             cmplx_instr_done_o, 
@@ -46,6 +48,7 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   full_data2_t ir_full_data2_q;
   ir_dec_t     ir_dec_q;
   full_cap_t   cs1_fcap, cs2_fcap;
+  reg_cap_t    pcc_rcap_q;
 
   logic        instr_is_amo;
   logic [31:0] amo_rdata_q, amo_wdata;
@@ -70,8 +73,6 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
 
   assign cmplx_sbd_wdata_o = '{5'h1 << 3, ir_dec_q.pc};
   assign cmplx_sbd_wr_o    = cmplx_lsu_req_valid_o & lspl_rdy_i;
-
-  assign cmplx_instr_pc_o  = ir_dec_q.pc;
 
   always_comb begin 
     cmplx_fsm_ns   = cmplx_fsm_cs;
@@ -157,7 +158,7 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
     cmplx_lsu_req_info_o = NULL_LSU_REQ_INFO;
     cmplx_lsu_req_info_o.is_load   = ~(cmplx_fsm_cs == AMO_WRITE);
     cmplx_lsu_req_info_o.rf_we     = ~(cmplx_fsm_cs == AMO_WRITE);
-    cmplx_lsu_req_info_o.pc        = ir_dec_q.pc;
+    cmplx_lsu_req_info_o.pc        = CHERIoTEn ? pcc_rcap_q : ir_dec_q.pc;
     cmplx_lsu_req_info_o.data_type = 2'b00;
     cmplx_lsu_req_info_o.amo_flag  = ~(cmplx_fsm_cs == AMO_WRITE) ? 4'b0100 : 4'b1000;
     cmplx_lsu_req_info_o.addr      = ir_full_data2_q.d0[31:0];   // rs1
@@ -175,12 +176,14 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
       ir_full_data2_q    <= full_data2_t'(0);
       ir_dec_q           <= ir_dec_t'(0);
       amo_rdata_q        <= 32'h0;
+      pcc_rcap_q         <= '0;
     end else begin
       cmplx_fsm_cs   <= cmplx_fsm_ns;
 
       if ((cmplx_fsm_cs == IDLE) && ~cmplx_instr_start_i) begin
         ir_dec_q        <= sel_ira_i ? ira_dec_i : irb_dec_i;
         ir_full_data2_q <= sel_ira_i ? ira_full_data2_i : irb_full_data2_i;
+        pcc_rcap_q      <= pcc2regcap(pcc_cap_i, (sel_ira_i ? ira_dec_i.pc : irb_dec_i.pc) , 1'b0);
       end
 
       if ((cmplx_fsm_cs == AMO_WAIT_RD) && lspl_commit) begin
