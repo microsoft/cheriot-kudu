@@ -237,6 +237,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         result.rvfi.mem_rdata  = reg_wdata;
         result.rvfi.rd_wdata   = reg_wdata;
       end else if (amo_state == 1) begin
+        result.rvfi.trap       = instr_in.rvfi.trap | `TOP_PATH.lspl_output.err;
         result.rvfi.mem_wdata  = mem_wdata;    // accumulate from amo_state_0
         result.rvfi.mem_wmask  = 4'b1111;
       end  
@@ -340,7 +341,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   logic [1:0]      cmt_instr_err;
   logic [4:0]      cmt_pl0, cmt_pl1;
   logic [31:0]     cmt_pc0, cmt_pc1;
-  logic            issue_cmplx;
+  logic            issue_cmplx, lspl_err;
   amo_state_e      amo_state;
 
   logic [63:0]     ex_flag, is_cmt0;
@@ -358,6 +359,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   assign cmt_valid[1] = `TOP_PATH.sbdfifo_rd_valid[1] & `TOP_PATH.sbdfifo_rd_rdy[1] & ~cmt_instr_err[0];
 
   assign issue_cmplx = `ISSUER_PATH.cmplx_instr_start_o;
+  assign lspl_err    = `TOP_PATH.lspl_output.err;
 
   assign cmt_flush   = `TOP_PATH.cmt_flush;
 
@@ -412,7 +414,8 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
       rvfi_pkt_cnt <= 0;
       for (int i = 0; i < 64; i++) instr_trace_fifo [i] <= '0;  // not really necessary ??
     end else begin
-      int unsigned nxt_rvfi_pkt_cnt;
+      int unsigned  nxt_rvfi_pkt_cnt;
+      instr_trace_t instr_tmp;
 
       if (|cmt_instr_err) begin
         wr_ptr <= 0;
@@ -446,10 +449,17 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         amo_state   <= AMO_T_WAIT0;
         amo_instr_q <=  issued_instr[0];
       end else if ((amo_state == AMO_T_WAIT0) && cmt_valid[0]) begin
-        amo_state   <= AMO_T_WAIT1;
-        amo_instr_q <= fill_cmt_info(amo_instr_q, 1'b1, 1'b0);
+        if (lspl_err) begin
+          amo_state   <= AMO_T_IDLE;
+          instr_tmp    = fill_cmt_info(amo_instr_q, 1'b1, 1'b0);
+          print_line (instr_tmp);
+          if (RvfiDumpEn) print_rvfi_packet(instr_tmp.rvfi, nxt_rvfi_pkt_cnt);
+          nxt_rvfi_pkt_cnt += 1;
+        end else begin
+          amo_state   <= AMO_T_WAIT1;
+          amo_instr_q <= fill_cmt_info(amo_instr_q, 1'b1, 1'b0);
+        end
       end else if ((amo_state == AMO_T_WAIT1) && cmt_valid[0]) begin
-        instr_trace_t instr_tmp;
         amo_state   <= AMO_T_IDLE;
         instr_tmp    = fill_cmt_info(amo_instr_q, 1'b1, 1'b1);
         print_line (instr_tmp);

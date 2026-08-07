@@ -49,6 +49,7 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
 
   logic        instr_is_amo;
   logic [31:0] amo_rdata_q, amo_wdata;
+  logic        lspl_commit;
 
 
   assign cs1_fcap     = full_cap_t'(ir_full_data2_q.d0);
@@ -56,8 +57,13 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
 
   assign instr_is_amo = (ir_dec_q.insn[6:0] == OPCODE_AMO);  // LR/SC are not considered cmplx
 
-  assign cmplx_instr_done_o   = ((cmplx_fsm_cs == AMO_WAIT_RD) & lspl_valid_i & lspl_output_i.err) ||
-                                ((cmplx_fsm_cs == AMO_WAIT_WR) & lspl_valid_i);
+  // lspl operation done 
+  // (actually ok to just use lspl_valid_i since CMPLX instrucitons is treated as special case
+  //  and issued serially, but this is cleaner)
+  assign lspl_commit  = lspl_valid_i & lspl_rdy_i;
+
+  assign cmplx_instr_done_o   = ((cmplx_fsm_cs == AMO_WAIT_RD) & lspl_commit & lspl_output_i.err) ||
+                                ((cmplx_fsm_cs == AMO_WAIT_WR) & lspl_commit);
 
   assign cmplx_lsu_req_valid_o = ((cmplx_fsm_cs == IDLE) & cmplx_instr_start_i & instr_is_amo) ||
                                  (cmplx_fsm_cs == AMO_READ) || (cmplx_fsm_cs == AMO_WRITE);
@@ -85,9 +91,9 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
             cmplx_fsm_ns = AMO_WAIT_RD;
         end
         AMO_WAIT_RD: begin
-          if (lspl_valid_i && lspl_output_i.err)
+          if (lspl_commit && lspl_output_i.err)
             cmplx_fsm_ns = IDLE;
-          else if (lspl_valid_i)
+          else if (lspl_commit)
             cmplx_fsm_ns = AMO_WRITE;
         end
         AMO_WRITE: begin
@@ -95,7 +101,7 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
             cmplx_fsm_ns = AMO_WAIT_WR;    
         end
         AMO_WAIT_WR: begin
-          if (lspl_valid_i) 
+          if (lspl_commit) 
             cmplx_fsm_ns = IDLE;    
           end
         default: ;
@@ -177,7 +183,7 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
         ir_full_data2_q <= sel_ira_i ? ira_full_data2_i : irb_full_data2_i;
       end
 
-      if ((cmplx_fsm_cs == AMO_WAIT_RD) && lspl_valid_i) begin
+      if ((cmplx_fsm_cs == AMO_WAIT_RD) && lspl_commit) begin
         amo_rdata_q  <= lspl_output_i.wdata[31:0];
       end 
 
