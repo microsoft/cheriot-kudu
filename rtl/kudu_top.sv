@@ -176,7 +176,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   logic [31:0]     cur_ra32;
   logic            cheri_tsafe_en;
 
-  assign cheri_tsafe_en = 1'b1;   // QQQ for now - tie to an input or CSR?
+  assign cheri_tsafe_en = CHERIoTEn;   // QQQ for now - tie to an input or CSR?
 
   regfile #(.NRegs(32)) regfile_i (
      // Clock and Reset
@@ -308,7 +308,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .rst_ni                    (rst_ni                  ),
     .boot_addr_i               (boot_addr_i             ),
     .cheri_pmode_i             (cheri_pmode_i           ),
-    .tsafe_en_i                (cheri_tsafe_en    ),
+    .tsafe_en_i                (cheri_tsafe_en          ),
     .ira_dec_i                 (ira_dec                 ),
     .irb_dec_i                 (irb_dec                 ),      
     .ira_is0_i                 (ira_is0                 ),
@@ -718,9 +718,11 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   `endif
 
   tracer  tracer_i (
-    .clk_i         (clk_i         ),
-    .rst_ni        (rst_ni        ),
-    .cheri_pmode_i (cheri_pmode_i )
+    .clk_i         (clk_i          ),
+    .rst_ni        (rst_ni         ),
+    .cheri_pmode_i (cheri_pmode_i  ),
+    // .tsafe_en_i    (1'b0 )
+    .tsafe_en_i    (cheri_tsafe_en )
   );
 `endif
 

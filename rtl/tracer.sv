@@ -9,7 +9,8 @@
 module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   input logic        clk_i,
   input logic        rst_ni,
-  input logic        cheri_pmode_i
+  input logic        cheri_pmode_i,
+  input logic        tsafe_en_i
 );
 
   // synthesis translate_off
@@ -330,21 +331,26 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
 
   // upsize this FIFO to 64 (originally we have 16 but it could overrun if an instruction takes
   // too long to run, e.g., div/rem)
-  instr_trace_t instr_trace_fifo[64];
-  logic [5:0]   wr_ptr;
-  logic [5:0]   rd_ptr, rd_ptr_nxt;
+  instr_trace_t  instr_trace_fifo[64];
+  logic [5:0]    wr_ptr, rd_ptr, rd_ptr_nxt;
 
   instr_trace_t [1:0] issued_instr;
   instr_trace_t       amo_instr_q;
   
-  logic [1:0]      cmt_valid;
-  logic [1:0]      cmt_instr_err;
-  logic [4:0]      cmt_pl0, cmt_pl1;
-  logic [31:0]     cmt_pc0, cmt_pc1;
-  logic            issue_cmplx, lspl_err;
-  amo_state_e      amo_state;
+  logic [1:0]    cmt_valid;
+  logic [1:0]    cmt_instr_err;
+  logic [4:0]    cmt_pl0, cmt_pl1;
+  logic [31:0]   cmt_pc0, cmt_pc1;
+  logic          issue_cmplx, lspl_err;
+  amo_state_e    amo_state;
 
-  logic [63:0]     ex_flag, is_cmt0;
+  logic          trvk_en, trvk_clrtag;
+
+  logic [63:0]   ex_flag, is_cmt0;
+
+  instr_trace_t  final_fifo[64], final_fifo_wdata[64];
+  logic [5:0]    final_wr_ptr, final_rd_ptr, final_wr_ptr_nxt, final_rd_ptr_nxt;
+  logic [63:0]   final_fifo_we;
 
   assign cmt_pl0     = `TOP_PATH.sbdfifo_rdata0.pl;
   assign cmt_pl1     = `TOP_PATH.sbdfifo_rdata1.pl;
@@ -362,6 +368,8 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   assign lspl_err    = `TOP_PATH.lspl_output.err;
 
   assign cmt_flush   = `TOP_PATH.cmt_flush;
+  assign trvk_en     = `TOP_PATH.trvk_en;
+  assign trvk_clrtag = `TOP_PATH.trvk_clrtag;
 
   // for some reason in VCS the following concurrent assignments doesn't work, have to use always_comb
   // assign  issued_instr[0] =  get_trace_issued(0);
@@ -385,7 +393,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     end
 
     // keep reading the fifo. if a commit error found, stop there
-    // otherwise keepgoing until stopped by a uncommited EX instruction
+    // otherwise keep going until stopped by a uncommited EX instruction
     rd_flag   = 1'b1;
     cmt_err_q = 1'b0;
     for (int i = rd_ptr; i != wr_ptr; i = (i+1) %64) begin
@@ -412,10 +420,13 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
       rd_ptr       <= '0;
       amo_state    <= AMO_T_IDLE;  
       rvfi_pkt_cnt <= 0;
-      for (int i = 0; i < 64; i++) instr_trace_fifo [i] <= '0;  // not really necessary ??
+      final_wr_ptr <= '0;
+      final_rd_ptr <= '0;
+      for (int i = 0; i < 64; i++) instr_trace_fifo [i] <= '0; 
+      for (int i = 0; i < 64; i++) final_fifo [i] <= '0; 
     end else begin
       int unsigned  nxt_rvfi_pkt_cnt;
-      instr_trace_t instr_tmp;
+      instr_trace_t instr_tmp, instr_tmp2;
 
       if (|cmt_instr_err) begin
         wr_ptr <= 0;
@@ -434,20 +445,61 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         rd_ptr <= rd_ptr_nxt;
 
       nxt_rvfi_pkt_cnt = rvfi_pkt_cnt;
+      final_wr_ptr_nxt = final_wr_ptr;
+      final_rd_ptr_nxt = final_rd_ptr;
+       
+      for (int i = 0; i < 64; i++) begin
+        final_fifo_wdata[i] = '0;      
+        final_fifo_we[i]    = 1'b0;
+      end
+
       for (int i = rd_ptr; i != rd_ptr_nxt; i = (i+1) %64) begin
         if (~instr_trace_fifo[i].is_amo) begin
-          instr_trace_t instr_tmp;
           instr_tmp = fill_cmt_info(instr_trace_fifo[i], is_cmt0[i], 1'b0);
-          print_line (instr_tmp);
-          if (RvfiDumpEn) print_rvfi_packet(instr_tmp.rvfi, nxt_rvfi_pkt_cnt);
-          nxt_rvfi_pkt_cnt += 1;
+          if (~tsafe_en_i) begin     // print out trace info now
+            print_line (instr_tmp);
+            if (RvfiDumpEn) print_rvfi_packet(instr_tmp.rvfi, nxt_rvfi_pkt_cnt);
+            nxt_rvfi_pkt_cnt += 1;
+          end else begin             // write to final fifo to wait for CLC/TRVK resolution
+            final_fifo_wdata[final_wr_ptr_nxt] = instr_tmp;      
+            final_fifo_we[final_wr_ptr_nxt]    = 1'b1;
+            final_wr_ptr_nxt += 1;
+          end 
         end
       end
 
+      // when tsafe_en = 1, read the final_fifo and print out trace info
+      if (tsafe_en_i) begin
+        logic final_stop_cond, is_clc, trvk_consumed;
+
+        final_stop_cond = 1'b0;
+        trvk_consumed   = 1'b0;
+
+        for (int i = final_rd_ptr; i != final_wr_ptr; i = (i+1) %64) begin
+          if (!final_stop_cond) begin
+            instr_tmp2 = final_fifo[i];  
+            is_clc     = instr_tmp2.ir_dec.cheri_op.clc;
+
+            if (is_clc && (~trvk_en || trvk_consumed)) begin
+              final_stop_cond = 1'b1;
+            end else begin
+              if (is_clc && trvk_en) begin
+                instr_tmp2.rvfi.rd_wdata[MemW-1] &= ~trvk_clrtag;
+                trvk_consumed = 1'b1; 
+              end  
+              print_line (instr_tmp2);
+              if (RvfiDumpEn) print_rvfi_packet(instr_tmp2.rvfi, nxt_rvfi_pkt_cnt);
+              nxt_rvfi_pkt_cnt += 1;
+              final_rd_ptr_nxt += 1;
+            end
+          end
+        end 
+      end
+      
       if (issue_cmplx) begin
         // complex case is serialized and handled separatedly
         amo_state   <= AMO_T_WAIT0;
-        amo_instr_q <=  issued_instr[0];
+        amo_instr_q <= issued_instr[0];
       end else if ((amo_state == AMO_T_WAIT0) && cmt_valid[0]) begin
         if (lspl_err) begin
           amo_state   <= AMO_T_IDLE;
@@ -467,7 +519,13 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         nxt_rvfi_pkt_cnt += 1;
       end
 
+      for (int i = 0; i < 64; i++) begin
+        final_fifo[i] <= final_fifo_we[i] ? final_fifo_wdata[i] : final_fifo[i];
+      end      
+
       rvfi_pkt_cnt <= nxt_rvfi_pkt_cnt;
+      final_wr_ptr <= final_wr_ptr_nxt;
+      final_rd_ptr <= final_rd_ptr_nxt;
     end
   end
 
