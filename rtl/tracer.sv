@@ -470,20 +470,20 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
 
       // when tsafe_en = 1, read the final_fifo and print out trace info
       if (tsafe_en_i) begin
-        logic final_stop_cond, is_clc, trvk_consumed;
+        logic final_stop_cond, is_good_clc, trvk_consumed;
 
         final_stop_cond = 1'b0;
         trvk_consumed   = 1'b0;
 
         for (int i = final_rd_ptr; i != final_wr_ptr; i = (i+1) %64) begin
           if (!final_stop_cond) begin
-            instr_tmp2 = final_fifo[i];  
-            is_clc     = instr_tmp2.ir_dec.cheri_op.clc;
+            instr_tmp2  = final_fifo[i];  
+            is_good_clc = instr_tmp2.ir_dec.cheri_op.clc & ~instr_tmp2.rvfi.trap;
 
-            if (is_clc && (~trvk_en || trvk_consumed)) begin
+            if (is_good_clc && (~trvk_en || trvk_consumed)) begin
               final_stop_cond = 1'b1;
             end else begin
-              if (is_clc && trvk_en) begin
+              if (is_good_clc && trvk_en) begin
                 instr_tmp2.rvfi.rd_wdata[MemW-1] &= ~trvk_clrtag;
                 trvk_consumed = 1'b1; 
               end  
