@@ -196,8 +196,6 @@ module data_mem_model import kudu_dv_pkg::*; # (
     assign mem_err     = 1'b0;
     assign mem_sc_resp = 1'b1;
 
-    // QQQ let's model tsmap later
-    assign tsmap_rdata = 32'h0;
 
     assign debug_req = 1'b0;
 
@@ -208,14 +206,32 @@ module data_mem_model import kudu_dv_pkg::*; # (
         if (mem_cs & ~mem_we) begin // reads
           logic [64:0] rdata_tmp;
           rdata_tmp = read_mem_dpi({mem_addr32[29:1], 3'b000});
+          // $display("---------read_mem_dpi: %x, %x", {mem_addr32[29:1], 3'b000}, rdata_tmp);
           mem_rdata <= mem_is_cap ? rdata_tmp :
                        mem_addr32[0] ? {33'h0, rdata_tmp[63:32]} : 
                        {33'h0, rdata_tmp[31:0]};
         end else if (mem_cs & mem_we) begin // writes
           write_mem_dpi({mem_addr32, 2'b00}, mem_wdata, mem_is_cap, mem_be);
+          // $display("=========write_mem_dpi: %x, %x, %x, %x",  {mem_addr32[29:1], 3'b000}, mem_wdata, mem_is_cap, mem_be);
         end
       end
     end
+
+    always @(posedge clk, negedge rst_n) begin
+      if (~rst_n) begin
+        tsmap_rdata <= 32'h0;
+      end else begin
+        if (tsmap_cs) begin
+          logic [64:0] rdata_tmp;
+          logic [31:0] addr_tmp;
+          addr_tmp = {tsmap_addr[TSRAM_AW-1:1], 3'b000 } + 32'h8300_0000;
+          rdata_tmp = read_mem_dpi(addr_tmp);             
+          tsmap_rdata <= tsmap_addr[0] ? rdata_tmp[63:32] : rdata_tmp[31:0];
+        end else 
+          tsmap_rdata <= 32'h0;
+      end
+    end
+
 
   end else begin : g_data_rw
     //

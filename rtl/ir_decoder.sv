@@ -102,7 +102,11 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   assign ir_dec_o.is_csr    = is_csr;
   assign ir_dec_o.sysctl    = sysctl;
   assign ir_dec_o.is_cmplx  = amo_insn; 
-  assign ir_dec_o.is_cheri  = (opcode == OPCODE_JAL) || (opcode == OPCODE_JALR) || (|cheri_op);
+
+  // is_cheri is used by the issuer to determine whether an instruction should be stalled by
+  // cheri_trsv_st (use the source registers as a capability, not just integer)
+  assign ir_dec_o.is_cheri  = (opcode == OPCODE_JAL)  || (opcode == OPCODE_JALR) ||
+                              (opcode == OPCODE_LOAD) || (opcode == OPCODE_STORE) ||  (|cheri_op);
   assign ir_dec_o.cheri_op  = cheri_op;
   assign ir_dec_o.is_brkpt  = brkpt_match_i; 
 
