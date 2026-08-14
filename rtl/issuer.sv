@@ -115,6 +115,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   // CHERIoT Revocation interface
   input  logic             trvk_en_i,
   input  logic [4:0]       trvk_addr_i,
+  input  logic             trvk_clrtag_i,
   input  logic             trvk_outstanding_i,
 
   // cmplx unit interface
@@ -123,6 +124,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   input  sbd_fifo_t        cmplx_sbd_wdata_i,
   output logic             cmplx_instr_start_o
 );
+
+  localparam int unsigned TAG_BIT = CHERIoTEn ? REG_TAG : 0;
 
   //
   // Functions
@@ -190,10 +193,23 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   endfunction
 
   function automatic op_data2_t get_fwd_rdata2 (rf_raddr2_t rf_raddr2, op_data2_t op_rf_rdata2,
-                                                pl_fwd_t fwd_info[4]);
-    op_data2_t result;
-    result.d0 = fwd_lookup(rf_raddr2.a0, op_rf_rdata2.d0, fwd_info);
-    result.d1 = fwd_lookup(rf_raddr2.a1, op_rf_rdata2.d1, fwd_info);
+                                                pl_fwd_t fwd_info[4], logic trvk_en_i, 
+                                                logic[4:0]  trvk_addr_i, logic trvk_clrtag_i);
+    op_data2_t tmp1, tmp2, result;
+
+    tmp1.d0 = fwd_lookup(rf_raddr2.a0, op_rf_rdata2.d0, fwd_info);
+    tmp1.d1 = fwd_lookup(rf_raddr2.a1, op_rf_rdata2.d1, fwd_info);
+
+    // treat trvk tag clearing as a forwarding and mux it in
+    tmp2 = '0;
+
+    if (CHERIoTEn) begin
+      tmp2.d0[TAG_BIT] = trvk_en_i & (trvk_addr_i == rf_raddr2.a0) & trvk_clrtag_i;
+      tmp2.d1[TAG_BIT] = trvk_en_i & (trvk_addr_i == rf_raddr2.a1) & trvk_clrtag_i;
+    end
+
+    result.d0 = tmp1.d0 & (~tmp2.d0);
+    result.d1 = tmp1.d1 & (~tmp2.d1);
 
     return result;
   endfunction 
@@ -354,8 +370,10 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign fwd_info[2] = lspl_fwd_info_i;
   assign fwd_info[3] = multpl_fwd_info_i;
 
-  assign ira_op_data2_fwd = get_fwd_rdata2 (ira_rf_raddr2, ira_op_rdata2_i, fwd_info);
-  assign irb_op_data2_fwd = get_fwd_rdata2 (irb_rf_raddr2, irb_op_rdata2_i, fwd_info);
+  assign ira_op_data2_fwd = get_fwd_rdata2 (ira_rf_raddr2, ira_op_rdata2_i, fwd_info, 
+                                            trvk_en_i, trvk_addr_i, trvk_clrtag_i);
+  assign irb_op_data2_fwd = get_fwd_rdata2 (irb_rf_raddr2, irb_op_rdata2_i, fwd_info,
+                                            trvk_en_i, trvk_addr_i, trvk_clrtag_i);
 
   if (CHERIoTEn) begin
     assign ira_full_data2_fwd_o.d0 = op2fullcap(ira_op_data2_fwd.d0);
@@ -447,8 +465,10 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   end
 
   if (CHERIoTEn & LoadFiltEn) begin : gen_cheri_trsv
+    logic [31:0] trvk_fwd_mask;
+
     // cheri load-filter register reservation, both WaW and RaW
-    assign ir0_cheri_trsv_st  = {reg_cheri_trsv_q, 1'b0};
+    assign ir0_cheri_trsv_st  = {reg_cheri_trsv_q, 1'b0} & (~trvk_fwd_mask);
     assign ir1_cheri_trsv_st  = ir0_cheri_trsv_st | ir0_reg_wr_req; 
 
     assign ir_cheri_hazard[0] = cheri_pmode & ir0_dec.is_cheri & 
@@ -472,6 +492,11 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         end
       end  // always_ff
     end
+
+    for (genvar i = 0; i < 32; i++) begin : gen_trvk_fwd_mask
+      assign trvk_fwd_mask[i] = trvk_en_i && (trvk_addr_i == i);
+    end
+
   end else begin : gen_no_cheri_trsv
     assign reg_cheri_trsv_q  = 31'h0;
     assign ir0_cheri_trsv_st = 32'h0;

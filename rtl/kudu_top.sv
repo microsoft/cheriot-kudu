@@ -379,6 +379,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .debug_csr_save_o          (debug_csr_save          ),
     .trvk_en_i                 (trvk_en                 ), 
     .trvk_addr_i               (trvk_addr               ),
+    .trvk_clrtag_i             (trvk_clrtag             ), 
     .trvk_outstanding_i        (trvk_outstanding        ),
     .cmplx_instr_done_i        (cmplx_instr_done        ),
     .cmplx_sbd_wr_i            (cmplx_sbd_wr            ),

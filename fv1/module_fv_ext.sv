@@ -635,39 +635,8 @@ module prefetch_fv_ext import super_pkg::*; (
   AssertFetchInstr0Data16:  assert property (@(posedge clk_i) 
     ( (valid_o[0] && (exp_insn0[1:0] != 2'b11)) |-> (instr0_o.insn[15:0] == exp_insn0[15:0])));
 
-  AssertFetchInstr0Data32:  assert property 
-  //
-  // check if the top/base_cor bits in the forwarded op_cap are always consistent with
-  // its reg_cap fields
-  //
-
-  function automatic logic check_fwd_op (op_cap_t in_ocap);
-    logic result;
-    op_cap_t tcap;
-
-    if (in_ocap.valid) begin 
-      tcap = reg2opcap(in_ocap[RegW-1:0]);
-      result = (in_ocap == tcap);
-    end else begin
-      result = 1'b1;    
-    end
-
-    return result;
-  endfunction
-
-  full_cap_t ref_cs1_fcap, ref_cs2_fcap;
-  assign ref_cs1_fcap = op2fullcap(reg2opcap((full_data2_i.d0[RegW-1:0])));
-  assign ref_cs2_fcap = op2fullcap(reg2opcap((full_data2_i.d1[RegW-1:0])));
-
-
-  AssumeCS1CapOK: assume property (ref_cs1_fcap.valid |-> (ref_cs1_fcap == full_data2_i.d0));
-  AssumeCS2CapOK: assume property (ref_cs2_fcap.valid |-> (ref_cs2_fcap == full_data2_i.d1));
-
-  AssertOpRegsOkALU0: assert property (@(posedge clk_i) 
-    (fwd_info_o.valid[1] |-> check_fwd_op(fwd_info_o.data1)) );
-
-(@(posedge clk_i) 
-    ( (valid_o[0] && (exp_insn0[1:0] == 2'b11)) |-> (instr0_o.insn == exp_insn0)));
+  AssertFetchInstr0Data32:  assert property (@(posedge clk_i) 
+    ( (valid_o[0] && (exp_insn0[1:0] == 2'b11)) |-> (instr0_o.insn == exp_insn0))); 
 
   AssertFetchInstr1Data16:  assert property (@(posedge clk_i) 
     ( (valid_o[1] && (exp_insn1[1:0] != 2'b11)) |-> (instr1_o.insn[15:0] == exp_insn1[15:0])));
