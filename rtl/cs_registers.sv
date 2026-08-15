@@ -28,6 +28,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   parameter bit               RV32E             = 0,
   parameter bit               RV32M             = 1'b1,
   parameter bit               RV32B             = 1'b1,
+  parameter bit               RV32A             = 1'b1,
   parameter bit               CHERIoTEn         = 1'b1,
   parameter bit               PredictRA         = 1'b0
 ) (
@@ -134,13 +135,14 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   output logic                 cheri_fatal_err_o
   );
 
+  localparam int unsigned RV32AEnabled = RV32A;
   localparam int unsigned RV32BEnabled = RV32B;
   localparam int unsigned RV32MEnabled = RV32M;
   localparam int unsigned PMPAddrWidth = (PMPGranularity > 0) ? 33 - PMPGranularity : 32;
 
   // misa
   localparam logic [31:0] MISA_VALUE =
-      (0                 <<  0)  // A - Atomic Instructions extension
+      (RV32AEnabled      <<  0)  // A - Atomic Instructions extension
     | (RV32BEnabled      <<  1)  // B - Bit-Manipulation extension
     | (1                 <<  2)  // C - Compressed extension
     | (0                 <<  3)  // D - Double precision floating-point extension

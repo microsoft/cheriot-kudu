@@ -602,6 +602,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .BrkptNum     (CFG.BrkptNum),    
     .RV32M        (CFG.RV32M),
     .RV32B        (CFG.RV32B),
+    .RV32A        (CFG.RV32A),
     .PredictRA    (CFG.PredictRA)
   ) cs_registers_i (
     .clk_i                        (clk_i),
