@@ -262,9 +262,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   logic [31:0]     csr_rdata32;
   logic [RegW-1:0] csr_wdata_cheri;
   logic [RegW-1:0] csr_rdata_cheri;
-  logic            csr_we_int;
+  logic            csr_we_int32;
   logic            csr_wr;
-  logic            csr_addr_is_cheri;
 
   logic [RegW-1:0] mepc_q, mepc_d;
   logic            mepc_en;
@@ -279,7 +278,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   logic            dscratch0_en, dscratch1_en;
 
   // Access violation signals
-  logic        illegal_csr, illegal_csr_cheri, illegal_csr_combi;
+  logic        illegal_csr, illegal_csr_cheri, illegal_csr_addr;
   logic        illegal_csr_priv;
   logic        illegal_csr_write;
 
@@ -290,14 +289,18 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
   logic [31:0] misa_value_masked;
 
-  // Set the X, I and E bits dynamically based on cheri_pmode_i.
+  logic        cheri_pmode;
+
+  assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
+
+  // Set the X, I and E bits dynamically based on cheri_pmode.
   // I must always be the complement of E.
   assign misa_value_masked = {MISA_VALUE[31:24],
-                              CHERIoTEn ? cheri_pmode_i : MISA_VALUE[23], // X
+                              CHERIoTEn ? cheri_pmode : MISA_VALUE[23], // X
                               MISA_VALUE[22:9],
-                              CHERIoTEn ? ~cheri_pmode_i : MISA_VALUE[8], // I
+                              CHERIoTEn ? ~cheri_pmode : MISA_VALUE[8], // I
                               MISA_VALUE[7:5],
-                              CHERIoTEn ? cheri_pmode_i : MISA_VALUE[4], // E
+                              CHERIoTEn ? cheri_pmode : MISA_VALUE[4], // E
                               MISA_VALUE[3:0]
                              };
 
@@ -313,8 +316,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   // See RISC-V Privileged Specification, version 1.11, Section 2.1
   assign illegal_csr_priv   = (csr_addr[9:8] > {priv_lvl_q});
   assign illegal_csr_write  = (csr_addr[11:10] == 2'b11) && csr_wr;
-  assign illegal_csr_combi  = csr_addr_is_cheri ? illegal_csr_cheri : illegal_csr;
-  assign illegal_csr_insn_o = csr_access_i & (illegal_csr_combi | illegal_csr_write | illegal_csr_priv);
+  assign illegal_csr_addr   = csr_cheri_i ?  illegal_csr_cheri : illegal_csr;
+  assign illegal_csr_insn_o = csr_access_i & (illegal_csr_addr | illegal_csr_write | illegal_csr_priv);
 
   // mip CSR is purely combinational - must be able to re-enable the clock upon WFI
   assign mip.irq_software = irq_software_i;
@@ -329,9 +332,9 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
     unique case (csr_addr_i)
       // mvendorid: encoding of manufacturer/provider
-      CSR_MVENDORID: csr_rdata32 = (CHERIoTEn&cheri_pmode_i) ? CSR_MVENDORID_CHERI_VALUE : CSR_MVENDORID_VALUE;
+      CSR_MVENDORID: csr_rdata32 = (CHERIoTEn&cheri_pmode) ? CSR_MVENDORID_CHERI_VALUE : CSR_MVENDORID_VALUE;
       // marchid: encoding of base microarchitecture
-      CSR_MARCHID: csr_rdata32 = (CHERIoTEn&cheri_pmode_i) ? CSR_MARCHID_CHERI_VALUE : CSR_MARCHID_VALUE;
+      CSR_MARCHID: csr_rdata32 = (CHERIoTEn&cheri_pmode) ? CSR_MARCHID_CHERI_VALUE : CSR_MARCHID_VALUE;
       // mimpid: encoding of processor implementation version
       CSR_MIMPID: csr_rdata32 = CSR_MIMPID_VALUE;
       // mhartid: unique hardware thread id
@@ -365,6 +368,17 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       end
 
       CSR_MSCRATCH: csr_rdata32 = mscratch_q;
+
+      CSR_MTVEC: begin
+        csr_rdata32 = mtvec_q[31:0];
+        illegal_csr = cheri_pmode;
+      end
+
+      // mepc: exception program counter
+      CSR_MEPC: begin
+        csr_rdata32 = mepc_q[31:0];
+        illegal_csr = cheri_pmode;
+      end
 
       // mcause: exception cause
       CSR_MCAUSE: csr_rdata32 = {mcause_q[5], 26'b0, mcause_q[4:0]};
@@ -506,6 +520,20 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
         illegal_csr = ~debug_mode_i;
       end
 
+      CSR_DPC: begin
+        csr_rdata32 = depc_q[31:0];
+        illegal_csr = ~debug_mode_i;
+      end
+      CSR_DSCRATCH0: begin
+        csr_rdata32 = dscratch0_q[31:0];
+        illegal_csr = ~debug_mode_i;
+      end
+      CSR_DSCRATCH1: begin
+        csr_rdata32 = dscratch1_q[31:0];
+        illegal_csr = ~debug_mode_i;
+      end
+
+
       // machine counter/timers
       CSR_MCOUNTINHIBIT: csr_rdata32 = mcountinhibit;
       CSR_MHPMEVENT3,
@@ -586,24 +614,24 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
       // MSHWM CSR (stack high watermark in cheriot)
       CSR_MSHWM:  begin
-        if (cheri_pmode_i) begin
-          csr_rdata32 = cheri_pmode_i ? mshwm_q : 32'h0;
+        if (cheri_pmode) begin
+          csr_rdata32 = cheri_pmode ? mshwm_q : 32'h0;
         end else begin
           illegal_csr = 1'b1;
         end
       end
 
       CSR_MSHWMB: begin
-        if (cheri_pmode_i) begin
-          csr_rdata32 = cheri_pmode_i ? mshwmb_q : 32'h0;
+        if (cheri_pmode) begin
+          csr_rdata32 = cheri_pmode ? mshwmb_q : 32'h0;
         end else begin
           illegal_csr = 1'b1;
         end
       end
 
       CSR_CDBG_CTRL: begin
-        if (cheri_pmode_i) begin
-          csr_rdata32 = cheri_pmode_i ? cdbg_ctrl_q : 32'h0;
+        if (cheri_pmode) begin
+          csr_rdata32 = cheri_pmode ? cdbg_ctrl_q : 32'h0;
         end else begin
           illegal_csr = 1'b1;
         end
@@ -643,7 +671,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
     double_fault_seen_o = 1'b0;
 
-    if (csr_we_int) begin
+    if (csr_we_int32) begin
       unique case (csr_addr_i)
         // mstatus: IE bit
         CSR_MSTATUS: begin
@@ -734,9 +762,9 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
           cpuctrl_we = 1'b1;
         end
 
-        CSR_MSHWM:      mshwm_en  = CHERIoTEn & cheri_pmode_i;
-        CSR_MSHWMB:     mshwmb_en = CHERIoTEn & cheri_pmode_i;
-        CSR_CDBG_CTRL:  cdbg_ctrl_en = CHERIoTEn & cheri_pmode_i;
+        CSR_MSHWM:      mshwm_en  = CHERIoTEn & cheri_pmode;
+        CSR_MSHWMB:     mshwmb_en = CHERIoTEn & cheri_pmode;
+        CSR_CDBG_CTRL:  cdbg_ctrl_en = CHERIoTEn & cheri_pmode;
 
         default:;
       endcase
@@ -764,7 +792,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
           mstatus_en     = 1'b1;
           mstatus_d.mie  = 1'b0; // disable interrupts
           // save current status
-          mstatus_d.mpie = (cheri_pmode_i & csr_exc_info_i.has_pcc) ? csr_exc_info_i.mie : mstatus_q.mie;
+          mstatus_d.mpie = (cheri_pmode & csr_exc_info_i.has_pcc) ? csr_exc_info_i.mie : mstatus_q.mie;
           mstatus_d.mpp  = priv_lvl_q;
           mcause_en      = 1'b1;
           mcause_d       = {csr_exc_info_i.mcause};
@@ -837,18 +865,9 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
   // only write CSRs during one clock cycle
 
-  // enforcing the CHERI CSR access policy. 
-  //  - exceptions for ASR violation is generated in the controller. 
-  //  - we never allow writes to any CSR if ASR=0 
-  //  - no need to gate csr_rdata for ASR violation since the instruction will be faulted anyway 
+  assign csr_we_int32  = csr_wr & csr_op_en_i &  ~csr_cheri_i & ~illegal_csr_insn_o;
 
-  // logic read_ok;
-  // assign read_ok = ~CHERIoTEn || ~cheri_pmode_i || debug_mode_i || pcc_cap_q.perms[PERM_SR] || 
-                   // ((csr_addr_i>=CSR_MCYCLE) && (csr_addr_i<=CSR_CDBG_CTRL));
-  assign csr_we_int  = csr_wr & csr_op_en_i &  ~illegal_csr_insn_o;
-
-  assign csr_rdata_o = csr_addr_is_cheri ? (cheri_pmode_i ? csr_rdata_cheri : csr_rdata_cheri[31:0]) : csr_rdata32;
-
+  assign csr_rdata_o = csr_cheri_i  ? csr_rdata_cheri  : csr_rdata32;
 
   assign csr_mstatus_mie_o   = mstatus_q.mie;
   assign csr_mstatus_tw_o    = mstatus_q.tw;
@@ -1112,7 +1131,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       // -------------------------
       // Instantiate cfg registers
       // -------------------------
-      assign pmp_cfg_we[i] = csr_we_int & ~pmp_cfg_locked[i] &
+      assign pmp_cfg_we[i] = csr_we_int32 & ~pmp_cfg_locked[i] &
                              (csr_addr == (CSR_OFF_PMP_CFG + (i[11:0] >> 2)));
 
       // Select the correct WDATA (each CSR contains 4 CFG fields, each with 2 RES bits)
@@ -1156,11 +1175,11 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       // Instantiate addr registers
       // --------------------------
       if (i < PMPNumRegions - 1) begin : g_lower
-        assign pmp_addr_we[i] = csr_we_int & ~pmp_cfg_locked[i] &
+        assign pmp_addr_we[i] = csr_we_int32 & ~pmp_cfg_locked[i] &
                                 (~pmp_cfg_locked[i+1] | (pmp_cfg[i+1].mode != PMP_MODE_TOR)) &
                                 (csr_addr == (CSR_OFF_PMP_ADDR + i[11:0]));
       end else begin : g_upper
-        assign pmp_addr_we[i] = csr_we_int & ~pmp_cfg_locked[i] &
+        assign pmp_addr_we[i] = csr_we_int32 & ~pmp_cfg_locked[i] &
                                 (csr_addr == (CSR_OFF_PMP_ADDR + i[11:0]));
       end
 
@@ -1182,7 +1201,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       assign csr_pmp_addr_o[i] = {pmp_addr_rdata[i], 2'b00};
     end
 
-    assign pmp_mseccfg_we = csr_we_int & (csr_addr == CSR_MSECCFG);
+    assign pmp_mseccfg_we = csr_we_int32 & (csr_addr == CSR_MSECCFG);
 
     // MSECCFG.MML/MSECCFG.MMWP cannot be unset once set
     assign pmp_mseccfg_d.mml  = pmp_mseccfg_q.mml  ? 1'b1 : csr_wdata32[CSR_MSECCFG_MML_BIT];
@@ -1421,11 +1440,11 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     logic [BrkptNum-1:0] trigger_match;
 
     // Write select
-    assign tselect_we = csr_we_int & debug_mode_i & (csr_addr_i == CSR_TSELECT);
+    assign tselect_we = csr_we_int32 & debug_mode_i & (csr_addr_i == CSR_TSELECT);
     for (genvar i = 0; i < BrkptNum; i++) begin : g_dbg_tmatch_we
-      assign tmatch_control_we[i] = (i[DbgHwNumLen-1:0] == tselect_q) & csr_we_int & debug_mode_i &
+      assign tmatch_control_we[i] = (i[DbgHwNumLen-1:0] == tselect_q) & csr_we_int32 & debug_mode_i &
                                     (csr_addr_i == CSR_TDATA1);
-      assign tmatch_value_we[i]   = (i[DbgHwNumLen-1:0] == tselect_q) & csr_we_int & debug_mode_i &
+      assign tmatch_value_we[i]   = (i[DbgHwNumLen-1:0] == tselect_q) & csr_we_int32 & debug_mode_i &
                                     (csr_addr_i == CSR_TDATA2);
     end
 
@@ -1599,34 +1618,21 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   localparam logic [RegW-1:0] MSCRATCHC_RESET_VAL = CHERIoTEn ?  TS_ROOT_RCAP : '0; 
 
   reg_cap_t        pcc_exc_rcap;
-  logic            scr_wr_rv32, scr_wr_cheri;
+  logic            scr_wr_cheri;
   logic [4:0]      scr_addr;
   logic [RegW-1:0] mtdc_q, mscratchc_q;
   
 
-  assign csr_addr_is_cheri = csr_cheri_i | (csr_addr_i == CSR_MTVEC) | (csr_addr_i == CSR_MEPC);
-
-  assign scr_wr_rv32  = csr_op_en_i & (~CHERIoTEn | ~cheri_pmode_i) &&
-                        (csr_op_i inside {CSR_OP_WRITE, CSR_OP_SET, CSR_OP_CLEAR}) ;
-  assign scr_wr_cheri = csr_op_en_i & CHERIoTEn & cheri_pmode_i & (csr_op_i == CSR_OP_WRITE);
+  assign scr_wr_cheri = cheri_pmode & csr_op_en_i & csr_cheri_i &  (csr_op_i == CSR_OP_WRITE);
   assign scr_addr     = csr_addr_i[4:0];
 
   always_comb begin
     csr_rdata_cheri   = '0;
     illegal_csr_cheri = 1'b0;
 
-    if (~csr_cheri_i) begin
+    if (csr_cheri_i) begin
       unique case (csr_addr_i)
-        CSR_MEPC:      csr_rdata_cheri = debug_mode_i ? depc_q : mepc_q;
-        CSR_MTVEC:     csr_rdata_cheri = mtvec_q;
-        CSR_DSCRATCH0: csr_rdata_cheri = debug_mode_i ? dscratch0_q : RegW'(0);
-        CSR_DSCRATCH1: csr_rdata_cheri = debug_mode_i ? dscratch1_q : RegW'(0);
-        default:       illegal_csr_cheri = 1'b1;
-      endcase   
-      illegal_csr_cheri |= ~debug_mode_i & ((csr_addr_i == CSR_DSCRATCH0) || (csr_addr_i == CSR_DSCRATCH1));
-    end else begin
-      unique case (csr_addr_i)
-        CHERI_SCR_MEPCC:      csr_rdata_cheri = debug_mode_i ? depc_q : mepc_q;
+        CHERI_SCR_MEPCC:      csr_rdata_cheri = mepc_q;
         CHERI_SCR_MTCC:       csr_rdata_cheri = mtvec_q;
         CHERI_SCR_DEPCC:      csr_rdata_cheri = debug_mode_i ? depc_q : '0;
         CHERI_SCR_DSCRATCHC0: csr_rdata_cheri = debug_mode_i ? dscratch0_q : '0;
@@ -1654,16 +1660,17 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   // 
 
   always_comb begin
-    if (scr_wr_rv32 && (csr_addr_i == CSR_MEPC)) begin
-      mepc_en = 1'b1;
-      mepc_d  = {csr_wdata32[31:1], 1'b0};
+    if (~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_MEPC)) begin
+      mepc_en      = 1'b1;
+      mepc_d       = mepc_q;
+      mepc_d[31:0] = {csr_wdata32[31:1], 1'b0};
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC)) begin
       mepc_en = 1'b1;
       mepc_d  = csr_wdata_cheri;
-    end else if (CHERIoTEn & cheri_pmode_i & csr_save_cause_i & ~debug_mode_i) begin
+    end else if (cheri_pmode & csr_save_cause_i & ~debug_mode_i) begin
       mepc_en = 1'b1;
-      mepc_d  = (cheri_pmode_i & csr_exc_info_i.has_pcc) ? csr_exc_info_i.pc : pcc_exc_rcap;
-    end else if (~(CHERIoTEn & cheri_pmode_i) & csr_save_cause_i & ~debug_mode_i) begin
+      mepc_d  = (cheri_pmode & csr_exc_info_i.has_pcc) ? csr_exc_info_i.pc : pcc_exc_rcap;
+    end else if (~cheri_pmode & csr_save_cause_i & ~debug_mode_i) begin
       mepc_en = 1'b1;
       mepc_d  = csr_exc_info_i.pc;
     end else begin
@@ -1695,19 +1702,17 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   assign  init_mtvec32 = {boot_addr_i[31:2], 1'b0, 1'b0};  
 
   always_comb begin
-    if (scr_wr_rv32 && (csr_addr_i == CSR_MTVEC)) begin
-      mtvec_en = 1'b1;
-      mtvec_d  = {csr_wdata32[31:2], 2'b00};
+    if (~cheri_pmode & csr_we_int32  && (csr_addr_i == CSR_MTVEC)) begin
+      mtvec_en      = 1'b1;
+      mtvec_d       = mtvec_q;   // don't update meta data if in rv32 mode (same as cheriot-ibex behavior)
+      mtvec_d[31:0] = {csr_wdata32[31:2], 2'b00};
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTCC)) begin
       mtvec_en = 1'b1;
       mtvec_d  = csr_wdata_cheri;
-    end else if (CHERIoTEn & csr_mtvec_init_i) begin
-      mtvec_en = 1'b1;
-      mtvec_d  = mtvec_q;
+    end else if (csr_mtvec_init_i) begin  // we assume mtvec_init_i will only come at boot time when mtvec = Tx cap
+      mtvec_en      = 1'b1;
+      mtvec_d       = mtvec_q;
       mtvec_d[31:0] = init_mtvec32;  
-    end else if (~CHERIoTEn & csr_mtvec_init_i) begin
-      mtvec_en = 1'b1;
-      mtvec_d  = init_mtvec32;
     end else begin
       mtvec_en = 1'b0;
       mtvec_d  = mtvec_q;
@@ -1733,16 +1738,16 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   //
 
   always_comb begin
-    if (scr_wr_rv32 && (csr_addr_i == CSR_MEPC) & debug_mode_i) begin
+    if (~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_DPC) & debug_mode_i) begin
       depc_en = 1'b1;
       depc_d  = {csr_wdata32[31:1], 1'b0};
-    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC) && debug_mode_i) begin
+    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DEPCC) && debug_mode_i) begin
       depc_en = 1'b1;
       depc_d  = {csr_wdata_cheri[RegW-1:1], 1'b0};
-    end else if (CHERIoTEn & cheri_pmode_i & csr_save_cause_i & debug_csr_save_i) begin
+    end else if (CHERIoTEn & cheri_pmode & csr_save_cause_i & debug_csr_save_i) begin
       depc_en = 1'b1;
       depc_d  = pcc_exc_rcap;
-    end else if (~(CHERIoTEn & cheri_pmode_i) & csr_save_cause_i & debug_csr_save_i) begin
+    end else if (~(CHERIoTEn & cheri_pmode) & csr_save_cause_i & debug_csr_save_i) begin
       depc_en = 1'b1;
       depc_d  = csr_exc_info_i.pc;
     end else begin
@@ -1750,7 +1755,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       depc_d  = depc_q;
     end
 
-    if (scr_wr_rv32 && (csr_addr_i == CSR_DSCRATCH0) & debug_mode_i) begin
+    if (~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_DSCRATCH0) & debug_mode_i) begin
       dscratch0_en = 1'b1;
       dscratch0_d  = csr_wdata32;
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC0) && debug_mode_i) begin
@@ -1761,7 +1766,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       dscratch0_d  = dscratch0_q;
     end
 
-    if (scr_wr_rv32 && (csr_addr_i == CSR_DSCRATCH1) & debug_mode_i) begin
+    if (~cheri_pmode & csr_we_int32  && (csr_addr_i == CSR_DSCRATCH1) & debug_mode_i) begin
       dscratch1_en = 1'b1;
       dscratch1_d  = csr_wdata32;
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC1) && debug_mode_i) begin
@@ -1947,7 +1952,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       if (!rst_ni) begin
         cheri_fatal_err_q <= 1'b0;
       end else begin
-        if (cheri_pmode_i & csr_save_cause_i & ~mtvec_cap.valid) 
+        if (cheri_pmode & csr_save_cause_i & ~mtvec_cap.valid) 
           cheri_fatal_err_q <= 1'b1;
       end
     end
