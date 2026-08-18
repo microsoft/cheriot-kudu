@@ -71,7 +71,7 @@ module prefetch_buffer64 import super_pkg::*; #(
   logic                fetch_addr_en;
   logic [31:0]         instr_addr, instr_addr_w_aligned;
 
-  logic                fifo_valid, fifo_valid_alt;
+  logic                fifo_valid;
   logic [31:0]         fifo_addr;
   logic                fifo_ready;
   logic                fifo_clear;
@@ -161,7 +161,6 @@ module prefetch_buffer64 import super_pkg::*; #(
       .alt_free_id_o         ( alt_free_id_o      ),
       .busy_o                ( fifo_busy          ),
       .in_valid_i            ( fifo_valid         ),
-      .in_valid_alt_i        ( fifo_valid_alt     ),
       .in_addr_i             ( fifo_addr          ),
       .in_rdata_i            ( instr_rdata_in     ),
       .in_err_i              ( instr_err_in       ),
@@ -299,14 +298,9 @@ module prefetch_buffer64 import super_pkg::*; #(
                                                 branch_discard_n;
 
   // Push a new entry to the FIFO once complete (and not cancelled by a branch)
-  assign fifo_valid     = instr_rvalid_in & ~branch_discard_q[0];
+  assign fifo_valid = instr_rvalid_in & ~branch_discard_q[0];
 
-  // QQQ this needs more work.. we can't just assume all outstanding memory read requets belong
-  // to the ALT entry being updated, since they might be from previous branch/jumps.
-  // assign fifo_valid_alt = instr_rvalid_in & branch_discard_q[0];
-  assign fifo_valid_alt = 1'b0;
-
-  assign fifo_addr = addr_i;    // this goes to the FIFO, always use addr_i  even for apply_alt
+  assign fifo_addr  = addr_i;    // this goes to the FIFO, always use addr_i  even for apply_alt
 
   ///////////////
   // Registers //

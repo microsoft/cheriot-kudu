@@ -130,7 +130,6 @@ module cheri_alu import super_pkg::*; import cheri_pkg::*; (
           logic [31:0] new_addr;
           full_cap_t   tfcap, pfcap;
           
-          // QQQ add clear-tag-escalate-to-fault feature later
           clr_sealed     = instr_i.cheri_op.auipcc ? 1'b0 : is_cap_sealed(cs1_fcap);
           new_addr       = instr_i.cheri_op.csetaddr ? cs2_fcap.addr : rv32_alu_result_i;
           pfcap          = pcc2fullcap_lite(pcc_cap_i, instr_i.pc);

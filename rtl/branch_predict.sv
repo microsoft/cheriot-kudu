@@ -383,7 +383,6 @@ module branch_predict import super_pkg::*; #(
 
          // note when use_ibuf, instruction always predicted as NOT taken since ibuf_instr
          // is from fetch_instr. this is the correct behavior since IBUF is after BP decision.
-         // needs FV? QQQ
          if (update_resp & update_valid) begin
            ibuf_valid  <= 1'b1;
            ibuf_tag_q  <= update_tag_q;

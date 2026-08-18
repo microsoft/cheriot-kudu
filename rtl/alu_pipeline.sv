@@ -159,8 +159,8 @@ module alu_pipeline import super_pkg::*; import cheri_pkg::*; # (
     assign ex2_fwd_valid_q = 1'b0;
     assign ex2_fwd_data    = OpW'(0);
   end else begin : gen_ex2_stage
-    // QQQ EX2 is not currently used, likely will be removed in the future.
-    //    the alu result pipelining only works without EX2 now.
+    // EX2 is not currently used, likely will be removed in the future.
+    // the cheri_alu result pipelining only works without EX2 now.
     assign ex2_rdy = ~ex2_valid | wb_rdy;
 
     // -- ex2_fwd_ok capatures waw_act event if ex2 is stalled, it is used by WB stage to determine

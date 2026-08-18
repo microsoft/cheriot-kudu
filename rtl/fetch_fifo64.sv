@@ -43,7 +43,6 @@ module fetch_fifo64 import super_pkg::*; #(
 
   // input from memory fetch side
   input  logic                in_valid_i,
-  input  logic                in_valid_alt_i,
   input  logic [63:0]         in_rdata_i,
   input  logic                in_err_i,
   input  logic                in_rdata_align64_i,
@@ -59,9 +58,14 @@ module fetch_fifo64 import super_pkg::*; #(
 );
 
   // deeper FIFOs to accomodate ALT for now
+  // we can't just assume all outstanding memory read requets belong to the ALT entry
+  // being updated, since they might be from other sources (exceptions/mispredicts)
+  // so it's difficult to enable the AltUpdate function
+  // assign fifo_valid_alt = instr_rvalid_in & branch_discard_q[0];
+  // localparam bit          AltUpdateEn = 1'b0;
   localparam int unsigned DEPTH  = AltEnable ? NUM_REQS+4 : NUM_REQS+1; 
   localparam int unsigned NumAlt = 2;
-  localparam bit          AltUpdateEn = 1'b0;
+
 
   function automatic logic dec_branch(logic [15:0] insn16);
     logic result;
@@ -205,6 +209,7 @@ module fetch_fifo64 import super_pkg::*; #(
     second_word_err = 0;
 
     // QQQ note we don't completely handle fetch_err for unalignedFetch case here yet
+    // if unalignedFetch is actually used then need to find a solution
     if ((~in_valid_i & ~valid_q[1] & valid_q[0]) | (in_valid_i & ~valid_q[0])) begin   // 1 entry available
       first_word_err = (~valid_q[0] & in_err_i) || (valid_q[0] & err_q[0]);
 
@@ -297,7 +302,7 @@ module fetch_fifo64 import super_pkg::*; #(
     // decide how we should create ALT entry and save its data. 
     // If 2 entries are transfered from the main FIFO, but a branch is predicted on instr0, 
     // we should still save the word containing instr1 to ALT
-    // QQQ this is equivalent to gating instr_xfr[1] with ~bp_instr0_i, assertion?
+    // this is equivalent to gating instr_xfr[1] with ~bp_instr0_i, assertion?
     if ((instr_xfr == 2'b11) & bp_instr0_i & out_is_comp[0])
       pop_alt = (instr_addr16 == 2'h3);
     else if ((instr_xfr == 2'b11) & bp_instr0_i & ~out_is_comp[0])
@@ -450,8 +455,7 @@ module fetch_fifo64 import super_pkg::*; #(
   //////////////////////
 
   logic [NumAlt-1:0] alt_status;
-  logic [1:0]        alt_apply_id, alt_free_id, alt_update_id;
-  logic              updating_alt;
+  logic [1:0]        alt_apply_id, alt_free_id;
   logic              alt_err_event;;
 
   // Note that flush_alt == ir_flush. If table entries are invalidated by flushing,
@@ -504,7 +508,7 @@ module fetch_fifo64 import super_pkg::*; #(
     assign alt_rd_err      = alt_rdout.err;
     assign alt_rd_nxt_addr = alt_rdout.nxt_addr;
 
-    // ALT alloc/update interface
+    // ALT alloc interface
     
     assign alt_free_id    = find_zero(alt_status);
     assign alt_valid_cnt  = valid_alt_popped[2] ? (pop_alt ? 3'h4 : 3'h3) : 
@@ -514,42 +518,14 @@ module fetch_fifo64 import super_pkg::*; #(
 
     assign alt_nxt_addr_d = {instr_addr_q[31:3], 3'b000} + {alt_valid_cnt, 3'b000};
 
-    if (AltUpdateEn) begin : gen_alt_update
-    // Keep updating the newly created ALT entry with rdata from instr memory
-      logic stop_update;
-      assign stop_update = (apply_alt && (alt_apply_id == alt_update_id)) ||
-                           (cancel_alt[0] && (ex_alt_ctrl_i.id0 == alt_update_id)) ||
-                           (cancel_alt[1] && (ex_alt_ctrl_i.id1 == alt_update_id));
-
-      always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-          alt_update_id <= '0;
-          updating_alt  <= 1'b0;
-        end else begin
-          // it's possible to have back-to-back create_ALT actions
-          if (alloc_alt) begin
-            alt_update_id <= alt_free_id;
-            updating_alt  <= 1'b0;
-          end else if (in_valid_i | stop_update) begin
-          updating_alt  <= 1'b0;
-          end
-        end 
-      end
-    end else begin : gen_alt_no_update
-      assign updating_alt  = 1'b0;
-      assign alt_update_id = 2'b00;
-    end
-
     for (genvar i = 0; i < NumAlt; i++) begin : gen_alt_entries
-      logic       alloc_entry, updating_entry, cancel_entry;
+      logic       alloc_entry, cancel_entry;
 
       assign cancel_entry = (cancel_alt[0] && (ex_alt_ctrl_i.id0 == i)) || 
                             (cancel_alt[1] && (ex_alt_ctrl_i.id1 == i));  
 
       assign alloc_entry  = alloc_alt && (alt_free_id == i);
 
-      assign updating_entry = updating_alt & (alt_update_id == i);
-         
       always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
           alt_table[i]  <= '{'0, '{'0, '0 ,'0}, '0, '0};
@@ -567,27 +543,9 @@ module fetch_fifo64 import super_pkg::*; #(
             alt_table[i].rdata    <= rdata_alt_d[2:0];
             alt_table[i].err      <= err_alt_d[2:0];
             alt_table[i].nxt_addr <= alt_nxt_addr_d;
-          end else if (updating_entry & ~(flush_alt | cancel_entry) & 
-                       in_valid_alt_i & ~alt_table[i].valid[2]) begin
-            // continue update the entry until data from the predicted branch comes in, till the entry is full
-            alt_table[i].valid[0] <= 1'b1;  
-            alt_table[i].valid[1] <= alt_table[i].valid[0];  
-            alt_table[i].valid[2] <= alt_table[i].valid[0] & alt_table[i].valid[1];  
-            if (~alt_table[i].valid[0]) begin
-              alt_table[i].rdata[0] <= in_rdata_i;
-              alt_table[i].err[0]   <= in_err_i;
-            end else  if (~alt_table[i].valid[1]) begin
-              alt_table[i].rdata[1] <= in_rdata_i;
-              alt_table[i].err[1]   <= in_err_i;
-            end else begin
-              alt_table[i].rdata[2] <= in_rdata_i;
-              alt_table[i].err[2]   <= in_err_i;
-            end
-
-            alt_table[i].nxt_addr <= alt_table[i].nxt_addr + 8;
           end
-        end
-      end
+        end  // rst_ni
+      end  // always_ff
 
     end
   end
