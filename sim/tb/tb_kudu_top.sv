@@ -175,8 +175,10 @@ module tb_kudu_top;
 
 `ifdef DII_SIM
   defparam u_data_mem.UseSparseMem = 1'b1;
+  defparam dut.RvfiDumpEn          = 1'b1;
 `else
   defparam u_data_mem.UseSparseMem = 1'b0;
+  defparam dut.RvfiDumpEn          = 1'b0;
 `endif  //DII_SIM
   
 
@@ -436,11 +438,11 @@ module tb_kudu_top;
   // simulation init
   //
   string test_name, vhx_path;
-  string dbgrom_name, dbg_vhx_path, instr_dii_path;
+  string dbgrom_name, dbg_vhx_path, instr_dii_path, instr_elf_path;
 
 
   initial begin
-    bit cont_flag;
+    bit cont_flag, uart_stopped;
     int i, timeout;
     int rvfi_max;
 
@@ -455,6 +457,7 @@ module tb_kudu_top;
 
 `ifdef DII_SIM
     $sformat(instr_dii_path, "./bin/%s.dii", test_name);
+    $sformat(instr_elf_path, "./bin/%s.elf", test_name);
     $display("TB> Loading DII test %s", test_name);
     $display("TB> Test timeout = %d", timeout);
     $display("TB> RVFI packet count max = %d", rvfi_max);
@@ -477,12 +480,12 @@ module tb_kudu_top;
     rst_n = 1'b0;
 
 `ifdef DII_SIM
-    sparse_mem_init(instr_dii_path);
+    // sparse_mem_init(instr_dii_path);
+    sparse_mem_init_elf(instr_elf_path);
     sparse_mem_dump("./instr_mem_dump.log");
 `else
     //$readmemh(vhx_path, u_instr_mem.iram, 'h0);   // load main executable
     $readmemh(vhx_path, u_data_mem.dram, 'h0);   // load main executable
-
 
     i = $value$plusargs("DBGROM=%s", dbgrom_name);
     if (i != 0) begin
@@ -498,7 +501,9 @@ module tb_kudu_top;
 
     {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable, cfg_cap_err_enable} = 4'hf;
  
-    cont_flag = 1;
+    cont_flag    = 1;
+    uart_stopped = 0;
+
     while (cont_flag) begin
       @(posedge clk);
       cycle_cnt ++;
@@ -508,15 +513,14 @@ module tb_kudu_top;
         $display("TB> Simulation timed out after %d cycles", cycle_cnt);
       end
      
-      if (uart_stop_sim) begin
-        cont_flag = 0;
+      if (uart_stop_sim & !uart_stopped) begin
+        uart_stopped = 1;
         $display("TB> Simulation stopped by UART request @ %d cycles", cycle_cnt);
         {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable, cfg_cap_err_enable} = 4'h0;
         @(posedge clk);
         stat_print_req = 1'b1;
         @(posedge clk);
         stat_print_req = 1'b0;
-
       end
 
 `ifdef DII_SIM
@@ -526,6 +530,8 @@ module tb_kudu_top;
         $finish();
       end
   `endif
+`else      // note DII_SIM
+      if (uart_stopped) cont_flag = 0;
 `endif
     end
     

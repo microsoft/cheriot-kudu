@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
-  parameter bit          CHERIoTEn = 1'b0,
-  parameter bit          UseDWMult = 1'b0,
-  parameter kudu_cfg_t   CFG       = KuduCfg1x
+  parameter bit          CHERIoTEn  = 1'b0,
+  parameter bit          UseDWMult  = 1'b0,
+  parameter bit          RvfiDumpEn = 1'b0,
+  parameter kudu_cfg_t   CFG        = KuduCfg1x
 ) (
   // Clock and Reset
   input  logic                         clk_i,
@@ -713,13 +714,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   );
 
 `ifdef  RVFI
-  `ifdef DII_SIM
-  defparam tracer_i.RvfiDumpEn = 1'b1;
-  `else
-  defparam tracer_i.RvfiDumpEn = 1'b0;
-  `endif
-
-  tracer  tracer_i (
+  tracer #(.RvfiDumpEn(RvfiDumpEn))  tracer_i (
     .clk_i         (clk_i          ),
     .rst_ni        (rst_ni         ),
     .cheri_pmode_i (cheri_pmode_i  ),

@@ -4,6 +4,7 @@
 
 
 import "DPI-C" function int sparse_mem_init( input string infile_name);
+import "DPI-C" function int sparse_mem_init_elf( input string elf_name);
 import "DPI-C" function byte unsigned sparse_mem_read_data( input int unsigned addr);
 import "DPI-C" function byte unsigned sparse_mem_read_tag( input int unsigned addr);
 import "DPI-C" function void sparse_mem_write_data( input int unsigned addr, input byte unsigned data);
@@ -426,7 +427,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
       endcase
     end
     
-   always @(posedge clk, negedge rst_n) begin
+    always @(posedge clk, negedge rst_n) begin
       if (~rst_n) begin
         mmreg_addr32_q    <= 0;
         intr_ack          <= 3'h0;
