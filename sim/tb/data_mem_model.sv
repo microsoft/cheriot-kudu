@@ -2,9 +2,6 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-
-import "DPI-C" function int sparse_mem_init( input string infile_name);
-import "DPI-C" function int sparse_mem_init_elf( input string elf_name);
 import "DPI-C" function byte unsigned sparse_mem_read_data( input int unsigned addr);
 import "DPI-C" function byte unsigned sparse_mem_read_tag( input int unsigned addr);
 import "DPI-C" function void sparse_mem_write_data( input int unsigned addr, input byte unsigned data);

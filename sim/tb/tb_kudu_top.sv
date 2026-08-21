@@ -7,6 +7,10 @@
 //`define BOOT_ADDR 32'h8000_0000
 `define BOOT_ADDR 32'h8000_0000
 
+import "DPI-C" function int sparse_mem_init( input string infile_name);
+import "DPI-C" function int sparse_mem_init_elf( input string elf_name);
+import "DPI-C" function int sparse_mem_load_addata( input string addata_name);
+
 module tb_kudu_top; 
 `ifndef IBEX
   import cheri_pkg::*;
@@ -438,26 +442,30 @@ module tb_kudu_top;
   // simulation init
   //
   string test_name, vhx_path;
-  string dbgrom_name, dbg_vhx_path, instr_dii_path, instr_elf_path;
+  string dbgrom_name, dbg_vhx_path, instr_dii_path, instr_elf_path, addata_path;
 
 
   initial begin
     bit cont_flag, uart_stopped;
     int i, timeout;
     int rvfi_max;
+    int has_addata;
 
     timeout  = 1000* 1000;   // default timeout
     rvfi_max = 1000;
+    has_addata = 0;
 
     i = $value$plusargs("TEST=%s", test_name);
     if (i == 0) $sformat(test_name, "hello_world");
 
     i = $value$plusargs("TIMEOUT=%d", timeout);
     i = $value$plusargs("RVFI_MAX=%d", rvfi_max);
+    i = $value$plusargs("ADDATA=%d", has_addata);
 
 `ifdef DII_SIM
     $sformat(instr_dii_path, "./bin/%s.dii", test_name);
     $sformat(instr_elf_path, "./bin/%s.elf", test_name);
+    $sformat(addata_path, "./bin/%s.addata", test_name);
     $display("TB> Loading DII test %s", test_name);
     $display("TB> Test timeout = %d", timeout);
     $display("TB> RVFI packet count max = %d", rvfi_max);
@@ -483,6 +491,8 @@ module tb_kudu_top;
     // sparse_mem_init(instr_dii_path);
     sparse_mem_init_elf(instr_elf_path);
     sparse_mem_dump("./instr_mem_dump.log");
+    if (has_addata) sparse_mem_load_addata(addata_path);
+    
 `else
     //$readmemh(vhx_path, u_instr_mem.iram, 'h0);   // load main executable
     $readmemh(vhx_path, u_data_mem.dram, 'h0);   // load main executable

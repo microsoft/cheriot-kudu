@@ -1,6 +1,7 @@
 #include <elf.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -9,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <regex>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -356,6 +358,119 @@ extern "C" int sparse_mem_init_elf(const char *elf_name)
 
     sparse_mem_data.swap(loaded_data);
     sparse_mem_tag.clear();
+    return SparseMemOk;
+}
+
+/* Overlay 65-bit address:data entries without clearing the ELF image. */
+extern "C" int sparse_mem_load_addata(const char *addata_name)
+{
+    static const char *FunctionName = "sparse_mem_load_addata";
+    if (addata_name == nullptr) {
+        return report_error(FunctionName, SparseMemOpenError,
+                            "input filename is null");
+    }
+
+    std::ifstream input(addata_name);
+    if (!input.is_open()) {
+        return report_error(FunctionName, SparseMemOpenError,
+                            std::string("cannot open '") + addata_name + "'");
+    }
+
+    struct Entry {
+        uint32_t address;
+        uint64_t data;
+        uint8_t tag;
+    };
+    std::vector<Entry> entries;
+    std::string line;
+    unsigned line_number = 0;
+    while (std::getline(input, line)) {
+        ++line_number;
+        const std::size_t comment = line.find('#');
+        if (comment != std::string::npos) {
+            line.erase(comment);
+        }
+        line.erase(std::remove_if(line.begin(), line.end(),
+                                  [](unsigned char character) {
+                                      return std::isspace(character) != 0;
+                                  }),
+                   line.end());
+        if (line.empty()) {
+            continue;
+        }
+
+        const std::size_t colon = line.find(':');
+        if (colon == std::string::npos ||
+            line.find(':', colon + 1) != std::string::npos) {
+            return report_error(
+                FunctionName, SparseMemFormatError,
+                "line " + std::to_string(line_number) +
+                    ": expected address:data");
+        }
+
+        std::string address_text = line.substr(0, colon);
+        std::string data_text = line.substr(colon + 1);
+        if (data_text.compare(0, 2, "0x") == 0 ||
+            data_text.compare(0, 2, "0X") == 0) {
+            data_text.erase(0, 2);
+        }
+        if (data_text.empty() || data_text.size() > 17 ||
+            !std::all_of(data_text.begin(), data_text.end(),
+                         [](unsigned char character) {
+                             return std::isxdigit(character) != 0;
+                         })) {
+            return report_error(
+                FunctionName, SparseMemFormatError,
+                "line " + std::to_string(line_number) +
+                    ": invalid 65-bit data value");
+        }
+
+        try {
+            std::size_t address_end = 0;
+            const unsigned long long parsed_address =
+                std::stoull(address_text, &address_end, 0);
+            if (address_end != address_text.size() ||
+                parsed_address > std::numeric_limits<uint32_t>::max() - 7ULL ||
+                (parsed_address & 7ULL) != 0) {
+                throw std::out_of_range("address must be aligned and 32-bit");
+            }
+
+            uint8_t tag = 0;
+            if (data_text.size() == 17) {
+                if (data_text[0] != '0' && data_text[0] != '1') {
+                    throw std::out_of_range("tag bit must be zero or one");
+                }
+                tag = data_text[0] == '1';
+                data_text.erase(0, 1);
+            }
+            const uint64_t data = std::stoull(data_text, nullptr, 16);
+            entries.push_back({static_cast<uint32_t>(parsed_address),
+                               data, tag});
+        } catch (const std::exception &error) {
+            return report_error(
+                FunctionName, SparseMemFormatError,
+                "line " + std::to_string(line_number) + ": " + error.what());
+        }
+    }
+
+    if (input.bad()) {
+        return report_error(FunctionName, SparseMemIoError,
+                            "error while reading input file");
+    }
+
+    for (const Entry &entry : entries) {
+        for (unsigned byte = 0; byte < 8; ++byte) {
+            const uint32_t address = entry.address + byte;
+            const uint8_t value =
+                static_cast<uint8_t>(entry.data >> (byte * 8));
+            if (value == 0) {
+                sparse_mem_data.erase(address);
+            } else {
+                sparse_mem_data[address] = value;
+            }
+        }
+        sparse_mem_tag[entry.address] = entry.tag;
+    }
     return SparseMemOk;
 }
 
