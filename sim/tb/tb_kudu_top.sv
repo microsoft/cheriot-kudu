@@ -9,7 +9,7 @@
 
 import "DPI-C" function int sparse_mem_init( input string infile_name);
 import "DPI-C" function int sparse_mem_init_elf( input string elf_name);
-import "DPI-C" function int sparse_mem_load_addata( input string addata_name);
+//import "DPI-C" function int sparse_mem_load_addata( input string addata_name);
 
 module tb_kudu_top; 
 `ifndef IBEX
@@ -491,7 +491,7 @@ module tb_kudu_top;
     // sparse_mem_init(instr_dii_path);
     sparse_mem_init_elf(instr_elf_path);
     sparse_mem_dump("./instr_mem_dump.log");
-    if (has_addata) sparse_mem_load_addata(addata_path);
+    //if (has_addata) sparse_mem_load_addata(addata_path);
     
 `else
     //$readmemh(vhx_path, u_instr_mem.iram, 'h0);   // load main executable

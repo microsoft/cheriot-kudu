@@ -1,7 +1,6 @@
 #include <elf.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -10,7 +9,6 @@
 #include <limits>
 #include <map>
 #include <regex>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -191,12 +189,12 @@ extern "C" int sparse_mem_init(const char *infile_name)
  *
  * The loader accepts ELF32, little-endian, RISC-V ET_EXEC files and copies
  * only PT_LOAD program segments.  Segment contents are placed at p_paddr.
- * The p_memsz - p_filesz tail is zero-filled sparsely.  Section headers are
- * deliberately ignored, so non-allocatable metadata sections are not loaded.
+ * The p_memsz - p_filesz tail is zero-filled sparsely.  When present, the
+ * non-allocatable .addata_info, .addata_main and .addata_tags sections are
+ * applied after the PT_LOAD segments.
  *
- * Data memory is replaced only after the whole ELF has been validated and
- * read successfully.  ELF does not encode CHERIoT memory tags, so the tag map
- * is cleared on success.
+ * Data and tag memory are replaced only after the whole ELF has been
+ * validated and read successfully.
  */
 extern "C" int sparse_mem_init_elf(const char *elf_name)
 {
@@ -278,6 +276,156 @@ extern "C" int sparse_mem_init_elf(const char *elf_name)
                             "program-header table is outside the ELF file");
     }
 
+    std::vector<uint8_t> addata_main;
+    std::vector<uint8_t> addata_tags;
+    uint32_t addata_address = 0;
+
+    if (elf_header.e_shnum != 0 && elf_header.e_shstrndx != SHN_UNDEF) {
+        if (elf_header.e_shentsize != sizeof(Elf32_Shdr) ||
+            elf_header.e_shstrndx == SHN_XINDEX ||
+            elf_header.e_shstrndx >= elf_header.e_shnum) {
+            return report_error(FunctionName, SparseMemFormatError,
+                                "unsupported ELF section-header table");
+        }
+
+        const uint64_t section_headers_size =
+            static_cast<uint64_t>(elf_header.e_shnum) *
+            elf_header.e_shentsize;
+        if (!range_fits_file(elf_header.e_shoff, section_headers_size,
+                             file_size)) {
+            return report_error(FunctionName, SparseMemFormatError,
+                                "section-header table is outside the ELF file");
+        }
+
+        Elf32_Shdr names_header{};
+        const uint64_t names_header_offset =
+            static_cast<uint64_t>(elf_header.e_shoff) +
+            static_cast<uint64_t>(elf_header.e_shstrndx) *
+            elf_header.e_shentsize;
+        if (!read_at(input, names_header_offset, &names_header,
+                     sizeof(names_header)) ||
+            !range_fits_file(names_header.sh_offset, names_header.sh_size,
+                             file_size)) {
+            return report_error(FunctionName, SparseMemFormatError,
+                                "invalid section-name string table");
+        }
+
+        std::vector<char> section_names(names_header.sh_size);
+        if (!section_names.empty() &&
+            !read_at(input, names_header.sh_offset, section_names.data(),
+                     section_names.size())) {
+            return report_error(FunctionName, SparseMemIoError,
+                                "cannot read section-name string table");
+        }
+
+        Elf32_Shdr info_header{};
+        Elf32_Shdr main_header{};
+        Elf32_Shdr tags_header{};
+        bool have_info = false;
+        bool have_main = false;
+        bool have_tags = false;
+
+        for (uint16_t index = 0; index < elf_header.e_shnum; ++index) {
+            Elf32_Shdr section_header{};
+            const uint64_t header_offset =
+                static_cast<uint64_t>(elf_header.e_shoff) +
+                static_cast<uint64_t>(index) * elf_header.e_shentsize;
+            if (!read_at(input, header_offset, &section_header,
+                         sizeof(section_header))) {
+                return report_error(FunctionName, SparseMemIoError,
+                                    "cannot read a section header");
+            }
+            if (section_header.sh_name >= section_names.size()) {
+                return report_error(FunctionName, SparseMemFormatError,
+                                    "section name is outside the string table");
+            }
+
+            const char *name = section_names.data() + section_header.sh_name;
+            const std::size_t remaining =
+                section_names.size() - section_header.sh_name;
+            if (std::memchr(name, '\0', remaining) == nullptr) {
+                return report_error(FunctionName, SparseMemFormatError,
+                                    "unterminated section name");
+            }
+
+            Elf32_Shdr *destination = nullptr;
+            bool *present = nullptr;
+            if (std::strcmp(name, ".addata_info") == 0) {
+                destination = &info_header;
+                present = &have_info;
+            } else if (std::strcmp(name, ".addata_main") == 0) {
+                destination = &main_header;
+                present = &have_main;
+            } else if (std::strcmp(name, ".addata_tags") == 0) {
+                destination = &tags_header;
+                present = &have_tags;
+            } else {
+                continue;
+            }
+
+            if (*present) {
+                return report_error(FunctionName, SparseMemFormatError,
+                                    std::string("duplicate section ") + name);
+            }
+            if (section_header.sh_type != SHT_PROGBITS ||
+                !range_fits_file(section_header.sh_offset,
+                                 section_header.sh_size, file_size)) {
+                return report_error(FunctionName, SparseMemFormatError,
+                                    std::string("invalid section ") + name);
+            }
+            *destination = section_header;
+            *present = true;
+        }
+
+        if (have_main != have_tags || ((have_main || have_tags) && !have_info)) {
+            return report_error(
+                FunctionName, SparseMemFormatError,
+                ".addata_main and .addata_tags require .addata_info");
+        }
+
+        if (have_main) {
+            if (info_header.sh_size != 8) {
+                return report_error(FunctionName, SparseMemFormatError,
+                                    ".addata_info must contain 8 bytes");
+            }
+
+            uint8_t info[8];
+            if (!read_at(input, info_header.sh_offset, info, sizeof(info))) {
+                return report_error(FunctionName, SparseMemIoError,
+                                    "cannot read .addata_info");
+            }
+            uint32_t entry_count;
+            std::memcpy(&addata_address, info, sizeof(addata_address));
+            std::memcpy(&entry_count, info + 4, sizeof(entry_count));
+
+            const uint64_t data_size = static_cast<uint64_t>(entry_count) * 8;
+            if ((addata_address & 7U) != 0 || entry_count > 0x3ff ||
+                !range_fits_address_space(addata_address, data_size) ||
+                main_header.sh_size != data_size ||
+                tags_header.sh_size != entry_count) {
+                return report_error(FunctionName, SparseMemFormatError,
+                                    "inconsistent embedded additional data");
+            }
+
+            addata_main.resize(main_header.sh_size);
+            addata_tags.resize(tags_header.sh_size);
+            if ((!addata_main.empty() &&
+                 !read_at(input, main_header.sh_offset, addata_main.data(),
+                          addata_main.size())) ||
+                (!addata_tags.empty() &&
+                 !read_at(input, tags_header.sh_offset, addata_tags.data(),
+                          addata_tags.size()))) {
+                return report_error(FunctionName, SparseMemIoError,
+                                    "cannot read embedded additional data");
+            }
+            if (!std::all_of(addata_tags.begin(), addata_tags.end(),
+                             [](uint8_t tag) { return tag <= 1; })) {
+                return report_error(FunctionName, SparseMemFormatError,
+                                    ".addata_tags contains a non-boolean tag");
+            }
+        }
+    }
+
     std::vector<Elf32_Phdr> load_segments;
     for (uint16_t index = 0; index < elf_header.e_phnum; ++index) {
         Elf32_Phdr program_header{};
@@ -356,121 +504,23 @@ extern "C" int sparse_mem_init_elf(const char *elf_name)
         }
     }
 
-    sparse_mem_data.swap(loaded_data);
-    sparse_mem_tag.clear();
-    return SparseMemOk;
-}
-
-/* Overlay 65-bit address:data entries without clearing the ELF image. */
-extern "C" int sparse_mem_load_addata(const char *addata_name)
-{
-    static const char *FunctionName = "sparse_mem_load_addata";
-    if (addata_name == nullptr) {
-        return report_error(FunctionName, SparseMemOpenError,
-                            "input filename is null");
-    }
-
-    std::ifstream input(addata_name);
-    if (!input.is_open()) {
-        return report_error(FunctionName, SparseMemOpenError,
-                            std::string("cannot open '") + addata_name + "'");
-    }
-
-    struct Entry {
-        uint32_t address;
-        uint64_t data;
-        uint8_t tag;
-    };
-    std::vector<Entry> entries;
-    std::string line;
-    unsigned line_number = 0;
-    while (std::getline(input, line)) {
-        ++line_number;
-        const std::size_t comment = line.find('#');
-        if (comment != std::string::npos) {
-            line.erase(comment);
-        }
-        line.erase(std::remove_if(line.begin(), line.end(),
-                                  [](unsigned char character) {
-                                      return std::isspace(character) != 0;
-                                  }),
-                   line.end());
-        if (line.empty()) {
-            continue;
-        }
-
-        const std::size_t colon = line.find(':');
-        if (colon == std::string::npos ||
-            line.find(':', colon + 1) != std::string::npos) {
-            return report_error(
-                FunctionName, SparseMemFormatError,
-                "line " + std::to_string(line_number) +
-                    ": expected address:data");
-        }
-
-        std::string address_text = line.substr(0, colon);
-        std::string data_text = line.substr(colon + 1);
-        if (data_text.compare(0, 2, "0x") == 0 ||
-            data_text.compare(0, 2, "0X") == 0) {
-            data_text.erase(0, 2);
-        }
-        if (data_text.empty() || data_text.size() > 17 ||
-            !std::all_of(data_text.begin(), data_text.end(),
-                         [](unsigned char character) {
-                             return std::isxdigit(character) != 0;
-                         })) {
-            return report_error(
-                FunctionName, SparseMemFormatError,
-                "line " + std::to_string(line_number) +
-                    ": invalid 65-bit data value");
-        }
-
-        try {
-            std::size_t address_end = 0;
-            const unsigned long long parsed_address =
-                std::stoull(address_text, &address_end, 0);
-            if (address_end != address_text.size() ||
-                parsed_address > std::numeric_limits<uint32_t>::max() - 7ULL ||
-                (parsed_address & 7ULL) != 0) {
-                throw std::out_of_range("address must be aligned and 32-bit");
-            }
-
-            uint8_t tag = 0;
-            if (data_text.size() == 17) {
-                if (data_text[0] != '0' && data_text[0] != '1') {
-                    throw std::out_of_range("tag bit must be zero or one");
-                }
-                tag = data_text[0] == '1';
-                data_text.erase(0, 1);
-            }
-            const uint64_t data = std::stoull(data_text, nullptr, 16);
-            entries.push_back({static_cast<uint32_t>(parsed_address),
-                               data, tag});
-        } catch (const std::exception &error) {
-            return report_error(
-                FunctionName, SparseMemFormatError,
-                "line " + std::to_string(line_number) + ": " + error.what());
-        }
-    }
-
-    if (input.bad()) {
-        return report_error(FunctionName, SparseMemIoError,
-                            "error while reading input file");
-    }
-
-    for (const Entry &entry : entries) {
+    SparseByteMap loaded_tags;
+    for (std::size_t index = 0; index < addata_tags.size(); ++index) {
+        const uint32_t address =
+            addata_address + static_cast<uint32_t>(index * 8);
         for (unsigned byte = 0; byte < 8; ++byte) {
-            const uint32_t address = entry.address + byte;
-            const uint8_t value =
-                static_cast<uint8_t>(entry.data >> (byte * 8));
+            const uint8_t value = addata_main[index * 8 + byte];
             if (value == 0) {
-                sparse_mem_data.erase(address);
+                loaded_data.erase(address + byte);
             } else {
-                sparse_mem_data[address] = value;
+                loaded_data[address + byte] = value;
             }
         }
-        sparse_mem_tag[entry.address] = entry.tag;
+        loaded_tags[address] = addata_tags[index];
     }
+
+    sparse_mem_data.swap(loaded_data);
+    sparse_mem_tag.swap(loaded_tags);
     return SparseMemOk;
 }
 
