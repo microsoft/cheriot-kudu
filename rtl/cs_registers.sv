@@ -1310,19 +1310,28 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   // Use a LFSR to make mcycle reads to return a pesudo-random sequence for DII-SIM
   // polynomial: x^32 + x^22 + x^2 + x + 1 
 
-  logic [31:0] mcycle_value_q;
-  logic lfsr_feedback, mcycle_read;
+  logic [31:0] mcycle_value_q, lfsr_state;
+  logic        mcycle_read;
 
   assign mhpmcounter[0] = mcycle_value_q;
-  assign lfsr_feedback  = mcycle_value_q[31] ^ mcycle_value_q[21] ^ mcycle_value_q[1] ^ mcycle_value_q[0];
   assign mcycle_read    = csr_op_en_i &  ~csr_cheri_i & (csr_op_i == CSR_OP_READ) & 
                          (csr_addr_i == CSR_MCYCLE) & ~illegal_csr_insn_o ;
+
+  always_comb begin
+    logic lfsr_bit;
+
+    lfsr_state = mcycle_value_q;
+    for (int i = 0; i < 4; i++) begin
+      lfsr_bit  = lfsr_state[31] ^ lfsr_state[21] ^ lfsr_state[1] ^ lfsr_state[0];
+      lfsr_state = {lfsr_state[30:0], lfsr_bit};
+    end
+  end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       mcycle_value_q <= 32'hdeadbeef;
     end else if (mcycle_read) begin
-      mcycle_value_q <= {mcycle_value_q[30:0], lfsr_feedback};
+      mcycle_value_q <= lfsr_state;
     end
   end
 
