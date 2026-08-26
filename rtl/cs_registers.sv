@@ -1305,6 +1305,28 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     end
   end
 
+`ifdef DII_SIM
+
+  // Use a LFSR to make mcycle reads to return a pesudo-random sequence for DII-SIM
+  // polynomial: x^32 + x^22 + x^2 + x + 1 
+
+  logic [31:0] mcycle_value_q;
+  logic lfsr_feedback, mcycle_read;
+
+  assign mhpmcounter[0] = mcycle_value_q;
+  assign lfsr_feedback  = mcycle_value_q[31] ^ mcycle_value_q[21] ^ mcycle_value_q[1] ^ mcycle_value_q[0];
+  assign mcycle_read    = csr_op_en_i &  ~csr_cheri_i & (csr_op_i == CSR_OP_READ) & 
+                         (csr_addr_i == CSR_MCYCLE) & ~illegal_csr_insn_o ;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      mcycle_value_q <= 32'hdeadbeef;
+    end else if (mcycle_read) begin
+      mcycle_value_q <= {mcycle_value_q[30:0], lfsr_feedback};
+    end
+  end
+
+`else
   // mcycle
   ibex_counter #(
     .CounterWidth(64)
@@ -1318,6 +1340,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     .counter_val_o(mhpmcounter[0]),
     .counter_val_upd_o()
   );
+`endif
 
 
   // minstret
