@@ -9,7 +9,6 @@
 
 import "DPI-C" function int sparse_mem_init( input string infile_name);
 import "DPI-C" function int sparse_mem_init_elf( input string elf_name);
-//import "DPI-C" function int sparse_mem_load_addata( input string addata_name);
 
 module tb_kudu_top; 
 `ifndef IBEX
@@ -290,12 +289,13 @@ module tb_kudu_top;
     .start_stop (stat_start_stop),
     .print_req  (stat_print_req)
   );
-
+  `ifdef BRANCH_LOG
   kudu_branch_log branch_log_i (
     .clk_i      (clk),
     .rst_ni     (rst_n),
     .start_stop (mcycle_rd_event)
   );
+  `endif
   `endif
 
 `endif    // kudu
@@ -442,30 +442,28 @@ module tb_kudu_top;
   // simulation init
   //
   string test_name, vhx_path;
-  string dbgrom_name, dbg_vhx_path, instr_dii_path, instr_elf_path, addata_path;
+  string dbgrom_name, dbg_vhx_path, instr_dii_path, instr_elf_path, bin_dir;
 
 
   initial begin
     bit cont_flag, uart_stopped;
     int i, timeout;
     int rvfi_max;
-    int has_addata;
 
     timeout  = 1000* 1000;   // default timeout
     rvfi_max = 1000;
-    has_addata = 0;
+    bin_dir  = "./bin";
 
     i = $value$plusargs("TEST=%s", test_name);
     if (i == 0) $sformat(test_name, "hello_world");
 
     i = $value$plusargs("TIMEOUT=%d", timeout);
     i = $value$plusargs("RVFI_MAX=%d", rvfi_max);
-    i = $value$plusargs("ADDATA=%d", has_addata);
+    i = $value$plusargs("BINDIR=%s", bin_dir);
 
 `ifdef DII_SIM
-    $sformat(instr_dii_path, "./bin/%s.dii", test_name);
-    $sformat(instr_elf_path, "./bin/%s.elf", test_name);
-    $sformat(addata_path, "./bin/%s.addata", test_name);
+    $sformat(instr_dii_path, "%s/%s.dii", bin_dir, test_name);
+    $sformat(instr_elf_path, "%s/%s.elf", bin_dir, test_name);
     $display("TB> Loading DII test %s", test_name);
     $display("TB> Test timeout = %d", timeout);
     $display("TB> RVFI packet count max = %d", rvfi_max);
@@ -490,8 +488,7 @@ module tb_kudu_top;
 `ifdef DII_SIM
     // sparse_mem_init(instr_dii_path);
     sparse_mem_init_elf(instr_elf_path);
-    sparse_mem_dump("./instr_mem_dump.log");
-    //if (has_addata) sparse_mem_load_addata(addata_path);
+    // sparse_mem_dump("./instr_mem_dump.log");
     
 `else
     //$readmemh(vhx_path, u_instr_mem.iram, 'h0);   // load main executable

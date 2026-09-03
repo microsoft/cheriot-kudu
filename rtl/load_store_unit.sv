@@ -576,7 +576,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign csr_cheri = cheri_pmode & lsu_req_info_q.is_csr && (csr_insn[6:0] == OPCODE_CHERI);
 
   assign csr_op_en_o  = csr_go_q & lsu_req_info_q.is_csr & ~csr_cheri_asr_err;
-  assign csr_access_o = lsu_req_info_q.is_csr;
+  assign csr_access_o = lsu_req_info_q.is_csr & ~csr_cheri_asr_err;  // this qualifies illegal_csr_insn
   assign csr_cheri_o  = csr_cheri;
   assign csr_wdata_o  = csr_cheri ? lsu_req_info_q.cs1_fcap : 
                         (csr_insn[14] ? csr_insn[19:15] : lsu_req_info_q.cs1_fcap[31:0]);
