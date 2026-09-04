@@ -689,7 +689,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .ex1_pcc_cap_o                (ex1_pcc_cap),
     .ir_pcc_cap_o                 (ir_pcc_cap),
     .csr_dbg_tclr_fault_o         (),
-    .cheri_fatal_err_o            ()
+    .cheri_fatal_err_o            (cheri_fatal_err_o)
   );
 
   cmplx_unit # (.CHERIoTEn(CHERIoTEn), .RV32A(CFG.RV32A)) comlx_unit_i (

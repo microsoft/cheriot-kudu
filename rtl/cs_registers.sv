@@ -260,7 +260,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   // CSR update logic
   logic [31:0]     csr_wdata32;
   logic [31:0]     csr_rdata32;
-  logic [RegW-1:0] csr_wdata_cheri;
+  logic [RegW-1:0] scr_wdata_legalized;
   logic [RegW-1:0] csr_rdata_cheri;
   logic            csr_we_int32;
   logic            csr_wr;
@@ -1685,7 +1685,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   assign scr_wfcap2  = legalize_scr(scr_addr, scr_wfcap1);
   assign scr_wfcap3  = set_address(scr_wfcap2, scr_wfcap2.addr);
 
-  assign csr_wdata_cheri = scr_wfcap3[RegW-1:0];
+  assign scr_wdata_legalized = scr_wfcap3[RegW-1:0];
   
   //
   //  MEPC/MEPCC
@@ -1698,7 +1698,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       mepc_d[31:0] = {csr_wdata32[31:1], 1'b0};
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC)) begin
       mepc_en = 1'b1;
-      mepc_d  = csr_wdata_cheri;
+      mepc_d  = scr_wdata_legalized;
     end else if (cheri_pmode & csr_save_cause_i & ~debug_mode_i) begin
       mepc_en = 1'b1;
       mepc_d  = (cheri_pmode & csr_exc_info_i.has_pcc) ? csr_exc_info_i.pc : pcc_exc_rcap;
@@ -1740,7 +1740,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       mtvec_d[31:0] = {csr_wdata32[31:2], 2'b00};
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTCC)) begin
       mtvec_en = 1'b1;
-      mtvec_d  = csr_wdata_cheri;
+      mtvec_d  = scr_wdata_legalized;
     end else if (csr_mtvec_init_i) begin  // we assume mtvec_init_i will only come at boot time when mtvec = Tx cap
       mtvec_en      = 1'b1;
       mtvec_d       = mtvec_q;
@@ -1775,7 +1775,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       depc_d  = {csr_wdata32[31:1], 1'b0};
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DEPCC) && debug_mode_i) begin
       depc_en = 1'b1;
-      depc_d  = {csr_wdata_cheri[RegW-1:1], 1'b0};
+      depc_d  = {scr_wdata_legalized[RegW-1:1], 1'b0};
     end else if (CHERIoTEn & cheri_pmode & csr_save_cause_i & debug_csr_save_i) begin
       depc_en = 1'b1;
       depc_d  = pcc_exc_rcap;
@@ -1792,7 +1792,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       dscratch0_d  = csr_wdata32;
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC0) && debug_mode_i) begin
       dscratch0_en = 1'b1;
-      dscratch0_d  = csr_wdata_cheri;
+      dscratch0_d  = scr_wdata_legalized;
     end else begin
       dscratch0_en = 1'b0;
       dscratch0_d  = dscratch0_q;
@@ -1803,7 +1803,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       dscratch1_d  = csr_wdata32;
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC1) && debug_mode_i) begin
       dscratch1_en = 1'b1;
-      dscratch1_d  = csr_wdata_cheri;
+      dscratch1_d  = scr_wdata_legalized;
     end else begin
       dscratch1_en = 1'b0;
       dscratch1_d  = dscratch1_q;
@@ -1929,7 +1929,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     always_comb begin
       if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTDC)) begin
         mtdc_en = 1'b1;
-        mtdc_d  = csr_wdata_cheri;
+        mtdc_d  = scr_wdata_legalized;
       end else begin
         mtdc_en = 1'b0;
         mtdc_d  = mtdc_q;
@@ -1938,7 +1938,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       // perm ASR has been checked by execution pipelines alredy
       if (scr_wr_cheri && (scr_addr == CHERI_SCR_MSCRATCHC)) begin
         mscratchc_en = 1'b1;
-        mscratchc_d  = csr_wdata_cheri;
+        mscratchc_d  = scr_wdata_legalized;
       end else begin
         mscratchc_en = 1'b0;
         mscratchc_d  = mscratchc_q;
@@ -1974,17 +1974,24 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     );
 
    
-      // fatal error condition (unrecoverable, need external reset)
-    // exception with invalid mepcc
-    logic cheri_fatal_err_q;
+    // fatal error condition (unrecoverable, need external reset or debug_req)
+    // note this is informational and doesn't cover all fatal error cases
+    // - e.g., mtcc.addr too close to mtcc.top33 could still cause dead loop.
+    logic cheri_fatal_err_q, mtcc_invalid;
+    full_cap_t mtvec_fcap;
 
     assign cheri_fatal_err_o = cheri_fatal_err_q;
+
+    assign  mtvec_fcap   = op2fullcap(reg2opcap(mtvec_cap));
+    assign  mtcc_invalid = ~mtvec_fcap.valid | ~mtvec_fcap.perms[PERM_EX] | ~mtvec_fcap.perms[PERM_LD] |
+                           ~mtvec_fcap.perms[PERM_MC] | ~(mtvec_fcap.otype == OTYPE_UNSEALED) |
+                           (mtvec_fcap.addr > mtvec_fcap.top33) | (mtvec_fcap.addr < mtvec_fcap.base32);
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
       if (!rst_ni) begin
         cheri_fatal_err_q <= 1'b0;
       end else begin
-        if (cheri_pmode & csr_save_cause_i & ~mtvec_cap.valid) 
+        if (cheri_pmode & csr_save_cause_i & mtcc_invalid) 
           cheri_fatal_err_q <= 1'b1;
       end
     end
