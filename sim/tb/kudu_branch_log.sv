@@ -5,7 +5,7 @@ module kudu_branch_log #(
   input  logic        rst_ni,
   input  logic        start_stop
 );
-
+`ifdef BRANCH_LOG
   `define ISSUER dut.issuer_i
 
   logic log_enable;
@@ -67,5 +67,5 @@ module kudu_branch_log #(
 
     $fclose(fd);
   end
-
+`endif
 endmodule

@@ -289,13 +289,11 @@ module tb_kudu_top;
     .start_stop (stat_start_stop),
     .print_req  (stat_print_req)
   );
-  `ifdef BRANCH_LOG
   kudu_branch_log branch_log_i (
     .clk_i      (clk),
     .rst_ni     (rst_n),
     .start_stop (mcycle_rd_event)
   );
-  `endif
   `endif
 
 `endif    // kudu
@@ -482,7 +480,8 @@ module tb_kudu_top;
     cycle_cnt      = 0;
 
     rst_n = 1'b1;
-    repeat (2) @(posedge clk);
+    #1;
+    // repeat (2) @(posedge clk);
     rst_n = 1'b0;
 
 `ifdef DII_SIM
