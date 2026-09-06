@@ -22,14 +22,6 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
   `include "tracer_dpi_wrapper.sv"
 `endif
 
-  typedef struct packed {
-    logic [4:0]  pl;
-    logic        is_ex;   // instr actually goes to commit FIFO and EX pipelines
-    logic        is_amo;
-    rvfi_t       rvfi;
-    ir_dec_t     ir_dec;
-  } instr_trace_t;
-  
   function automatic logic [31:0] get_pc_wdata (int ir_sel);
     logic [31:0] result;
     // only need to conside issued branch/jal/jalr instructions (rvfi.valid == 1)

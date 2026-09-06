@@ -429,6 +429,13 @@ package tracer_pkg;
     logic            mem_is_cap;
   } rvfi_t;
 
+  typedef struct packed {
+    logic [4:0]  pl;
+    logic        is_ex;   // instr actually goes to commit FIFO and EX pipelines
+    logic        is_amo;
+    rvfi_t       rvfi;
+    ir_dec_t     ir_dec;
+  } instr_trace_t;
 
   // Format register address with "x" prefix, left-aligned to a fixed width of 3 characters.
   function automatic string reg_addr_to_str(input logic [4:0] addr);

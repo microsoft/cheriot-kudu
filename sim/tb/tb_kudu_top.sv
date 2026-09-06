@@ -26,6 +26,13 @@ module tb_kudu_top;
   `endif
 `endif
 
+`ifdef CHERIoT
+  `define CHERIOT_EN 1
+`else 
+  `define CHERIOT_EN 0
+`endif
+
+
   import kudu_dv_pkg::*;
 
 
@@ -82,6 +89,7 @@ module tb_kudu_top;
   int unsigned cfg_intr_intvl;
   int unsigned cfg_dbg_req_intvl;
   int unsigned cfg_cap_err_rate;
+  int unsigned cfg_cheri_pmode;
 
   logic [2:0] instr_err_rate, data_err_rate;
   logic [3:0] instr_gnt_wmax, data_gnt_wmax;
@@ -111,6 +119,11 @@ module tb_kudu_top;
     dbg_req_intvl = 0;
 
     stat_mcycle   = 0;
+    cheri_pmode   = `CHERIOT_EN;
+
+    i = $value$plusargs("PMODE=%d", cfg_cheri_pmode);
+    if (i == 1) cheri_pmode = cfg_cheri_pmode;
+   
 
     i = $value$plusargs("INSTR_ERR_RATE=%d", cfg_instr_err_rate);
     if (i == 1) instr_err_rate = cfg_instr_err_rate[2:0];
@@ -167,10 +180,8 @@ module tb_kudu_top;
   endtask
 
 `ifdef CHERIoT
-  assign cheri_pmode    = 1'b1;
   assign cheri_tsafe_en = 1'b1;
 `else
-  assign cheri_pmode    = 1'b0;
   assign cheri_tsafe_en = 1'b0;
 `endif
 
@@ -192,12 +203,6 @@ module tb_kudu_top;
 
   `ifndef KUDU_DW_MULT
     `define KUDU_DW_MULT 0
-  `endif
-
-  `ifdef CHERIoT
-    `define KUDU_CHERIOT_EN 1
-  `else 
-    `define KUDU_CHERIOT_EN 0
   `endif
 
   localparam kudu_cfg_t MyKuduCfg = (`KUDU_PPL_CFG == 2) ? KuduCfg2 : 
@@ -233,7 +238,7 @@ module tb_kudu_top;
 
 
   kudu_top #(
-    .CHERIoTEn   (`KUDU_CHERIOT_EN),
+    .CHERIoTEn   (`CHERIOT_EN),
     .UseDWMult   (`KUDU_DW_MULT),
     .CFG         (MyKuduCfg)
   ) dut (
