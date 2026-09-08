@@ -27,7 +27,7 @@ cheriot-kudu is 32-bit RISC-V microcontroller currently under development at Mic
  - RV32IMAC support
  - Bitmanip extension (zba, zbb, zbc, zbs)
  - CHERIoT support (same as cheriot-ibex)
- - Coremark score: 5.25/MHz (RV32 mode)
+ - Coremark benchmark score: 5.25/MHz
  - RV32 mode and CHERIoT mode (selectable at runtime).
 
 See the following block diagram for an overview of cheriot-kudu hardwared design.
