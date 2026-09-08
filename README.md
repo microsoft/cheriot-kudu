@@ -23,11 +23,12 @@ Any use of third-party trademarks or logos are subject to those third-party's po
 ## Introduction
 cheriot-kudu is 32-bit RISC-V microcontroller currently under development at Microsoft. Feature highlights include
  - Configurable 4, 5 or 6 stage pipeline
- - in-order, dual-issue 
+ - in-order, dual-issue
  - RV32IMAC support
  - Bitmanip extension (zba, zbb, zbc, zbs)
  - CHERIoT support (same as cheriot-ibex)
- - Backward compatibility mode (same as cheriot-ibex)
+ - Coremark score: 5.25/MHz (RV32 mode)
+ - RV32 mode and CHERIoT mode (selectable at runtime).
 
 See the following block diagram for an overview of cheriot-kudu hardwared design.
 <br><br>
