@@ -11,6 +11,7 @@ module branch_predict import super_pkg::*; #(
   parameter bit          UseBtb     = 1'b1,
   parameter bit          AltEnable  = 1'b0, 
   parameter bit          PredictRA  = 1'b0, 
+  parameter bit          UseAgree   = 1'b1,
   parameter bit          InstrBufEn = 1'b0
 ) (
   input  logic                clk_i,
@@ -62,10 +63,10 @@ module branch_predict import super_pkg::*; #(
 
   // bit 1: NT(1)/T(0), bit 0: Weak(1)/Strong(0)
   typedef enum integer {
-    StrongT = 0,       
-    WeakT   = 1,
-    WeakN   = 3,
-    StrongN = 2
+    StrongN = 0,       
+    WeakN   = 1,
+    WeakT   = 3,
+    StrongT = 2
   } bht_e;
 
   typedef struct packed {
@@ -73,8 +74,14 @@ module branch_predict import super_pkg::*; #(
     logic [31:0]  target;
   } btb_t;
 
-  function automatic btb_t dec_target(ir_reg_t instr_i);
-    btb_t        result;
+  typedef struct packed {
+    logic         is_fwd;
+    logic         valid;
+    logic [31:0]  target;
+  } target_dec_t;
+
+  function automatic target_dec_t dec_target(ir_reg_t instr_i);
+    target_dec_t        result;
     logic [31:0] offset, insn32, imm_j_type, imm_b_type;
     logic [15:0] insn16;
 
@@ -98,27 +105,39 @@ module branch_predict import super_pkg::*; #(
 
     offset = instr_i.is_branch ? imm_b_type : imm_j_type;
 
-    result.valid = 1'b1;
+    result.is_fwd = ~offset[31];
+    result.valid  = 1'b1;
     result.target = instr_i.pc + offset;
 
     return result;
   endfunction
 
-  function automatic bht_e update_bht(bht_e cur_bht, logic branch_taken);
+  function automatic bht_e update_bht(bht_e cur_bht, logic branch_taken, logic is_fwd);
     bht_e result;
+    logic taken_or_agree;
+
+    // if Agree predictor is used, then we 
+    //  - interpret T as Agree, N as Disagree
+    //  - for example StrongT -> Strong Agree, StrongN -> Strong Disagree
+    //  - Backward branch bias: Taken
+    //  - Forward banch bias: not Taken
+    // if agree predictor not used (plain predictor),
+    //  - interpret T as Taken, N as Not Taken
+
+    taken_or_agree = (UseAgree & is_fwd) ? ~branch_taken  : branch_taken;
 
     result = cur_bht;
-    if ((cur_bht == StrongT) && ~branch_taken)
+    if ((cur_bht == StrongT) && ~taken_or_agree)
       result = WeakT;
-    else if ((cur_bht == WeakT) && branch_taken)
+    else if ((cur_bht == WeakT) && taken_or_agree)
       result = StrongT;
-    else if ((cur_bht == WeakT) && ~branch_taken)
+    else if ((cur_bht == WeakT) && ~taken_or_agree)
       result = WeakN;
-    else if ((cur_bht == WeakN) && branch_taken)
+    else if ((cur_bht == WeakN) && taken_or_agree)
       result = WeakT;
-    else if ((cur_bht == WeakN) && ~branch_taken)
+    else if ((cur_bht == WeakN) && ~taken_or_agree)
       result = StrongN;
-    else if ((cur_bht == StrongN) && branch_taken)
+    else if ((cur_bht == StrongN) && taken_or_agree)
       result = WeakN;
     
     return result;
@@ -143,7 +162,7 @@ module branch_predict import super_pkg::*; #(
   btb_t   btb[BhtSize];            
   btb_t   jtb[JtbSize];
 
-  logic [1:0] is_branch, is_jal, is_jalr_ra;
+  logic [1:0] is_branch, is_fwd, is_jal, is_jalr_ra;
 
   logic [BhtAW-1:0] bht_index0, bht_index1_spec0, bht_index1_spec1;
 
@@ -188,12 +207,16 @@ module branch_predict import super_pkg::*; #(
   for (genvar i = 0; i < BhtSize; i++) begin : gen_bht
     logic [1:0]  bht_entry_sel;
     logic        ex_branch_taken_muxed;
+    logic        ex_branch_fwd_muxed;
     logic [31:0] ex_branch_target_muxed;
 
     assign bht_entry_sel[0] = ex_bp_info_i.is_branch[0] && (ex_bp_info_i.pc0[BhtHi:BhtLo] == i);
     assign bht_entry_sel[1] = ex_bp_info_i.is_branch[1] && (ex_bp_info_i.pc1[BhtHi:BhtLo] == i);
-    assign ex_branch_taken_muxed = bht_entry_sel[0] ? ex_bp_info_i.taken[0] : 
-                                                      ex_bp_info_i.taken[1];
+
+    assign ex_branch_taken_muxed  = bht_entry_sel[0] ? ex_bp_info_i.taken[0] : 
+                                                       ex_bp_info_i.taken[1];
+    assign ex_branch_fwd_muxed    = bht_entry_sel[0] ? ex_bp_info_i.is_fwd[0] : 
+                                                       ex_bp_info_i.is_fwd[1];
     assign ex_branch_target_muxed = bht_entry_sel[0] ? ex_bp_info_i.target0 : ex_bp_info_i.target1;
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -204,7 +227,7 @@ module branch_predict import super_pkg::*; #(
         if (ex_bp_init_i) begin
           btb[i] <= '{0, tbl_rst_val_i};
         end else if (|bht_entry_sel) begin 
-          bht[i] <= update_bht(bht[i], ex_branch_taken_muxed);
+          bht[i] <= update_bht(bht[i], ex_branch_taken_muxed, ex_branch_fwd_muxed);
           if (ex_branch_taken_muxed) btb[i] <= '{1'b1, ex_branch_target_muxed};
         end
       end
@@ -232,7 +255,14 @@ module branch_predict import super_pkg::*; #(
     end
   end  // gen_jtb
 
+  target_dec_t target_dec[1:0];
+  assign target_dec[0] = dec_target(fetch_instr0_i);
+  assign target_dec[1] = dec_target(fetch_instr1_i);
+  assign is_fwd[0]     = target_dec[0].is_fwd;
+  assign is_fwd[1]     = target_dec[1].is_fwd;
+
     // spec0/spec1 helps timing (otherwise have to wait for adder before indexing table)
+
   if (UseBtb) begin : gen_btb_read
     assign btb_rdata[0] = btb[bht_index0];
     assign btb_rdata[1] = fetch_instr0_i.is_comp ? btb[bht_index1_spec0] : btb[bht_index1_spec1];
@@ -241,8 +271,8 @@ module branch_predict import super_pkg::*; #(
     assign jtb_rdata[1] = fetch_instr0_i.is_comp ? jtb[jtb_index1_spec0] : jtb[jtb_index1_spec1];
 
   end else begin : gen_dec      // use decoded targets directly
-    assign btb_rdata[0] = dec_target(fetch_instr0_i);
-    assign btb_rdata[1] = dec_target(fetch_instr1_i);
+    assign btb_rdata[0] = btb_t'(target_dec[0]);
+    assign btb_rdata[1] = btb_t'(target_dec[1]);
     assign jtb_rdata[0] = btb_rdata[0];
     assign jtb_rdata[1] = btb_rdata[1];
   end  // gen_dec
@@ -254,8 +284,15 @@ module branch_predict import super_pkg::*; #(
 
   // Note we don't really need the valid flag in BTB here (table entry will settle after a
   // short initial period)
-  assign pdt_branch_go[0] = is_branch[0] && ~bht_rdata[0][1];
-  assign pdt_branch_go[1] = is_branch[1] && ~bht_rdata[1][1];
+  if (UseAgree) begin : g_agree_predict
+    // bit[1] of bht table entry == AGREE. 
+    assign pdt_branch_go[0] = is_branch[0] && is_fwd[0] ^ bht_rdata[0][1];
+    assign pdt_branch_go[1] = is_branch[1] && is_fwd[1] ^ bht_rdata[1][1];
+  end else begin : g_plain_predict
+    // bit[1] of bht table entry == TAKEN 
+    assign pdt_branch_go[0] = is_branch[0] && bht_rdata[0][1];
+    assign pdt_branch_go[1] = is_branch[1] && bht_rdata[1][1];
+  end
 
   assign pdt_jal_go[0] = is_jal[0];
   assign pdt_jal_go[1] = is_jal[1];

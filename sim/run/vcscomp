@@ -1,59 +1,67 @@
 #!/usr/local/bin/bash
 #
-VlogDef1="+define+CHERIoT"
-VlogDef2="+define+KUDU_PPL_CFG=1"
-VlogDef3=""
-VlogDef4=""
-VlogDef5=""
-VlogDef6=""
-FileList="kudu.vcs.f"
+VlogArg1="+define+CHERIoT"
+VlogArg2="+define+KUDU_PPL_CFG=1"
+VlogArg3=""
+VlogArg4=""
+VlogArg5=""
+VlogArg6=""
+FileList="-f kudu.vcs.f"
+CovFileList="-f ../fcov/kudu_fcov.f"
 OutFile="./simv"
 CompDir="simv.daidir"
+cmDir=""
+CmHier="./cm_hier.cfg"
 RunDII="false"
+RiscvTest="false"
 
 # Loop over args
 for arg in "$@"; do
   case "$arg" in
     -rv32)  
-      VlogDef1="" 
+      VlogArg1="" 
       OutFile="./simv32"
       CompDir="simv32.daidir"
       ;;
-    -conf0) VlogDef2="+define+KUDU_PPL_CFG=0" ;;
-    -conf1) VlogDef2="+define+KUDU_PPL_CFG=1" ;;
-    -conf2) VlogDef2="+define+KUDU_PPL_CFG=2" ;;
-    -conf3) VlogDef2="+define+KUDU_PPL_CFG=3" ;;
+    -conf0) VlogArg2="+define+KUDU_PPL_CFG=0" ;;
+    -conf1) VlogArg2="+define+KUDU_PPL_CFG=1" ;;
+    -conf2) VlogArg2="+define+KUDU_PPL_CFG=2" ;;
+    -conf3) VlogArg2="+define+KUDU_PPL_CFG=3" ;;
     -dw)
-      VlogDef3="+define+KUDU_DW_MULT=1"
-      FileList="kudu_dw.vcs.f" 
+      VlogArg3="+define+KUDU_DW_MULT=1"
+      FileList="-f kudu_dw.vcs.f" 
       ;;
-    -riscv_test) VlogDef4="+define+RISCV_TEST_SUITE" ;;
     -dii)
-      #VlogDef5="+define+DII_SIM -LDFLAGS \"-L. -lsparse_mem\""
-      VlogDef5="+define+DII_SIM"
+      #VlogArg5="+define+DII_SIM -LDFLAGS \"-L. -lsparse_mem\""
+      VlogArg5="+define+DII_SIM"
       RunDII="true"
       ;;
-    -trace_dpi)
-      VlogDef3="+define+TraceDPI"
-      ;;
+    -trace_dpi) VlogArg3="+define+TraceDPI" ;;
+    -nowave) VlogArg3="+define+NO_FSDB" ;;
+    -cov)
+     # Code coverage is restricted to the DUT subtree (see ./cm_hier.cfg).
+     # Functional coverage (covergroups) is collected regardless.
+     VlogArg6="-cm line+cond+tgl+fsm+branch+assert -cm_hier $CmHier"
+     FileList="$FileList $CovFileList"
+     ;;
     *)
       echo "Warning: Unknown option $arg" >&2
       ;;
   esac
 done
 
-VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3 $VlogDef4 $VlogDef5 $VlogDef6"
-echo "VlogDefs=$VlogDefs  FileList=$FileList"
+VlogArgs="$VlogArg1 $VlogArg2 $VlogArg3 $VlogArg4 $VlogArg5 $VlogArg6"
+echo "VlogArgs=$VlogArgs  FileList=$FileList"
 
 
 export rtlRoot=../../rtl
 export verifRoot=..
 export dwRoot=../../dw
-rm $CompDir/.vcs.timestamp
+rm -f $CompDir/.vcs.timestamp 2>/dev/null
 
-if [[ "$RunDII" == "true" ]]; then
-  echo "Compling CPP models for DII sim"
-  g++ -std=c++17 -fPIC -shared  ../tb/sparse_mem.cpp -o libsparse_mem.so
-fi
+#if [[ "$RunDII" == "true" ]]; then
+  #echo "Compling CPP models for DII sim"
+  #g++ -std=c++17 -fPIC -shared  ../tb/sparse_mem.cpp -o libsparse_mem.so
+#fi
 
-vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps -debug_acc+all -o $OutFile $VlogDefs -f $FileList
+vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps -debug_acc+all -o $OutFile $VlogArgs $FileList 

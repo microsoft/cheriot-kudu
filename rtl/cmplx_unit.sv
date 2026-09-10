@@ -35,13 +35,13 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   output lsu_req_info_t    cmplx_lsu_req_info_o
   );
 
-  typedef enum logic [3:0] {
-    IDLE        = 4'h0,
-    AMO_READ    = 4'h1,
-    AMO_WAIT_RD = 4'h2,
-    AMO_WRITE   = 4'h3,
-    AMO_WAIT_WR = 4'h4
+  typedef enum logic [1:0] {
+    IDLE        = 2'h0,
+    AMO_WAIT_RD = 2'h1,
+    AMO_WRITE   = 2'h2,
+    AMO_WAIT_WR = 2'h3
   } cmplx_fsm_e;
+  //  AMO_READ    = 4'h1,
 
   cmplx_fsm_e  cmplx_fsm_ns, cmplx_fsm_cs;
 
@@ -69,7 +69,8 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
                                 ((cmplx_fsm_cs == AMO_WAIT_WR) & lspl_commit);
 
   assign cmplx_lsu_req_valid_o = ((cmplx_fsm_cs == IDLE) & cmplx_instr_start_i & instr_is_amo) ||
-                                 (cmplx_fsm_cs == AMO_READ) || (cmplx_fsm_cs == AMO_WRITE);
+                                 (cmplx_fsm_cs == AMO_WRITE);
+                                 // || (cmplx_fsm_cs == AMO_READ) || (cmplx_fsm_cs == AMO_WRITE);
 
   assign cmplx_sbd_wdata_o = '{5'h1 << 3, ir_dec_q.pc};
   assign cmplx_sbd_wr_o    = cmplx_lsu_req_valid_o & lspl_rdy_i;
@@ -82,15 +83,17 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
     end else begin 
       case (cmplx_fsm_cs)
         IDLE: begin
-          if (cmplx_instr_start_i & instr_is_amo & lspl_rdy_i)
+          // cmplx is issue_special, lspl will always be ready since we waited for sbdfifo empty
+          //if (cmplx_instr_start_i & instr_is_amo & lspl_rdy_i)
+          if (cmplx_instr_start_i & instr_is_amo)
             cmplx_fsm_ns = AMO_WAIT_RD;
-          else if (cmplx_instr_start_i & instr_is_amo)
-            cmplx_fsm_ns = AMO_READ;
+          // else if (cmplx_instr_start_i & instr_is_amo)
+          //  cmplx_fsm_ns = AMO_READ;
         end
-        AMO_READ: begin
-          if (lspl_rdy_i) 
-            cmplx_fsm_ns = AMO_WAIT_RD;
-        end
+        //AMO_READ: begin
+        //  if (lspl_rdy_i) 
+        //    cmplx_fsm_ns = AMO_WAIT_RD;
+        //end
         AMO_WAIT_RD: begin
           if (lspl_commit && lspl_output_i.err)
             cmplx_fsm_ns = IDLE;

@@ -189,10 +189,14 @@ module tb_kudu_top;
 
 `ifdef DII_SIM
   defparam u_data_mem.UseSparseMem = 1'b1;
+  `ifndef IBEX
   defparam dut.RvfiDumpEn          = 1'b1;
+  `endif
 `else
   defparam u_data_mem.UseSparseMem = 1'b0;
+  `ifndef IBEX
   defparam dut.RvfiDumpEn          = 1'b0;
+  `endif
 `endif  //DII_SIM
   
 

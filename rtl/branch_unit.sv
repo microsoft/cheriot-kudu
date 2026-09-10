@@ -140,6 +140,10 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
 
   assign branch_info_o.branch_taken = branch_taken_ordered;
 
+  assign branch_info_o.is_fwd = ira_is0_i ? {~irb_dec_i.insn[31], ~ira_dec_i.insn[31]} :
+                                            {~ira_dec_i.insn[31], ~irb_dec_i.insn[31]}; 
+
+
   // Misprediction decision
 
   logic [3:0] tmpa, tmpb;

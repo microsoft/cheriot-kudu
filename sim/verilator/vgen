@@ -23,7 +23,6 @@ for arg in "$@"; do
       VlogDef3="+define+KUDU_DW_MULT=1"
       FileList="kudu_dw.vcs.f" 
       ;;
-    -riscv_test) VlogDef4="+define+RISCV_TEST_SUITE" ;;
     -dii)
       #VlogDef5="+define+DII_SIM -LDFLAGS \"-L. -lsparse_mem\""
       VlogDef5="+define+DII_SIM"

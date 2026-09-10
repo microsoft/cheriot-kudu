@@ -399,7 +399,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic [31:0] ir1_reg_rd_req, ir1_reg_wr_req;
   logic        wr_req_conflict;
   logic [1:0]  ir_raw_hazard, ir_waw_hazard;
-  logic [31:1] reg_cheri_trsv_q;
+  logic [15:1] reg_cheri_trsv_q;
   logic [31:0] ir0_cheri_trsv_st, ir1_cheri_trsv_st;
   logic [1:0]  ir_cheri_hazard;
 
@@ -468,7 +468,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     logic [31:0] trvk_fwd_mask;
 
     // cheri load-filter register reservation, both WaW and RaW
-    assign ir0_cheri_trsv_st  = {reg_cheri_trsv_q, 1'b0} & (~trvk_fwd_mask);
+    assign ir0_cheri_trsv_st  = {16'h0, reg_cheri_trsv_q, 1'b0} & (~trvk_fwd_mask);
     assign ir1_cheri_trsv_st  = ir0_cheri_trsv_st | ir0_reg_wr_req; 
 
     assign ir_cheri_hazard[0] = cheri_pmode & ir0_dec.is_cheri & 
@@ -476,7 +476,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     assign ir_cheri_hazard[1] = cheri_pmode & ir1_dec.is_cheri & 
                                (|((ir1_reg_rd_req | ir1_reg_wr_req) & ir1_cheri_trsv_st));
 
-    for (genvar i = 1; i < 32; i++) begin : gen_trsv_regs
+    for (genvar i = 1; i < 16; i++) begin : gen_trsv_regs
       always_ff @(posedge clk_i, negedge rst_ni) begin
         if (~rst_ni) begin
           reg_cheri_trsv_q[i] <= 1'b0;
@@ -498,7 +498,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     end
 
   end else begin : gen_no_cheri_trsv
-    assign reg_cheri_trsv_q  = 31'h0;
+    assign reg_cheri_trsv_q  = 15'h0;
     assign ir0_cheri_trsv_st = 32'h0;
     assign ir1_cheri_trsv_st = 32'h0;
     assign ir_cheri_hazard   = 2'b00;
@@ -1013,6 +1013,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ex_bp_info_o.pc1        = ir1_dec.pc;
   assign ex_bp_info_o.target0    = ir0_dec.btarget;
   assign ex_bp_info_o.target1    = ir1_dec.btarget;
+  assign ex_bp_info_o.is_fwd     = branch_info_i.is_fwd;
 
   //
   // debug signals

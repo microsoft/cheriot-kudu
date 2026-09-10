@@ -218,6 +218,7 @@ package super_pkg;
     logic [1:0]  mis_jal;
     logic [1:0]  mis_jalr;
     logic [1:0]  branch_taken;
+    logic [1:0]  is_fwd;
   } branch_info_t;
 
   typedef struct packed {
@@ -228,6 +229,7 @@ package super_pkg;
     logic [31:0] pc1;
     logic [31:0] target0;
     logic [31:0] target1;
+    logic [1:0]  is_fwd;
   } ex_bp_info_t;
 
   typedef struct packed {
