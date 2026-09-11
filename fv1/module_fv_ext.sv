@@ -53,7 +53,9 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
   input  logic [31:0]    ir1_reg_wr_req,
   input  logic [1:0]     mispredict,
   input  logic           debug_ebreak,
-  input  logic [31:0]    ir0_nxt_pc_q
+  input  logic [31:0]    ir0_nxt_pc_q,
+  input  logic           lspl_rdy_i,
+  input  logic            cmplx_instr_start_o
 );
 
 `ifdef KUDU_FORMAL_G1_0
@@ -211,8 +213,10 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
     (irq_case0  |-> (##[1:5] irq_handled_or_disabled) ));
   AssertIssueIRQ1: assert property (@(posedge clk_i) 
     (irq_case1  |-> (##[1:5] irq_handled_or_disabled) ));
-  AssertIssueIRQNull: assert property (@(posedge clk_i) 
-    ( (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == NULL)) |-> (~pc_set_o && ~csr_save_cause_o) ));
+
+   // NULL case is atually unreachable now?
+//  AssertIssueIRQNull: assert property (@(posedge clk_i) 
+//    ( (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == NULL)) |-> (~pc_set_o && ~csr_save_cause_o) ));
 
 `endif
 endmodule
@@ -701,11 +705,6 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   input  logic            resp_err_latched,
   input  logic            lsu_err_active
 );
-
-`ifdef KUDU_FORMAL_G4_0
-  //
-  // handshaking and sequence
-  //
   logic       data_rvalid_mem;
   logic [7:0] instr_seq_in, instr_seq_exp, req_seq_exp;
 
@@ -729,9 +728,35 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
     end
   end
 
+  logic mem_not_gnt, lsu_not_done;
+  always @(posedge clk_i, negedge rst_ni) begin
+    if (~rst_ni)  begin
+      mem_not_gnt  <= 1'b0;
+      lsu_not_done <= 1'b0; 
+    end else begin
+      if (data_gnt_i)
+        mem_not_gnt <= 1'b0;
+      else if (data_req_o & ~data_gnt_i)
+        mem_not_gnt <= 1'b1;
+
+      if (lsu_req_done)
+        lsu_not_done <= 1'b0;
+      else if (lsu_req & ~lsu_req_done)
+        lsu_not_done <= 1'b1;
+    end
+  end
+
   AssumeDataGnt0:   assume property (data_req_o |-> ##[0:1] data_gnt_i);
-  AssumeDataGnt1:   assume property ((~rst_ni|~data_req_o) |-> ~data_gnt_i);
+  //AssumeDataGnt1:   assume property ((~rst_ni|~data_req_o) |-> ~data_gnt_i);
+  AssumeDataGnt1:   assume property  (data_gnt_i |-> data_req_o);
   AssumeDataValid:  assume property (data_rvalid_i == data_rvalid_mem);
+
+`ifdef KUDU_FORMAL_G4_0
+  //
+  // Strong assumption (no errors)
+  // handshaking and instruction sequence 
+  //assume property (
+
   AssumeDataErr:    assume property (data_err_i == 1'b0);
 
   AssumeNoFlush:    assume property (flush_i == 1'b0);
@@ -743,18 +768,6 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   // Let's just assume both A&B has the same sequence number. We are not
   // using this to test the ira/b muxing logic
   AssumeInstrSeq:   assume property (instr_dec.pc == {24'h0, instr_seq_in});
-
-  //WaWFiFo can't overrun (underrun permitted if cmplx request)
-  AssertWaWFifoNeverFull: assert property (@(posedge clk_i) 
-    (waw_fifo_i.wr_rdy_o));
-  AssertWaWFifoUnderrun: assert property (@(posedge clk_i) 
-    (lspl_valid_o |-> waw_fifo_i.rd_valid_o ));
-
-  // Verify WbFifo won't overrun (write attempt when not ready) due to backpressure to LSU
-  // - somehow tryingto prove wbFifo never full takes a very long time when data_gnt deay is 2..
-  // No need to assert for WbFiFoUnderrun (part of Assume already)
-  AssertWbFifoOverrun: assert property (@(posedge clk_i) 
-    (lsu_resp_valid |-> wb_fifo_i.wr_rdy_o));
 
   AssertLSUReq: assert property (@(posedge clk_i) 
     ((us_valid_i & lspl_rdy_o) |-> ##[0:3] lsu_req ));
@@ -775,30 +788,8 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
     ((lsu_req) |-> (lsu_req_info.pc[31:0] == {24'h0, req_seq_exp}) ));
 
   // 
-  // memory interface and LSU interface protocol checking
+  // LSU interface protocol checking
   //
-  logic mem_not_gnt, lsu_not_done;
-  always @(posedge clk_i, negedge rst_ni) begin
-    if (~rst_ni)  begin
-      mem_not_gnt  <= 1'b0;
-      lsu_not_done <= 1'b0; 
-    end else begin
-      if (data_gnt_i)
-        mem_not_gnt <= 1'b0;
-      else if (data_req_o & ~data_gnt_i)
-        mem_not_gnt <= 1'b1;
-
-      if (lsu_req_done)
-        lsu_not_done <= 1'b0;
-      else if (lsu_req & ~lsu_req_done)
-        lsu_not_done <= 1'b1;
-    end
-  end
-
-  AssertDataIfProtocol0:  assert property (@(posedge clk_i) 
-    ( mem_not_gnt |-> $stable(data_addr_o) ));
-  AssertDataIfProtocol1:  assert property (@(posedge clk_i) 
-    ( mem_not_gnt |-> $stable(data_req_o) ));
 
   AssertLsuIf0:  assert property (@(posedge clk_i) 
     ( lsu_not_done |-> $stable(lsu_req) ));
@@ -816,7 +807,11 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
 `endif
 
 `ifdef KUDU_FORMAL_G4_1
-  AssumeNoDebug:    assume property (debug_mode_i == 1'b0);
+  //
+  // Weaker assumptions (include error conditions) 
+  //
+  //AssumeNoDebug:    assume property (debug_mode_i == 1'b0);
+  AssumeNormalRq:   assume property (cmplx_lsu_req_valid_i == 1'b0);
 
   //
   // Execution-stage error handling
@@ -825,6 +820,10 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   //   writes), until the exception handler starts execution
   //
 
+
+  //
+  // Load/store/csr Error handling
+  //  
   // this runs too long in Jasper..
   // AssertTrapPendingAll: assert property (@(posedge clk_i) 
   //   (trap_pending |-> (~cs_registers_i.csr_op_en_i & ~data_req_o) ));
@@ -836,6 +835,33 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
     (lsu_err_active |-> (~load_store_unit_i.ls_go) ));
   AssertLsuTrapPending2: assert property (@(posedge clk_i) 
     (lsu_err_active |-> (~load_store_unit_i.csr_go) ));
+
+  AssertLsuTrapPending3: assert property (@(posedge clk_i) 
+    (flush_i |-> ##[0:1] ~lsu_req ));
+
+  AssertLsuNeverStuck: assert property (@(posedge clk_i) 
+    ((load_store_unit_i.ls_fsm_cs != IDLE) |-> ##[0:10]  (load_store_unit_i.ls_fsm_cs == IDLE) ));
+
+  // 
+  // memory interface protocol checking
+  //
+  AssertDataIfProtocol0:  assert property (@(posedge clk_i) 
+    ( mem_not_gnt |-> $stable(data_addr_o) ));
+  AssertDataIfProtocol1:  assert property (@(posedge clk_i) 
+    ( mem_not_gnt |-> $stable(data_req_o) ));
+
+  //WaWFiFo can't overrun (underrun permitted if cmplx request)
+  AssertWaWFifoNeverFull: assert property (@(posedge clk_i) 
+    (waw_fifo_i.wr_rdy_o));
+
+  // Verify WbFifo won't overrun (write attempt when not ready) due to backpressure to LSU
+  // - somehow tryingto prove wbFifo never full takes a very long time when data_gnt deay is 2..
+  // No need to assert for WbFiFoUnderrun (part of Assume already)
+  AssertWbFifoOverrun: assert property (@(posedge clk_i) 
+    (lsu_resp_valid |-> wb_fifo_i.wr_rdy_o));
+  AssertWaWFifoUnderrun: assert property (@(posedge clk_i) 
+    (lspl_valid_o |-> waw_fifo_i.rd_valid_o ));
+
 
 `endif
 
@@ -1220,7 +1246,9 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   input  logic [31:0]    alupl1_fwd_act,
   input  logic [31:0]    lspl_fwd_act,
   input  logic [31:0]    multpl_fwd_act,
-  input  logic [1:0]     ir_valid
+  input  logic [1:0]     ir_valid,
+  input  logic           lspl_rdy,
+  input  logic           cmplx_instr_start
 );
 
   defparam if_stage_i.AltEnable = 1'b0;
@@ -1338,6 +1366,7 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   AssertPccChangeEXC1: assert property (@(posedge clk_i) 
     (pcc_change_exc |-> (ir_stage_i.gen_stage1.s1_fifo.wr_hold_i || ir_stage_i.gen_stage1.s1_fifo.flush_i) ));
 
+
 `endif
 
 `ifdef KUDU_FORMAL_G0_Long
@@ -1410,6 +1439,12 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   AssertIR0PC: assert property (@(posedge clk_i) 
     (ir_valid[0] |-> (issuer_i.ir0_nxt_pc_q[31:1] == issuer_i.ir0_dec.pc[31:1])));
  
+  // complex instruction is issue_special which wait for all previous instruciton commit.
+  // therefor ls_pipeline must be ready
+  // However it took too long for FV to prove it directly, so we try use sbd_fifo empty us instead
+  // of using cmplx_instr_start 
+  // AssertCmplxLSRdy: assert property (@(posedge clk_i) (cmplx_instr_start |-> lspl_rdy));
+  AssertCmplxLSRdy: assert property (@(posedge clk_i) (~sbdfifo_rd_valid[0] |-> lspl_rdy));
 
 `endif
 

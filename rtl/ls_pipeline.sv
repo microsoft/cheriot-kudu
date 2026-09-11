@@ -220,12 +220,12 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     end else begin
       if (flush_i)
         resp_err_latched  <= 1'b0;
-      else if (~debug_mode_i & lsu_resp_err)
+      else if (lsu_resp_err)
         resp_err_latched  <= 1'b1;
     end
   end
   
-  assign lsu_err_active = ~debug_mode_i & (resp_err_latched | lsu_resp_err);
+  assign lsu_err_active = resp_err_latched | lsu_resp_err;
 
   assign wb_rdy = wb_fifo_rdy & ~lsu_err_active;
 

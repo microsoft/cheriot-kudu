@@ -491,7 +491,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   end
 
   // hold off pipeline if an error occurred
-  assign resp_wait = outstanding_resp_q & (~lsu_resp_valid | data_or_pmp_err);
+  assign resp_wait = outstanding_resp_q & (~lsu_resp_valid);
 
   // we assume ctrl will be held till req_done asserted 
   // (once req captured in IDLE, it can be deasserted)
@@ -664,7 +664,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign lsu_resp_err       = csr_go_q ?  csr_err : data_or_pmp_err;
 
   assign all_resp           = data_rvalid_i | pmp_err_q | (cheri_pmode & cheri_err_q) | csr_go_q;
-  assign lsu_resp_valid     = all_resp & (ls_fsm_cs == IDLE) ;
+  assign lsu_resp_valid     = all_resp & outstanding_resp_q && (ls_fsm_cs == IDLE) ;
   assign lsu_resp_valid_o   = lsu_resp_valid;
   
   assign lsu_resp_err_o     =  lsu_resp_err & lsu_resp_valid;

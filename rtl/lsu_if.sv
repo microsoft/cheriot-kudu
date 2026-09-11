@@ -90,13 +90,13 @@ module lsu_if import super_pkg::*; import cheri_pkg::*; # (
 
     case (lsif_fsm_q)
       IDLE: begin
-        if (valid_new_req & is_early_load) begin
+        if (valid_new_req & is_early_load & ~flush_i) begin
           lsu_req_o   = 1'b1;
           if (~lsu_req_done_i) begin
             lsif_fsm_d = DLY0_WGNT;
             xfr2hold0    = 1'b1;   // transfer request from input to hold register
           end
-        end else if (valid_new_req) begin
+        end else if (valid_new_req & ~flush_i)  begin
           lsif_fsm_d   = DLY1;
           lsu_req_o   = 1'b0;
         end
