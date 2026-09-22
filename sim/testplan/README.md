@@ -131,121 +131,15 @@ and validated.
 
 ## 2. TestRIG and the Kudu simulation flow
 
-### 2.1 Reference and integration boundary
+### 2.1 TestRIG reference
 
-The requested TestRIG variant is the
-[CHERIoT-Platform/TestRIG **dii-read-from-file** branch](https://github.com/CHERIoT-Platform/TestRIG/tree/dii-read-from-file).
-Pin a commit of that branch, its submodules and the Sail model for each campaign.
-Do not assume commands or protocol details from TestRIG's default branch are
-identical.
+Use the [TestRIG **dii-read-from-file** documentation][testrig] for test
+generation, ELF construction, Sail reference execution and Kudu/Sail trace
+comparison. Flow details,
+setup instructions and file formats are maintained in TestRIG rather than
+duplicated in this plan.
 
-The selected branch provides a file-based, two-phase preparation/reference
-flow. It is not an integrated Kudu/Sail comparison runner:
-
-```text
- QCVEngine --output-dir / retained instruction files
-                         |
-                 trace_NNN.hex.txt
-                         |
-          Phase 1: Sail file-fed DII execution
-                         |
-                  ELF + memory artifacts
-                    /               \
-      Kudu local ELF replay       Phase 2: Sail ELF execution
-                    |               |
-     RVFI/text trace + coverage   Sail log + RVFI records
-                    \               /
-       Explicit architectural comparison and coverage triage
-                         |
-             Targeted tests / generator refinement
-```
-
-The branch-specific sequence is:
-
-| Phase | Source-verified behavior |
-|---|---|
-| Generate | QCVEngine **--output-dir** runs without sockets or comparison. It writes **trace_NNN.hex.txt**, with one hexadecimal instruction per line and comments. The current writer does not append an EBREAK terminator. |
-| Construct an executable | **generate_elfs_from_traces.py** runs Sail with **-f input.hex.txt --elf-output output.elf**. File-fed DII writes/injects buffered instructions at the current PC. The alternative **--phase1_no_sail** path builds structured ELFs directly. |
-| Re-execute in the reference model | **run_phase2_sail.py** executes the ELF normally, with verbose trace output, an instruction limit and optional binary RVFI. This phase is Sail-only. |
-| Decode reference records | **run_two_phase.sh** decodes binary RVFI into labeled text under **results/**; phase-2 binary files are under **rvfi_bin_phase2/**. |
-| Replay and compare Kudu | The local Kudu flow executes matching ELF/memory inputs. A separate comparison step must join its results to the phase-2 Sail reference. |
-
-Representative Sail command shapes, taken from the branch's
-[phase-1][testrig-phase1] and [phase-2][testrig-phase2] scripts, are:
-
-```text
-<sail> -f <input.hex.txt> --elf-output <output.elf>
-<sail> <input.elf> -v --trace-output <sail.log> \
-    -l <instruction-limit> --rvfi-output <phase2.rvfi.bin>
-```
-
-Use fresh output paths and the branch-compatible Sail build. The main runner
-does not request phase-1 RVFI. **Use phase-2 ELF execution as the matching
-reference for Kudu ELF replay**, rather than treating phase-1 instruction
-injection as equivalent to ordinary fetch. Keep all required memory artifacts
-and reject failed or unsuitable image generation before comparison.
-
-The local flow called **DII_SIM** is likewise currently an **ELF-backed memory
-replay** testbench, not a live TestRIG socket endpoint. Neither the public
-two-phase runner nor the local sweep currently performs the complete
-Kudu-versus-Sail comparison automatically. Closing that integration boundary
-is part of this plan.
-
-### 2.2 TestRIG-specific format and reproducibility requirements
-
-The [current RVFI decoder][testrig-rvfi] defines **93-byte custom CHERIoT v1
-packets**, with five nine-byte data fields carrying payload and capability
-tag information. The branch README's 88-byte description differs from that
-implementation. Version and validate the producer, binary decoder and Kudu
-trace adapter together; do not assume a generic RVFI-v1 packet layout or
-compare differently formatted files byte-for-byte.
-
-The phase-2 script can accept a nonempty verbose log even when RVFI is absent
-or contains only a halt packet. Batch processing can have partial failures,
-and the runner uses lenient RVFI decoding. Therefore require useful
-architectural records, checked completion and a successful explicit comparison;
-successful generation/decoding is not a verification pass.
-
-The [runner][testrig-runner] notes that QCVEngine ignores its forwarded seed
-option. Archive the actual generated instruction files, ELFs and overlays;
-the command-line seed alone is not a reproducer. The
-[setup script][testrig-setup] can advance submodules with **git pull --ff-only**,
-so record resolved commits rather than branch names alone. The corresponding
-Sail-RISC-V branch is **cheriot-dii-read-from-file**.
-
-The published Docker quick-test recipe uses **--clean**. Run it only in a
-disposable, isolated output workspace, not against an existing test archive.
-
-### 2.3 Local replay sequence
-
-The implementation is
-[run_dii_rvfi.py](../run_dii/run_dii_rvfi.py),
-[tb_kudu_top.sv](../tb/tb_kudu_top.sv), and
-[sparse_mem.cpp](../tb/sparse_mem.cpp).
-
-| Step | Current behavior and planned acceptance check |
-|---|---|
-| Select inputs | The runner extracts **bin.tar.gz** and selects ELFs listed in **bin/elfs_no_conflict.list**. Record archive hash and selected members. |
-| Compile | **--compile** invokes **vcscomp -dii -nowave -cov**. Otherwise the existing simulator is reused; record and verify its build identity. |
-| Select mode | The runner uses the CHERIoT-capable **simv** for both modes. **--rv32** adds **+PMODE=0** rather than changing the elaboration. |
-| Initialize | The testbench loads **BINDIR/TEST.elf** into sparse memory. Initialization of capability and CSR state is partly forced to match the reference environment; those assumptions must be recorded. |
-| Execute | The DUT fetches through the memory model. The runner chooses memory-delay maxima once per invocation and passes **+RVFI_MAX**. |
-| Record | Collect **rvfi_kudu_core.log**, **trace_kudu_core.log**, simulator diagnostics and raw coverage. The runner archives per-test **.rvfi/.trace** files in **results.tar.gz**. |
-| Compare | Replay matching reference inputs and explicitly compare the intended trace interval. Simulation completion alone is not a differential-test verdict. |
-| Accumulate | Merge coverage against the matching design database, retain provenance and review uncovered goals. Preserve failing-test evidence even if the sweep continues. |
-
-[elf2dii.py](../scripts/elf2dii.py) converts ELF load segments into little-endian
-16-bit memory records of the form **mem[X,address] -> value**, including
-zero-fill by default. [check_dii_inputs.py](../scripts/check_dii_inputs.py)
-checks duplicate input addresses. These files describe memory contents; they
-are not interchangeable with a binary DII command stream.
-
-Although the testbench constructs a **.dii** pathname, its current active
-initialization calls **sparse_mem_init_elf**; the text-memory loader call is
-commented out. A test plan or launcher must follow the active implementation,
-not infer the input format from the build mode's name.
-
-### 2.4 Kudu testbench organization
+### 2.2 Kudu testbench organization
 
 **tb_kudu_top** instantiates the DUT, memory model, interrupt generation and
 statistics/logging infrastructure. The shared
@@ -285,19 +179,12 @@ state and a Sail privilege-mode accommodation. Keep a separate reset and
 privilege verification campaign that does not mistake those overrides for
 verification of the DUT's natural reset behavior.
 
-### 2.5 Comparison, reproducibility and data protection
+### 2.3 Comparison, reproducibility and data protection
 
-Use [compare_trace.py](../scripts/compare_trace.py) for supported Kudu/Sail
-trace comparisons and the existing clean/diff tools for compatible Ibex
-golden traces. Review known equivalence rules rather than editing traces to
-make a comparison pass.
-
-The current comparator prints a verdict; it does not reliably communicate
-that verdict through a failing process exit code. It also permits a Kudu
-trace tail. A sign-off wrapper must check the reported verdict, comparison
-extent, reference exhaustion, pending revocations and approved termination
-tail. Exception-handler skipping is a scoped bring-up option, not evidence
-that exception behavior was verified.
+Kudu/Sail trace comparison is covered by the [TestRIG flow][testrig].
+Use its comparison results as architectural correctness evidence alongside
+Kudu's functional coverage. Comparator operation and supported comparison
+policies are documented in TestRIG, not in this plan.
 
 Every result needs a manifest containing RTL/testbench/coverage/TestRIG/Sail
 revisions, effective parameters, build flags, input hashes, seeds, delay/error
@@ -471,7 +358,7 @@ testbench delay settings.
 
 ### 4.2 Source census, not achieved coverage
 
-The following snapshot is the output of **count_cov.py** on 2026-09-15:
+The following snapshot is the coverage source census on 2026-09-15:
 
 | Organization | Covergroup types | Coverpoint declarations | Explicit crosses |
 |---|---:|---:|---:|
@@ -498,14 +385,9 @@ bins, crosses, generate conditions and repeated instances change the
 elaborated model. Obtain actual closure denominators and scores from
 configuration-specific VCS/URG reports.
 
-Useful read-only source checks, from **sim/**, are:
-
-```sh
-python3 fcov/count_cov.py
-python3 fcov/check_binds.py
-python3 fcov/check_syntax.py --matrix
-python3 fcov/check_syntax.py --matrix --coverage-off
-```
+Source checks cover declaration counts, bind resolution and configuration-matrix
+elaboration with coverage enabled and disabled. Usage is documented in the
+[functional coverage README](../fcov/README.md).
 
 Full functional coverage is collected in the VCS flow. The standalone
 covergroup-free timing-helper test can use Verilator; that does not establish
@@ -513,8 +395,8 @@ Verilator support for this functional coverage model.
 
 ## 5. Integration priorities and release evidence
 
-Before sign-off, complete the TestRIG/file-replay/reference adapter contract,
-automated comparison verdict checking and manifest capture; align actual
+Before sign-off, retain TestRIG comparison results and reproducibility
+manifests alongside Kudu coverage reports; align actual
 simulation selectors with the configuration plan; and resolve coverage-model
 diagnostics and sampling/exclusion reviews.
 
@@ -540,23 +422,11 @@ manifests.
 | Reference | Use in this plan |
 |---|---|
 | [TestRIG read-from-file branch][testrig] | Overall branch workflow and setup |
-| [QCVEngine output mode][testrig-generator] | File-only generation, without DUT comparison |
-| [Phase-1 ELF generation][testrig-phase1] and [Sail file-DII implementation][sail-file-dii] | Instruction-file input versus normal ELF execution |
-| [Phase-2 Sail runner][testrig-phase2] and [two-phase driver][testrig-runner] | Reference execution, artifacts and acceptance limitations |
-| [RVFI decoder][testrig-rvfi] | Actual custom binary record format |
-| [Submodule setup][testrig-setup] | Revision/reproducibility requirements |
 | [CHERIoT-Ibex formal README][ibex-formal] | Sail/RTL trace-equivalence approach, tools and stated limitations |
 | [CHERIoT-SAFE][safe], [configuration documentation][safe-config], [FPGA build selector][safe-build] | Selectable Ibex/Kudu platform example |
 | [SAFE FPGA build notes][safe-fpga] and [simulation notes][safe-sim] | Board, tool, image and clock/UART considerations |
 
 [testrig]: https://github.com/CHERIoT-Platform/TestRIG/tree/dii-read-from-file
-[testrig-generator]: https://github.com/CHERIoT-Platform/TestRIG/blob/dii-read-from-file/vengines/QuickCheckVEngine/src/QuickCheckVEngine/Main.hs#L502-L529
-[testrig-phase1]: https://github.com/CHERIoT-Platform/TestRIG/blob/dii-read-from-file/utils/scripts/generate_elfs_from_traces.py#L63-L71
-[sail-file-dii]: https://github.com/CHERIoT-Platform/sail-riscv/blob/cheriot-dii-read-from-file/c_emulator/riscv_sim.c#L1334-L1353
-[testrig-phase2]: https://github.com/CHERIoT-Platform/TestRIG/blob/dii-read-from-file/utils/scripts/run_phase2_sail.py
-[testrig-runner]: https://github.com/CHERIoT-Platform/TestRIG/blob/dii-read-from-file/run_two_phase.sh
-[testrig-rvfi]: https://github.com/CHERIoT-Platform/TestRIG/blob/dii-read-from-file/utils/scripts/rvfi_to_text.py#L8-L40
-[testrig-setup]: https://github.com/CHERIoT-Platform/TestRIG/blob/dii-read-from-file/scripts/setup_submodules.sh
 [ibex-formal]: https://github.com/microsoft/cheriot-ibex/blob/main/dv/formal/README.md
 [safe]: https://github.com/CHERIoT-Platform/cheriot-safe
 [safe-config]: https://github.com/CHERIoT-Platform/cheriot-safe/blob/main/README.md#L29-L37
