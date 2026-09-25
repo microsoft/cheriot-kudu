@@ -550,6 +550,7 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
     logic             el_gt_eb; 
     logic             tophi;
     logic [BOT_W-1:0] top9, base9;
+    logic             is_sealed;
 
     result.fcap = in_cap;
               
@@ -568,7 +569,9 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
     result.fcap.base9   = base9;
     result.fcap.top9    = top9;
 
-    if (~in_bound) result.fcap.valid = 1'b0;
+    is_sealed = (in_cap.otype != 0);
+
+    if (~in_bound | is_sealed) result.fcap.valid = 1'b0;
 
     // top/base correction values
     //   Note the new base == addr >> exp, so addr_hi == FALSE, thus base_cor == 0
