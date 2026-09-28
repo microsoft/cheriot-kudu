@@ -741,7 +741,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
                                ir_valid_i[1] & ~ir_hazard[1] & 
                                ~(handle_special | cmt_err_i | debug_single_step_i) & 
                                ~(ir_any_err[1] | ir_sysctl[1] | ir_cmplx[1] | ir1_dec.is_brkpt) & 
-                               ~(cheri_pmode_i & ir0_dec.is_jalr);    // serialize cjalr
+                               ~(cheri_pmode & ir0_dec.is_jalr);    // serialize cjalr
 
   assign ir0_special_issued = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & 
                               ((special_case_q == SYSCTL) || (special_case_q == CMPLX));

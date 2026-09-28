@@ -40,6 +40,10 @@ module alu_decoder import super_pkg::*; #(
   logic [31:0] zimm_rs1_type;
   logic [31:0] imm_c20_type;
 
+  logic        cheri_pmode;
+
+  assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
+
   // To help timing the flops containing the current instruction are replicated to reduce fan-out.
   // instr_alu is used to determine the ALU control logic and associated operand/imm select signals
   // as the ALU is often on the more critical timing paths. instr is used for everything else.
@@ -108,7 +112,7 @@ module alu_decoder import super_pkg::*; #(
       OPCODE_AUIPC: begin  // Add Upper Immediate to PC
         alu_op_a_mux_sel_o  = OP_A_CURRPC;
         alu_op_b_mux_sel_o  = OP_B_IMM;
-        imm_mux_sel         = (CHERIoTEn & cheri_pmode_i) ? IMM_B_C20 : IMM_B_U;
+        imm_mux_sel         = cheri_pmode_i ? IMM_B_C20 : IMM_B_U;
         alu_operator_o      = ALU_ADD;
       end
 

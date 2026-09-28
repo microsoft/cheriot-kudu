@@ -28,6 +28,9 @@ module compressed_decoder import super_pkg::*;  # (
   logic [31:0] insn32;
   logic        illegal_c_insn;
 
+  logic  cheri_pmode;
+  assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
+
   always_comb begin
     instr_o         = instr_i;   // pass through fields
     instr_o.insn    = insn32;
@@ -52,7 +55,7 @@ module compressed_decoder import super_pkg::*;  # (
       2'b00: begin
         unique case (insn16[15:13])
           3'b000: begin
-            if (CHERIoTEn & cheri_pmode_i)
+            if (cheri_pmode)
               // c.incaddr4cspn -> cincoffsetimm cd', csp, imm
               insn32 = {2'b0, insn16[10:7], insn16[12:11], insn16[5],
                         insn16[6], 2'b00, 5'h02, 3'b001, 2'b01, insn16[4:2], {OPCODE_CHERI}};
@@ -70,7 +73,7 @@ module compressed_decoder import super_pkg::*;  # (
           end
 
           3'b011: begin
-            if (CHERIoTEn & cheri_pmode_i) begin
+            if (cheri_pmode) begin
               // CHERI: c.clc -> clc rd', imm(rs1'); reuse c.ld
               insn32 = {4'b0, insn16[6:5], insn16[12:10],
                          3'b000, 2'b01, insn16[9:7], 3'b011, 2'b01, insn16[4:2], {OPCODE_LOAD}};
@@ -94,7 +97,7 @@ module compressed_decoder import super_pkg::*;  # (
           end
 
           3'b111: begin
-            if (CHERIoTEn & cheri_pmode_i) begin
+            if (cheri_pmode) begin
               // CHERI: c.csc -> csc rs2', imm(rs1'); reuse c.sd
               insn32 = {4'b0, insn16[6:5], insn16[12], 2'b01, insn16[4:2],
                          2'b01, insn16[9:7], 3'b011, insn16[11:10], 3'b000, {OPCODE_STORE}};
@@ -150,7 +153,7 @@ module compressed_decoder import super_pkg::*;  # (
             insn32 = {{15 {insn16[12]}}, insn16[6:2], insn16[11:7], {OPCODE_LUI}};
 
             // c.incaddr16csp -> cincoffsetimm csp, csp, nzimm
-            if (CHERIoTEn & cheri_pmode_i &&  (insn16[11:7] == 5'h02))  begin
+            if (cheri_pmode &&  (insn16[11:7] == 5'h02))  begin
               insn32 = {{3 {insn16[12]}}, insn16[4:3], insn16[5], insn16[2],
                          insn16[6], 4'b0, 5'h02, 3'b001,  5'h02, {OPCODE_CHERI}};
             end else if (insn16[11:7] == 5'h02)  begin
@@ -272,7 +275,7 @@ module compressed_decoder import super_pkg::*;  # (
           end
 
           3'b011: begin
-            if (CHERIoTEn & cheri_pmode_i) begin
+            if (cheri_pmode) begin
               // c.clcsp -> clc cd, imm(c2),  reused c.ldsp
               insn32 = {3'b0, insn16[4:2], insn16[12], insn16[6:5], 3'b000, 5'h02,
                          3'b011, insn16[11:7], OPCODE_LOAD};
@@ -325,7 +328,7 @@ module compressed_decoder import super_pkg::*;  # (
           end
 
           3'b111: begin
-            if (CHERIoTEn & cheri_pmode_i) begin
+            if (cheri_pmode) begin
               // c.cscsp -> csc cs2, imm(c2),  reuse c.sdsp
               insn32 = {3'b0, insn16[9:7], insn16[12], insn16[6:2], 5'h02, 3'b011,
                          insn16[11:10], 3'b000, {OPCODE_STORE}};

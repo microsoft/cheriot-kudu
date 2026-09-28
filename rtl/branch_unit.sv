@@ -29,6 +29,8 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
   output logic [2:0]    ir1_cjalr_err_o
 );
 
+  logic  cheri_pmode;
+  assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
  
   function automatic logic branch_decision (ir_dec_t ir_dec, full_data2_t full_data2);
     logic        result;
@@ -87,7 +89,7 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
 
     // bit 3: jalr target mispredict. compare the full capability for CHERIoT
     result[3] = ir_dec.is_jalr & (~ir_dec.ptaken || (ir_dec.ptaken && 
-                (cheri_pmode_i ? (ir_dec.ptarget[RegW-1:0] != full_data2.d0[RegW-1:0]) :
+                (cheri_pmode ? (ir_dec.ptarget[RegW-1:0] != full_data2.d0[RegW-1:0]) :
                                  (ir_dec.ptarget[31:0] != full_data2.d0[31:0]))  ));
 
     return result;
@@ -124,6 +126,8 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
 
     return result;
   endfunction
+
+
   //
   // Branch decision
   //
@@ -163,8 +167,8 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
   assign jalr_target_b = compute_jalr_target(irb_dec_i, irb_full_data2_i);
 
   if (CHERIoTEn) begin
-    assign cjalr_err_a = (cheri_pmode_i & ~debug_mode_i) ? get_cjalr_err (ira_dec_i, ira_full_data2_i.d0) : 3'h0;
-    assign cjalr_err_b = (cheri_pmode_i & ~debug_mode_i) ? get_cjalr_err (irb_dec_i, irb_full_data2_i.d0) : 3'h0;
+    assign cjalr_err_a = (cheri_pmode & ~debug_mode_i) ? get_cjalr_err (ira_dec_i, ira_full_data2_i.d0) : 3'h0;
+    assign cjalr_err_b = (cheri_pmode & ~debug_mode_i) ? get_cjalr_err (irb_dec_i, irb_full_data2_i.d0) : 3'h0;
   end else begin
     assign cjalr_err_a = 3'h0;
     assign cjalr_err_b = 3'h0;

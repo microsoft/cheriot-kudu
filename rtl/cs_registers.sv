@@ -332,9 +332,9 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
     unique case (csr_addr_i)
       // mvendorid: encoding of manufacturer/provider
-      CSR_MVENDORID: csr_rdata32 = (CHERIoTEn&cheri_pmode) ? CSR_MVENDORID_CHERI_VALUE : CSR_MVENDORID_VALUE;
+      CSR_MVENDORID: csr_rdata32 = cheri_pmode ? CSR_MVENDORID_CHERI_VALUE : CSR_MVENDORID_VALUE;
       // marchid: encoding of base microarchitecture
-      CSR_MARCHID: csr_rdata32 = (CHERIoTEn&cheri_pmode) ? CSR_MARCHID_CHERI_VALUE : CSR_MARCHID_VALUE;
+      CSR_MARCHID: csr_rdata32 = cheri_pmode ? CSR_MARCHID_CHERI_VALUE : CSR_MARCHID_VALUE;
       // mimpid: encoding of processor implementation version
       CSR_MIMPID: csr_rdata32 = CSR_MIMPID_VALUE;
       // mhartid: unique hardware thread id
@@ -762,9 +762,9 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
           cpuctrl_we = 1'b1;
         end
 
-        CSR_MSHWM:      mshwm_en  = CHERIoTEn & cheri_pmode;
-        CSR_MSHWMB:     mshwmb_en = CHERIoTEn & cheri_pmode;
-        CSR_CDBG_CTRL:  cdbg_ctrl_en = CHERIoTEn & cheri_pmode;
+        CSR_MSHWM:      mshwm_en  = cheri_pmode;
+        CSR_MSHWMB:     mshwmb_en = cheri_pmode;
+        CSR_CDBG_CTRL:  cdbg_ctrl_en = cheri_pmode;
 
         default:;
       endcase
@@ -1681,21 +1681,26 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
   // legalize CSR wdata values for MTTC/MVTVEC and MEPCC
   logic        rv32_mepc_wr, rv32_mtvec_wr, cheri_mpecc_wr, cheri_mtcc_wr;
+  logic        rv32_decc_wr, cheri_depcc_wr;
   logic [31:0] new_addr_tmp;     
-  reg_cap_t    mtvec_mepc_rcap;
+  reg_cap_t    mtvec_xepc_rcap;
   full_cap_t   scr_wfcap1, scr_wfcap2;
 
   assign rv32_mtvec_wr  = ~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_MTVEC);
-  assign rv32_mepc_wr   = ~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_MEPC);
   assign cheri_mtcc_wr  = cheri_pmode & scr_wr_cheri && (scr_addr == CHERI_SCR_MTCC);
+  assign rv32_mepc_wr   = ~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_MEPC);
   assign cheri_mepcc_wr = cheri_pmode & scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC);
+  assign rv32_depc_wr   = ~cheri_pmode & debug_mode_i & csr_we_int32 && (csr_addr_i == CSR_DPC);
+  assign cheri_depcc_wr = cheri_pmode & debug_mode_i & scr_wr_cheri && (scr_addr == CHERI_SCR_DEPCC);
 
-  assign mtvec_mepc_rcap = rv32_mtvec_wr ? mtvec_q : mepc_q;
+  assign mtvec_xepc_rcap = rv32_mtvec_wr ? mtvec_q : 
+                           rv32_depc_wr ? depc_q : mepc_q;
   assign new_addr_tmp    = csr_wdata_i[31:0];
 
-  assign scr_wfcap1  = (rv32_mtvec_wr | rv32_mepc_wr) ? op2fullcap(reg2opcap(mtvec_mepc_rcap)) : 
+  assign scr_wfcap1  = (rv32_mtvec_wr | rv32_mepc_wr | rv32_depc_wr) ? op2fullcap(reg2opcap(mtvec_xepc_rcap)) : 
                        full_cap_t'(csr_wdata_i);
-  assign scr_wfcap2  = legalize_scr((rv32_mtvec_wr | cheri_mtcc_wr), (rv32_mepc_wr | cheri_mepcc_wr), 
+  assign scr_wfcap2  = legalize_scr((rv32_mtvec_wr | cheri_mtcc_wr), 
+                                    (rv32_mepc_wr | rv32_depc_wr |cheri_mepcc_wr), 
                                     scr_wfcap1, new_addr_tmp);
 
   assign scr_wdata_legalized = scr_wfcap2[RegW-1:0];
@@ -1705,11 +1710,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   // 
 
   always_comb begin
-    if (~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_MEPC)) begin
-      mepc_en      = 1'b1;
-      mepc_d       = mepc_q;
-      mepc_d[31:0] = {csr_wdata32[31:1], 1'b0};
-    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC)) begin
+    if (rv32_mepc_wr | cheri_mepcc_wr) begin
       mepc_en = 1'b1;
       mepc_d  = scr_wdata_legalized;
     end else if (cheri_pmode & csr_save_cause_i & ~debug_mode_i) begin
@@ -1747,11 +1748,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   assign  init_mtvec32 = {boot_addr_i[31:2], 1'b0, 1'b0};  
 
   always_comb begin
-    if (~cheri_pmode & csr_we_int32  && (csr_addr_i == CSR_MTVEC)) begin
-      mtvec_en      = 1'b1;
-      mtvec_d       = mtvec_q;   // don't update meta data if in rv32 mode (same as cheriot-ibex behavior)
-      mtvec_d[31:0] = {csr_wdata32[31:2], 2'b00};
-    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_MTCC)) begin
+    if (rv32_mtvec_wr | cheri_mtcc_wr) begin
       mtvec_en = 1'b1;
       mtvec_d  = scr_wdata_legalized;
     end else if (csr_mtvec_init_i) begin  // we assume mtvec_init_i will only come at boot time when mtvec = Tx cap
@@ -1783,18 +1780,15 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   //
 
   always_comb begin
-    if (~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_DPC) & debug_mode_i) begin
+    if (rv32_depc_wr | cheri_depcc_wr) begin
       depc_en = 1'b1;
-      depc_d  = {csr_wdata32[31:1], 1'b0};
-    end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DEPCC) && debug_mode_i) begin
+      depc_d  = scr_wdata_legalized;
+    end else if (cheri_pmode & debug_csr_save_i) begin
       depc_en = 1'b1;
-      depc_d  = {scr_wdata_legalized[RegW-1:1], 1'b0};
-    end else if (CHERIoTEn & cheri_pmode & csr_save_cause_i & debug_csr_save_i) begin
+      depc_d  = (cheri_pmode & csr_exc_info_i.has_pcc) ? csr_exc_info_i.pc : pcc_exc_rcap;
+    end else if (~cheri_pmode & debug_csr_save_i) begin
       depc_en = 1'b1;
       depc_d  = pcc_exc_rcap;
-    end else if (~(CHERIoTEn & cheri_pmode) & csr_save_cause_i & debug_csr_save_i) begin
-      depc_en = 1'b1;
-      depc_d  = csr_exc_info_i.pc;
     end else begin
       depc_en = 1'b0;
       depc_d  = depc_q;
@@ -1802,7 +1796,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
     if (~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_DSCRATCH0) & debug_mode_i) begin
       dscratch0_en = 1'b1;
-      dscratch0_d  = csr_wdata32;
+      dscratch0_d  = scr_wdata_legalized;
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC0) && debug_mode_i) begin
       dscratch0_en = 1'b1;
       dscratch0_d  = scr_wdata_legalized;
@@ -1813,7 +1807,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
 
     if (~cheri_pmode & csr_we_int32  && (csr_addr_i == CSR_DSCRATCH1) & debug_mode_i) begin
       dscratch1_en = 1'b1;
-      dscratch1_d  = csr_wdata32;
+      dscratch1_d  = scr_wdata_legalized;
     end else if (scr_wr_cheri && (scr_addr == CHERI_SCR_DSCRATCHC1) && debug_mode_i) begin
       dscratch1_en = 1'b1;
       dscratch1_d  = scr_wdata_legalized;
@@ -2019,7 +2013,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     assign mscratchc_q       = '0;
     assign ex1_pcc_cap_q     = NULL_PCC_CAP;
     assign ir_pcc_cap_q      = NULL_PCC_CAP;
-    assign pcc_exc_rcap       = NULL_REG_CAP;
+    assign pcc_exc_rcap      = csr_exc_info_i.pc;
     assign cheri_fatal_err_o = 1'b0;
   end
 
