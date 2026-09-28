@@ -1067,23 +1067,18 @@ $display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, bas
     return result;
   endfunction
 
-  function automatic full_cap_t legalize_scr (logic [4:0] scr_addr, full_cap_t cs1_fcap);
-    full_cap_t result;
-    result = cs1_fcap;
+  function automatic full_cap_t legalize_scr (logic is_mtcc, logic is_mepcc, 
+                                              full_cap_t in_fcap, logic [31:0] addr);
+    full_cap_t   result;
+    logic [31:0] new_addr;
 
-    if (scr_addr == CHERI_SCR_MTCC) begin
-      // MTVEC/MTCC legalization (clear tag if checking fails)
-      // note we don't reall need set_address checks here - it's only used to update temp fields
-      //   so that RTL behavior would match sail
-      result.addr    = {cs1_fcap.addr[31:2], 2'b00};
-      if ((cs1_fcap.addr[1:0] != 2'b00) || ~cs1_fcap.perms[PERM_EX] || (cs1_fcap.otype != 0))
+    new_addr = is_mtcc ? {addr[31:2], 2'b00} : is_mepcc ? {addr[31:1], 1'b0} : addr;
+    result   = set_address (in_fcap, new_addr);
+
+    if (is_mtcc && ((addr[1:0] != 2'b00) || ~result.perms[PERM_EX] || (result.otype != 0)))
         result.valid = 1'b0;
-    end else if (scr_addr == CHERI_SCR_MEPCC) begin
-      // MEPCC legalization (clear tag if checking fails)
-      result.addr    = {cs1_fcap.addr[31:1], 1'b0};
-      if ((cs1_fcap.addr[0] != 1'b0) || ~cs1_fcap.perms[PERM_EX] || (cs1_fcap.otype != 0))
+    else if (is_mepcc && ((addr[0] != 1'b0) || ~result.perms[PERM_EX] || (result.otype != 0)))
         result.valid = 1'b0;
-    end
 
     return result;
   endfunction

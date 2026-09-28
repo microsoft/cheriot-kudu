@@ -1680,12 +1680,25 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   end
 
   // legalize CSR wdata values for MTTC/MVTVEC and MEPCC
-  full_cap_t scr_wfcap1, scr_wfcap2, scr_wfcap3;
-  assign scr_wfcap1  = full_cap_t'(csr_wdata_i);
-  assign scr_wfcap2  = legalize_scr(scr_addr, scr_wfcap1);
-  assign scr_wfcap3  = set_address(scr_wfcap2, scr_wfcap2.addr);
+  logic        rv32_mepc_wr, rv32_mtvec_wr, cheri_mpecc_wr, cheri_mtcc_wr;
+  logic [31:0] new_addr_tmp;     
+  reg_cap_t    mtvec_mepc_rcap;
+  full_cap_t   scr_wfcap1, scr_wfcap2;
 
-  assign scr_wdata_legalized = scr_wfcap3[RegW-1:0];
+  assign rv32_mtvec_wr  = ~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_MTVEC);
+  assign rv32_mepc_wr   = ~cheri_pmode & csr_we_int32 && (csr_addr_i == CSR_MEPC);
+  assign cheri_mtcc_wr  = cheri_pmode & scr_wr_cheri && (scr_addr == CHERI_SCR_MTCC);
+  assign cheri_mepcc_wr = cheri_pmode & scr_wr_cheri && (scr_addr == CHERI_SCR_MEPCC);
+
+  assign mtvec_mepc_rcap = rv32_mtvec_wr ? mtvec_q : mepc_q;
+  assign new_addr_tmp    = csr_wdata_i[31:0];
+
+  assign scr_wfcap1  = (rv32_mtvec_wr | rv32_mepc_wr) ? op2fullcap(reg2opcap(mtvec_mepc_rcap)) : 
+                       full_cap_t'(csr_wdata_i);
+  assign scr_wfcap2  = legalize_scr((rv32_mtvec_wr | cheri_mtcc_wr), (rv32_mepc_wr | cheri_mepcc_wr), 
+                                    scr_wfcap1, new_addr_tmp);
+
+  assign scr_wdata_legalized = scr_wfcap2[RegW-1:0];
   
   //
   //  MEPC/MEPCC
@@ -1704,7 +1717,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       mepc_d  = (cheri_pmode & csr_exc_info_i.has_pcc) ? csr_exc_info_i.pc : pcc_exc_rcap;
     end else if (~cheri_pmode & csr_save_cause_i & ~debug_mode_i) begin
       mepc_en = 1'b1;
-      mepc_d  = csr_exc_info_i.pc;
+      mepc_d  = pcc_exc_rcap;
     end else begin
       mepc_en = 1'b0;
       mepc_d  = mepc_q;
