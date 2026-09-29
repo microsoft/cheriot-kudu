@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -e
+
+PipelineDef="+define+KUDU_PPL_CFG=1"
+TraceDef="+define+TraceDPI"
+ExtraDefs=()
+FileList="kudu.verilator.f"
+
+for arg in "$@"; do
+  case "$arg" in
+    -conf[0-3]) PipelineDef="+define+KUDU_PPL_CFG=${arg#-conf}" ;;
+    -dw)
+      TraceDef="+define+KUDU_DW_MULT=1"
+      FileList="kudu_dw.vcs.f"
+      ;;
+    -dii) ExtraDefs+=("+define+DII_SIM") ;;
+    *)
+      echo "Error: Unknown option $arg (supported: -conf0..-conf3, -dii, -dw)" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ ! -r "$FileList" ]]; then
+  echo "Error: Cannot read $FileList; run vericomp from sim/verilator with the selected file list available." >&2
+  exit 1
+fi
+
+export rtlRoot=../../rtl
+export verifRoot=..
+export dwRoot=../../dw
+
+for OutDir in obj_dir obj_dir_rv32; do
+  VlogDefs=("$PipelineDef" "$TraceDef" "${ExtraDefs[@]}" "+define+NO_FSDB")
+  if [[ "$OutDir" == obj_dir ]]; then
+    VlogDefs+=("+define+CHERIoT")
+  fi
+
+  echo "Building $OutDir/Vtb_kudu_top: ${VlogDefs[*]}"
+  verilator -cc --timing --unroll-count 128 --top-module tb_kudu_top \
+    --Mdir "$OutDir" --exe "${VlogDefs[@]}" -f "$FileList"
+  make -j "${JOBS:-2}" -C "$OutDir" -f Vtb_kudu_top.mk Vtb_kudu_top
+done

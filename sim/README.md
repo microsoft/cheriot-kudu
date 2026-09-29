@@ -1,6 +1,6 @@
 Cheriot-Kudu simulations can be run either using compiled test code images or using direct instruction injection (DII). Please follow the steps below and note the vcs filelists and script may need to be modified to reflect your setup.
 
-### Simulation with compiled code images 
+### Simulation with manually generated code images 
 #### Compile coremak test for RV32
 1. cd tests
 2. ../scripts/build_coremark_rv32.sh
@@ -13,8 +13,19 @@ Cheriot-Kudu simulations can be run either using compiled test code images or us
 
 #### Run VCS simulation with cheriot-kudu
 1. cd run
-2. use ./vcscomp to compile RTL and testbench in CHERIoT mode, or use ./vcscomp -rv32 to compile in RV32 mode
-3. ./simv +TEST=testname
+2. use ./vcscomp to compile RTL and testbench
+3. Run simulation:
+   - ./simv +TEST=cheriot_testname, or
+   - ./simv32 +TEST=rv32_testname
+   - Here testname must correspond to a vhx file in sim/runbin/ directory
+   - e.g., ./simv +TEST=coremark.cheriot
+     
+#### Run Verilator simulation with cheriot-kudu
+1. cd verilator 
+2. use ./vericomp to compile RTL and testbench
+3. Run simulation:
+   - ./obj_dir/Vtb_kudu_top +TEST=cheriot_testname, or
+   - ./obj_dir_rv32/Vtb_kudu_top +TEST=rv32_testname
    - Here testname must correspond to a vhx file in sim/runbin/ directory
    - e.g., ./simv +TEST=coremark.cheriot
      
@@ -23,6 +34,7 @@ Cheriot-Kudu simulations can be run either using compiled test code images or us
 2. create a symbolic link to ../run/bin
 3. use ./vcsibex to compile RTL and testbench in CHERIoT mode, or use ./vcsibex32 to compile in RV32 mode
 4. ./simv +TEST=testname
+
 
 ### Simulation with DII 
 #### Generate DII input
