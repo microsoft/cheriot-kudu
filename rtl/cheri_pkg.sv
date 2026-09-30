@@ -518,12 +518,6 @@ package cheri_pkg;
     baseoff     = (~ovrflw) ? baseoff1 : baseoff2;
     tophi       = (~ovrflw) ? tophi1: tophi2;
 
-`ifdef CHERI_PKG_DEBUG
-
-$display("--- set_bounds: exact = %x, ovrflw = %x, exp1 = %x, exp2 = %x, exp = %x, len = %x", ~(topoff|baseoff), ovrflw, exp1, exp2, result.fcap.exp, result.fcap.rlen);
-$display("--- set_bounds:  b1 = %x, t1 = %x, b2 = %x, t2 = %x", base1, top1, base2, top2);
-`endif
-
     // top/base correction values
     //   Note the new base == addr >> exp, so addr_hi == FALSE, thus base_cor == 0
     //   as such, top_cor can only be either either 0 or +1;

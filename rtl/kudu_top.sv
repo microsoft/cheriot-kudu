@@ -478,6 +478,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .cheri_pmode_i         (cheri_pmode_i     ),
     .tsafe_en_i            (cheri_tsafe_en    ),
     .debug_mode_i          (debug_mode        ),
+    .cpu_ctrl_i            (cpu_ctrl          ),
     .us_valid_i            (ex_valid[3]       ),
     .lspl_rdy_o            (lspl_rdy          ),
     .sel_ira_i             (lspl_sel_ira      ),
@@ -705,6 +706,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .cmplx_lsu_req_info_o  (cmplx_lsu_req_info )
   );
 
+`ifndef SYNTHESIS
 `ifdef  RVFI
   tracer #(.RvfiDumpEn(RvfiDumpEn))  tracer_i (
     .clk_i         (clk_i          ),
@@ -713,6 +715,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     // .tsafe_en_i    (1'b0 )
     .tsafe_en_i    (cheri_tsafe_en )
   );
+`endif
 `endif
 
 endmodule

@@ -6,8 +6,7 @@
 // Interface to LSU, handles earlyLoad and CHERIoT checking
 //
 module lsu_if import super_pkg::*; import cheri_pkg::*; # (
-  parameter bit CHERIoTEn = 1'b1, 
-  parameter bit EarlyLoad = 1'b1 
+  parameter bit CHERIoTEn = 1'b1 
 ) (
   input  logic          clk_i,
   input  logic          rst_ni,
@@ -137,7 +136,7 @@ module lsu_if import super_pkg::*; import cheri_pkg::*; # (
 
 
   // there are 2 buffer stage in lsu_if
-  // - req_dly stage addes 1 cycle pipeline delay to non-EarlyLoad requests 
+  // - req_dly stage addes 1 cycle pipeline delay to non-earlyLoad requests 
   // - req_hold stage hold requests stable if req_done doesn't come back in the same cycle
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin

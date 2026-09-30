@@ -21,6 +21,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   input  logic             cheri_pmode_i,
   input  logic             tsafe_en_i,
   input  logic             debug_mode_i,
+  input  cpu_ctrl_t        cpu_ctrl_i,
 
   // upstream (issuer) side interface
   input  logic             flush_i,
@@ -87,6 +88,17 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
 );
 
   localparam WbFifoW = $bits(pl_out_t);
+
+`ifndef KUDU_CUSTOM_ADDR_DECODE
+  function automatic logic decode_early_load_addr (logic [31:0] addr); 
+    logic result;
+    result = (addr[31:24] == 8'h80);
+    return result;
+  endfunction
+   
+`else
+  `include "kudu_custom_addr_decode.sv"
+`endif
 
   ir_dec_t         instr_dec;
   full_data2_t     full_data2;
@@ -205,7 +217,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
 
       // QQQ will change to configurable range
       // don't do early load for lr/sc
-      lsu_req_dec.early_load = is_load && (lsu_req_dec.addr[31:24] == 8'h80);
+      lsu_req_dec.early_load = EarlyLoad & is_load && decode_early_load_addr(lsu_req_dec.addr);
       lsu_req_dec.cache_ok   = (lsu_req_dec.addr[31:24] == 8'h80) && ~is_lr && ~is_sc;
       lsu_req_dec.cs1_fcap   = cs1_fcap;
       lsu_req_dec.cs2_valid  = cs2_fcap.valid;
@@ -247,7 +259,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   logic lsu_if_req_valid;
   assign lsu_if_req_valid = us_valid_i | cmplx_lsu_req_valid_i;
  
-  lsu_if # (.CHERIoTEn(CHERIoTEn), .EarlyLoad(EarlyLoad)) lsu_if_i (
+  lsu_if # (.CHERIoTEn(CHERIoTEn)) lsu_if_i (
     .clk_i             (clk_i         ),
     .rst_ni            (rst_ni        ),
     .cheri_pmode_i     (cheri_pmode_i ),
@@ -360,7 +372,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     dcache dcache_i (
       .clk_i            (clk_i           ),            
       .rst_ni           (rst_ni          ),
-      .cache_enable_i   (1'b1),
+      .cache_enable_i   (cpu_ctrl_i.dcache_en),
       .flush_i          (flush_i         ),
       .us_valid_i       (us_valid_i      ),
       .lspl_rdy_i       (lspl_rdy_o      ),
