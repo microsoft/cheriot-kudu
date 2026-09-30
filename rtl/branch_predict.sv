@@ -11,13 +11,15 @@ module branch_predict import super_pkg::*; #(
   parameter bit          UseBtb     = 1'b1,
   parameter bit          AltEnable  = 1'b0, 
   parameter bit          PredictRA  = 1'b0, 
-  parameter bit          UseAgree   = 1'b1,
-  parameter bit          InstrBufEn = 1'b0
+  parameter bit          UseAgree   = 1'b1
 ) (
   input  logic                clk_i,
   input  logic                rst_ni,
 
+  // cfg signals
   input  logic                pdt_en_i,
+  input  logic                alt_en_i,
+  input  logic                ra_pdt_en_i,
   input  logic [31:0]         tbl_rst_val_i,
 
   // control signals
@@ -29,9 +31,8 @@ module branch_predict import super_pkg::*; #(
 
   // to IF
   output logic                predict_pc_set_o,
-  output logic [31:0]         predict_pc_target_o,    // PC target (after ibuf)
+  output logic [31:0]         predict_pc_target_o,    // PC target 
   output logic [31:0]         predict_br_target_o,    // actual branch target
-  output logic                predict_ibuf_hit_o,
 
   // interface to prefetcher
   input  logic [1:0]          fetch_valid_i,
@@ -173,15 +174,10 @@ module branch_predict import super_pkg::*; #(
   logic [1:0]  pdt_branch_go, pdt_jal_go, pdt_jalr_go;
   logic [1:0]  pdt_pc_set;
   logic [31:0] predict_target, predict_pc;
-  logic        use_ibuf;
   logic [1:0]  alloc_alt_go;
 
   ir_reg_t     pdt_instr0, pdt_instr1;
-  ir_reg_t     ibuf_instr;
-  logic [31:0] ibuf_pc_nxt;
-  logic        ibuf_valid;
 
-  assign predict_ibuf_hit_o  = use_ibuf & ds_rdy_i[1];
   assign predict_br_target_o = predict_target;
   assign predict_pc_target_o = predict_pc;
 
@@ -195,8 +191,8 @@ module branch_predict import super_pkg::*; #(
   assign is_jal[0] = fetch_instr0_i.is_jal;
   assign is_jal[1] = fetch_instr1_i.is_jal;
 
-  assign is_jalr_ra[0] = PredictRA & dec_jalr_ra(fetch_instr0_i.insn);
-  assign is_jalr_ra[1] = PredictRA & dec_jalr_ra(fetch_instr1_i.insn);
+  assign is_jalr_ra[0] = PredictRA & ra_pdt_en_i & dec_jalr_ra(fetch_instr0_i.insn);
+  assign is_jalr_ra[1] = PredictRA & ra_pdt_en_i & dec_jalr_ra(fetch_instr1_i.insn);
 
   // update bht table and btb buffer based on information from EX stage only
   logic [JtbAW-1:0] jtb_index0, jtb_index1_spec0, jtb_index1_spec1;
@@ -306,18 +302,19 @@ module branch_predict import super_pkg::*; #(
   assign predict_pc_set_o = pdt_en_i & (|pdt_pc_set);
 
   assign pdt_valid_o[0] = fetch_valid_i[0];
-  assign pdt_valid_o[1] = pdt_en_i ? (use_ibuf | (fetch_valid_i[1] & 
-                          ~(pdt_branch_go[0] | pdt_jal_go[0] | pdt_jalr_go[0]))) : fetch_valid_i[1];
+  assign pdt_valid_o[1] = pdt_en_i ? (fetch_valid_i[1] & ~(pdt_branch_go[0] | pdt_jal_go[0] | pdt_jalr_go[0])) : 
+                                     fetch_valid_i[1];
 
-  // can only select ibuf_pc_nxt if downstream is ready to accept instr1
-  assign predict_pc    = pdt_en_i ? ((use_ibuf & ds_rdy_i[1])? ibuf_pc_nxt : predict_target) : 32'h0;
+  assign predict_pc    = pdt_en_i ? predict_target : 32'h0;
   assign pdt_instr0_o  = pdt_en_i ? pdt_instr0 : fetch_instr0_i;
-  assign pdt_instr1_o  = pdt_en_i ? (use_ibuf ? ibuf_instr : pdt_instr1) : fetch_instr1_i;
+  assign pdt_instr1_o  = pdt_en_i ? pdt_instr1 : fetch_instr1_i;
 
   // ALT allocation logic
   // only branch uses ALT, jal/jalr don't
-  assign alloc_alt_go[0] = AltEnable & fetch_valid_i[0] & ds_rdy_i[0] & pdt_branch_go[0] & alt_has_free_i;
-  assign alloc_alt_go[1] = AltEnable & ~pdt_pc_set[0] & fetch_valid_i[1] & ds_rdy_i[1] & pdt_branch_go[1] & alt_has_free_i;
+  assign alloc_alt_go[0] = AltEnable & alt_en_i & fetch_valid_i[0] & ds_rdy_i[0] & pdt_branch_go[0] & 
+                           alt_has_free_i;
+  assign alloc_alt_go[1] = AltEnable & alt_en_i & ~pdt_pc_set[0] & fetch_valid_i[1] & ds_rdy_i[1] & 
+                           pdt_branch_go[1] & alt_has_free_i;
 
   assign alloc_alt_o = pdt_en_i & (|alloc_alt_go);
   assign bp_instr0_o = alloc_alt_go[0];
@@ -372,66 +369,6 @@ module branch_predict import super_pkg::*; #(
       pdt_instr1.ptarget = cur_ra32_i;
     end
 
-  end
-
-  // 
-  //  Single instruction buffer/cache for branch target
-  //
-
-  // We may use either the branch target or the PC of then branching instructions as the
-  // Ibuf tag (the latter has better timing results). 
-  // However, if we use the PC of branching instruction as IBUF tags, must make sure we 
-  // also use computed branch targets (not BTB). Otherwise IBUF won't work since BTB is
-  // not uniquely mapped.
-  //
-  localparam bit IbufUseTarget = UseBtb;  
-
-  if (InstrBufEn) begin : gen_ibuf
-    logic [31:0] ibuf_tag, lookup_tag;
-    logic [31:0] ibuf_tag_q, update_tag_q, target_q;
-    logic        update_req, update_st, update_resp, update_valid; 
-
-    assign lookup_tag   = IbufUseTarget ? predict_target : fetch_instr0_i.pc;
-    assign ibuf_tag     = IbufUseTarget ? ibuf_instr.pc : ibuf_tag_q;
-                        
-    assign use_ibuf     = ibuf_valid & pdt_branch_go[0] & (lookup_tag == ibuf_tag);
-    assign update_req   = IbufUseTarget ? (pdt_branch_go[0] & ~use_ibuf) :
-                          (pdt_branch_go[0] & ~(use_ibuf & ds_rdy_i[1]));
-    assign update_resp  = update_st & fetch_valid_i[0];
-    assign update_valid = IbufUseTarget ? 1'b1 : (fetch_instr0_i.pc == target_q);
-
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-       if (!rst_ni) begin
-         ibuf_instr     <= NULL_IR_REG;
-         ibuf_valid     <= 1'b0;
-         update_st      <= 1'b0;
-         ibuf_pc_nxt    <= 32'h0;
-         update_tag_q   <= 32'h0;
-         ibuf_tag_q     <= 32'h0;
-         target_q       <= 32'h0;
-       end else begin
-         if (~update_st & update_req) begin
-          update_st     <= 1'b1;
-          update_tag_q  <= fetch_instr0_i.pc;
-          target_q      <= predict_target;
-         end else if (update_resp) begin
-          update_st     <= 1'b0;
-         end
-
-         // note when use_ibuf, instruction always predicted as NOT taken since ibuf_instr
-         // is from fetch_instr. this is the correct behavior since IBUF is after BP decision.
-         if (update_resp & update_valid) begin
-           ibuf_valid  <= 1'b1;
-           ibuf_tag_q  <= update_tag_q;
-           ibuf_instr  <= fetch_instr0_i;   
-           ibuf_pc_nxt <= fetch_instr0_i.pc + (fetch_instr0_i.is_comp ? 2 : 4);
-         end
-       end
-    end
-  end else begin : gen_no_instr_buffer
-    assign use_ibuf    = 1'b0;
-    assign ibuf_instr  = NULL_IR_REG;
-    assign ibuf_valid  = 1'b0;
   end
 
 endmodule

@@ -129,7 +129,6 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
 
   logic            csr_mstatus_tw, csr_mstatus_mie;
   priv_lvl_e       priv_mode;
-  logic            data_ind_timing;
                    
   irqs_t           irqs;
   logic            irq_pending;
@@ -177,6 +176,8 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   logic [31:0]     cur_ra32;
   logic            cheri_tsafe_en;
 
+  cpu_ctrl_t       cpu_ctrl;
+
   assign cheri_tsafe_en = CHERIoTEn;   // QQQ for now - tie to an input or CSR?
 
   regfile #(.NRegs(32)) regfile_i (
@@ -203,7 +204,6 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
 
   if_stage #(
     .CHERIoTEn        (CHERIoTEn),
-    .InstrBufEn       (CFG.PredictIbufEn), 
     .CompDecEn        (CFG.IfCompDecEn),
     .InstrRdataBypass (CFG.IfRdataBypass),
     .UnalignedFetch   (CFG.UnalignedFetch),
@@ -219,7 +219,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .req_i                   (fetch_req               ),       
     .debug_mode_i            (debug_mode              ),
     .boot_addr_i             (boot_addr_i             ),
-    .cheri_const_fetch_i     (data_ind_timing         ),
+    .cpu_ctrl_i              (cpu_ctrl                ),
     .instr_req_o             (instr_req_o             ),
     .instr_addr_o            (instr_addr_o            ),
     .instr_gnt_i             (instr_gnt_i             ),
@@ -536,7 +536,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .rst_ni             (rst_ni           ),
     .cheri_pmode_i      (cheri_pmode_i    ),
     .debug_mode_i       (debug_mode       ),
-    .data_ind_timing_i  (data_ind_timing  ),
+    .cpu_ctrl_i         (cpu_ctrl         ),
     .flush_i            (cmt_flush        ),
     .us_valid_i         (ex_valid[4]      ),
     .multpl_rdy_o       (multpl_rdy       ),
@@ -598,13 +598,8 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   
   // Select which pipeline handles CSR/SCR read/write
   cs_registers #(
-    .CHERIoTEn    (CHERIoTEn),
-    .DbgTriggerEn (CFG.DbgTriggerEn),
-    .BrkptNum     (CFG.BrkptNum),    
-    .RV32M        (CFG.RV32M),
-    .RV32B        (CFG.RV32B),
-    .RV32A        (CFG.RV32A),
-    .PredictRA    (CFG.PredictRA)
+    .CHERIoTEn (CHERIoTEn),
+    .CFG       (CFG)
   ) cs_registers_i (
     .clk_i                        (clk_i),
     .rst_ni                       (rst_ni),
@@ -653,16 +648,13 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .tmatch_control_o             (tmatch_control  ),
     .tmatch_value_o               (tmatch_value    ),
 
-    .data_ind_timing_o            (data_ind_timing),
-    .icache_enable_o              (),
+    .cpu_ctrl_o                   (cpu_ctrl),
     .csr_shadow_err_o             (),
 
     .csr_save_cause_i             (csr_save_cause),
     .csr_exc_info_i               (csr_exc_info),
     .csr_restore_mret_i           (csr_restore_mret),
     .csr_restore_dret_i           (csr_restore_dret),
-
-    .double_fault_seen_o          (),
 
     .instr_ret_i                  (1'b0),
     .instr_ret_compressed_i       (1'b0),

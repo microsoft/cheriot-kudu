@@ -14,23 +14,15 @@
  * Specification, draft version 1.11
  */
 
-module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*;  #(
-  parameter bit               DbgTriggerEn      = 0,
-  parameter int unsigned      BrkptNum          = 1,
-  parameter bit               DataIndTiming     = 1'b0,
-  parameter bit               ShadowCSR         = 1'b0,
-  parameter bit               ICache            = 1'b0,
+module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg::*; import cheri_pkg::*;  #(
+  parameter bit               CHERIoTEn         = 1'b1,
+  parameter kudu_cfg_t        CFG               = KuduCfg1x,
+  parameter int unsigned      BrkptNum          = CFG.BrkptNum,
   parameter int unsigned      MHPMCounterNum    = 0,
   parameter int unsigned      MHPMCounterWidth  = 40,
   parameter bit               PMPEnable         = 0,
   parameter int unsigned      PMPGranularity    = 0,
-  parameter int unsigned      PMPNumRegions     = 4,
-  parameter bit               RV32E             = 0,
-  parameter bit               RV32M             = 1'b1,
-  parameter bit               RV32B             = 1'b1,
-  parameter bit               RV32A             = 1'b1,
-  parameter bit               CHERIoTEn         = 1'b1,
-  parameter bit               PredictRA         = 1'b0
+  parameter int unsigned      PMPNumRegions     = 4
 ) (
   // Clock and Reset
   input  logic                 clk_i,
@@ -96,8 +88,8 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   output logic [31:0]          tmatch_value_o[0:BrkptNum-1],
 
   // CPU control bits
-  output logic                 data_ind_timing_o,
-  output logic                 icache_enable_o,
+  output cpu_ctrl_t            cpu_ctrl_o,
+
   output logic                 csr_shadow_err_o,
 
   // Exception save/restore
@@ -105,7 +97,6 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   input  exc_info_t            csr_exc_info_i,
   input  logic                 csr_restore_mret_i,
   input  logic                 csr_restore_dret_i,
-  output logic                 double_fault_seen_o,
   // Performance Counters
   input  logic                 instr_ret_i,                 // instr retired in ID/EX stage
   input  logic                 instr_ret_compressed_i,      // compressed instr retired
@@ -135,20 +126,26 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   output logic                 cheri_fatal_err_o
   );
 
-  localparam int unsigned RV32AEnabled = RV32A;
-  localparam int unsigned RV32BEnabled = RV32B;
-  localparam int unsigned RV32MEnabled = RV32M;
-  localparam int unsigned PMPAddrWidth = (PMPGranularity > 0) ? 33 - PMPGranularity : 32;
+  localparam int unsigned RV32AEnabled = CFG.RV32A;
+  localparam int unsigned RV32BEnabled = CFG.RV32B;
+  localparam int unsigned RV32MEnabled = CFG.RV32M;
+  localparam int unsigned RV32EEnabled = CHERIoTEn;
+  localparam int unsigned RV32IEnabled = ~CHERIoTEn;;
+  localparam bit          DbgTriggerEn = CFG.DbgTriggerEn;
 
+  localparam bit          DataIndTiming = 1'b1;
+  localparam bit          ShadowCSR     = 1'b0;
+  localparam int unsigned PMPAddrWidth  = (PMPGranularity > 0) ? 33 - PMPGranularity : 32;
+  
   // misa
   localparam logic [31:0] MISA_VALUE =
       (RV32AEnabled      <<  0)  // A - Atomic Instructions extension
     | (RV32BEnabled      <<  1)  // B - Bit-Manipulation extension
     | (1                 <<  2)  // C - Compressed extension
     | (0                 <<  3)  // D - Double precision floating-point extension
-    | (32'(RV32E)        <<  4)  // E - RV32E base ISA
+    | (RV32EEnabled      <<  4)  // E - RV32E base ISA
     | (0                 <<  5)  // F - Single precision floating-point extension
-    | (32'(!RV32E)       <<  8)  // I - RV32I/64I/128I base ISA
+    | (RV32IEnabled      <<  8)  // I - RV32I/64I/128I base ISA
     | (RV32MEnabled      << 12)  // M - Integer Multiply/Divide extension
     | (0                 << 13)  // N - User level interrupts supported
     | (0                 << 18)  // S - Supervisor mode implemented
@@ -186,14 +183,6 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       logic         step;
       priv_lvl_e    prv;
   } dcsr_t;
-
-  // CPU control register fields
-  typedef struct packed {
-    logic        double_fault_seen;
-    logic        sync_exc_seen;
-    logic        data_ind_timing;
-    logic        icache_enable;
-  } cpu_ctrl_t;
 
   // Interrupt and exception control signals
   // CSRs
@@ -669,8 +658,6 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
     mshwmb_en    = 1'b0;
     cdbg_ctrl_en = 1'b0;
 
-    double_fault_seen_o = 1'b0;
-
     if (csr_we_int32) begin
       unique case (csr_addr_i)
         // mstatus: IE bit
@@ -796,16 +783,6 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
           mstatus_d.mpp  = priv_lvl_q;
           mcause_en      = 1'b1;
           mcause_d       = {csr_exc_info_i.mcause};
-
-          if (!mcause_d[5]) begin
-            cpuctrl_we = 1'b1;
-
-            cpuctrl_d.sync_exc_seen = 1'b1;
-            if (cpuctrl_q.sync_exc_seen) begin
-              double_fault_seen_o         = 1'b1;
-              cpuctrl_d.double_fault_seen = 1'b1;
-            end
-          end
         end
       end // csr_save_cause_i
 
@@ -824,7 +801,6 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
         end
 
         cpuctrl_we              = 1'b1;
-        cpuctrl_d.sync_exc_seen = 1'b0;
 
         // otherwise just set mstatus.MPIE/MPP
         // See RISC-V Privileged Specification, version 1.11, Section 3.1.6.1
@@ -1571,8 +1547,6 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
       assign tmatch_value_o[i] = tmatch_value_q[i];
     end
     
-
-
   end else begin : gen_no_trigger_regs
     assign tselect_rdata        = 'b0;
     assign tmatch_control_rdata = 'b0;
@@ -1583,47 +1557,31 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   //////////////////////////
   // CPU control register //
   //////////////////////////
+  localparam cpu_ctrl_t CpuCtrlRstVal = '{
+    data_ind_timing : DataIndTiming,
+    const_fetch     : 1'b0,
+    dcache_en       : CFG.DCacheEn,
+    pdt_en          : 1'b1,
+    alt_en          : CFG.AltEnable,
+    ra_pdt_en       : CFG.PredictRA 
+  };
+
+  assign cpu_ctrl_o = cpuctrl_q;
 
   // Cast register write data
   assign cpuctrl_wdata_raw = cpu_ctrl_t'(csr_wdata32[$bits(cpu_ctrl_t)-1:0]);
 
-  // Generate fixed time execution bit
-  if (DataIndTiming) begin : gen_dit
-    assign cpuctrl_wdata.data_ind_timing = cpuctrl_wdata_raw.data_ind_timing;
-
-  end else begin : gen_no_dit
-    // tieoff for the unused bit
-    logic unused_dit;
-    assign unused_dit = cpuctrl_wdata_raw.data_ind_timing;
-
-    // field will always read as zero if not configured
-    assign cpuctrl_wdata.data_ind_timing = 1'b0;
-  end
-
-  assign data_ind_timing_o = cpuctrl_q.data_ind_timing;
-
-  // Generate icache enable bit
-  if (ICache) begin : gen_icache_enable
-    assign cpuctrl_wdata.icache_enable = cpuctrl_wdata_raw.icache_enable;
-  end else begin : gen_no_icache
-    // tieoff for the unused icen bit
-    logic unused_icen;
-    assign unused_icen = cpuctrl_wdata_raw.icache_enable;
-
-    // icen field will always read as zero if ICache not configured
-    assign cpuctrl_wdata.icache_enable = 1'b0;
-  end
-
-  assign cpuctrl_wdata.double_fault_seen = cpuctrl_wdata_raw.double_fault_seen;
-  assign cpuctrl_wdata.sync_exc_seen     = cpuctrl_wdata_raw.sync_exc_seen;
-
-  assign icache_enable_o =
-    cpuctrl_q.icache_enable & ~(debug_mode_i | debug_mode_entering_i);
+  assign cpuctrl_wdata.data_ind_timing = DataIndTiming & cpuctrl_wdata_raw.data_ind_timing;
+  assign cpuctrl_wdata.const_fetch     = cpuctrl_wdata_raw.const_fetch;
+  assign cpuctrl_wdata.dcache_en       = CFG.DCacheEn & cpuctrl_wdata_raw.dcache_en;
+  assign cpuctrl_wdata.pdt_en          = cpuctrl_wdata_raw.pdt_en;
+  assign cpuctrl_wdata.alt_en          = CFG.AltEnable & cpuctrl_wdata_raw.alt_en;
+  assign cpuctrl_wdata.ra_pdt_en       = CFG.PredictRA & cpuctrl_wdata_raw.ra_pdt_en;
 
   ibex_csr #(
     .Width     ($bits(cpu_ctrl_t)),
     .ShadowCopy(ShadowCSR),
-    .ResetValue('0)
+    .ResetValue(CpuCtrlRstVal)
   ) u_cpuctrl_csr (
     .clk_i     (clk_i),
     .rst_ni    (rst_ni),
@@ -1863,7 +1821,7 @@ module cs_registers import super_pkg ::*; import csr_pkg::*; import cheri_pkg::*
   // CHERIoT-only SCR's
   //
   assign ex1_pcc_cap_o  = ex1_pcc_cap_q;
-  assign ir_pcc_cap_o   = (CHERIoTEn & PredictRA) ? ir_pcc_cap_q : ex1_pcc_cap_q;
+  assign ir_pcc_cap_o   = (CHERIoTEn & CFG.PredictRA) ? ir_pcc_cap_q : ex1_pcc_cap_q;
 
   if (CHERIoTEn) begin: gen_scr
     logic [RegW-1:0] mtdc_d, mscratchc_d;

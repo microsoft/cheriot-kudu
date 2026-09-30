@@ -37,7 +37,7 @@ module if_stage import super_pkg::*; #(
   input  logic             debug_mode_i,
                           
   input  logic [31:0]      boot_addr_i,
-  input  logic             cheri_const_fetch_i,
+  input  cpu_ctrl_t        cpu_ctrl_i,
 
   // instruction cache interface
   output logic             instr_req_o,
@@ -74,7 +74,6 @@ module if_stage import super_pkg::*; #(
 
   logic         predict_pc_set;
   logic  [31:0] predict_pc_target, predict_br_target;
-  logic         predict_ibuf_hit;
   logic  [1:0]  fetch_valid;
 
   ir_reg_t      fetch_instr0, fetch_instr1;
@@ -104,7 +103,7 @@ module if_stage import super_pkg::*; #(
   ) prefetch_buffer_i (
       .clk_i               ( clk_i                      ),
       .rst_ni              ( rst_ni                     ),
-      .cheri_const_fetch_i ( cheri_const_fetch_i        ),
+      .const_fetch_i       ( cpu_ctrl_i.const_fetch     ),
       .req_i               ( req_i                      ),
       .branch_i            ( branch_req                 ),
       .addr_i              ( {fetch_addr_n[31:1], 1'b0} ),
@@ -131,37 +130,37 @@ module if_stage import super_pkg::*; #(
   assign if_busy_o   = prefetch_busy;
 
   branch_predict #(
-    .InstrBufEn (InstrBufEn), 
     .UseBtb     (PredictUseBtb),
     .BhtSize    (PredictBhtSize),
     .AltEnable  (AltEnable),
     .PredictRA  (PredictRA)
   ) branch_predict_i (
-    .clk_i               (clk_i            ),
-    .rst_ni              (rst_ni           ),
-    .pdt_en_i            (1'b1             ),
-    .tbl_rst_val_i       (boot_addr_i      ),
-    .cur_ra32_i          (cur_ra32_i       ),
-    .ex_bp_init_i        (ex_bp_init_i     ), 
-    .ex_bp_info_i        (ex_bp_info_i     ), 
-    .instr_gnt_i         (instr_gnt_i      ),
-    .predict_pc_set_o    (predict_pc_set   ),
-    .predict_pc_target_o (predict_pc_target),
-    .predict_br_target_o (predict_br_target),
-    .predict_ibuf_hit_o  (predict_ibuf_hit ),
-    .fetch_valid_i       (fetch_valid      ),
-    .fetch_instr0_i      (fetch_instr0     ), 
-    .fetch_instr1_i      (fetch_instr1     ), 
-    .instr1_pc_spec0_i   (instr1_pc_spec0  ),
-    .instr1_pc_spec1_i   (instr1_pc_spec1  ),
-    .ds_rdy_i            (ds_rdy_i         ),
-    .pdt_valid_o         (if_valid_o       ),
-    .pdt_instr0_o        (pdt_instr0       ), 
-    .pdt_instr1_o        (pdt_instr1       ),
-    .alloc_alt_o         (bp_alloc_alt     ),
-    .bp_instr0_o         (bp_instr0        ),
-    .alt_has_free_i      (alt_has_free     ),
-    .alt_free_id_i       (alt_free_id      )
+    .clk_i               (clk_i                ),
+    .rst_ni              (rst_ni               ),
+    .pdt_en_i            (cpu_ctrl_i.pdt_en    ),
+    .alt_en_i            (cpu_ctrl_i.alt_en    ),
+    .ra_pdt_en_i         (cpu_ctrl_i.ra_pdt_en ),
+    .tbl_rst_val_i       (boot_addr_i          ),
+    .cur_ra32_i          (cur_ra32_i           ),
+    .ex_bp_init_i        (ex_bp_init_i         ), 
+    .ex_bp_info_i        (ex_bp_info_i         ), 
+    .instr_gnt_i         (instr_gnt_i          ),
+    .predict_pc_set_o    (predict_pc_set       ),
+    .predict_pc_target_o (predict_pc_target    ),
+    .predict_br_target_o (predict_br_target    ),
+    .fetch_valid_i       (fetch_valid          ),
+    .fetch_instr0_i      (fetch_instr0         ), 
+    .fetch_instr1_i      (fetch_instr1         ), 
+    .instr1_pc_spec0_i   (instr1_pc_spec0      ),
+    .instr1_pc_spec1_i   (instr1_pc_spec1      ),
+    .ds_rdy_i            (ds_rdy_i             ),
+    .pdt_valid_o         (if_valid_o           ),
+    .pdt_instr0_o        (pdt_instr0           ), 
+    .pdt_instr1_o        (pdt_instr1           ),
+    .alloc_alt_o         (bp_alloc_alt         ),
+    .bp_instr0_o         (bp_instr0            ),
+    .alt_has_free_i      (alt_has_free         ),
+    .alt_free_id_i       (alt_free_id          )
   );
 
   // compressed instruction decoding, or more precisely compressed instruction

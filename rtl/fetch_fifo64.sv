@@ -23,7 +23,7 @@ module fetch_fifo64 import super_pkg::*; #(
   input  logic                rst_ni,
 
   // configuration
-  input  logic                cheri_const_fetch_i,
+  input  logic                const_fetch_i,
 
   // control signals
   // clears the contents of the FIFO. 
@@ -213,7 +213,7 @@ module fetch_fifo64 import super_pkg::*; #(
     if ((~in_valid_i & ~valid_q[1] & valid_q[0]) | (in_valid_i & ~valid_q[0])) begin   // 1 entry available
       first_word_err = (~valid_q[0] & in_err_i) || (valid_q[0] & err_q[0]);
 
-      // cheri_const_fetch: if current fetch_pc is at bit 48, always assume it's 32-bit regardless of comp_flag, 
+      // const_fetch: if current fetch_pc is at bit 48, always assume it's 32-bit regardless of comp_flag, 
       // and wait for the next word before popping the instruction
 
       if (first_word_err) 
@@ -228,7 +228,7 @@ module fetch_fifo64 import super_pkg::*; #(
         out_valid_o = 2'b11;
       else if (instr_addr16 == 2'h2)
         out_valid_o = 2'b01;
-      else if ((instr_addr16 == 2'h3) && comp_flag[3] && ~cheri_const_fetch_i) 
+      else if ((instr_addr16 == 2'h3) && comp_flag[3] && ~const_fetch_i) 
         out_valid_o = 2'b01;
       else 
         out_valid_o = 2'b00;

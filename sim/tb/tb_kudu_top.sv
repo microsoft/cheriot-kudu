@@ -172,8 +172,8 @@ module tb_kudu_top;
     $display("TB> DUT: PrefetchDepth = %1d, IrS0Depth = %1d", dut.CFG.PrefetchDepth, dut.CFG.IrS0Depth);
     $display("TB> DUT: IfCompDecEn = %1d, IrCompDecEn = %1d, IfBTCacheEn = 0",
              dut.CFG.IfCompDecEn, dut.CFG.IrCompDecEn);
-    $display("TB> DUT: PredictBhtSize = %2d, PredictUseBtb = %1d, PredictIbufEn = %1d", 
-             dut.CFG.PredictBhtSize, dut.CFG.PredictUseBtb, dut.CFG.PredictIbufEn);
+    $display("TB> DUT: PredictBhtSize = %2d, PredictUseBtb = %1d", 
+             dut.CFG.PredictBhtSize, dut.CFG.PredictUseBtb);
     $display("TB> DUT: AltEnable = %1d, PredictRA = %1d", 
              dut.CFG.AltEnable, dut.CFG.PredictRA);
   `endif    

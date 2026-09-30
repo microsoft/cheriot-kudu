@@ -17,6 +17,15 @@ package super_pkg;
   parameter int unsigned FullW = 32;
 `endif
 
+  typedef struct packed {
+    logic        data_ind_timing;
+    logic        const_fetch;
+    logic        dcache_en;
+    logic        pdt_en;
+    logic        alt_en;
+    logic        ra_pdt_en;
+  } cpu_ctrl_t;
+
   typedef enum logic [2:0] {
     PL_LOCAL,
     PL_ALU,

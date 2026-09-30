@@ -22,7 +22,7 @@ module prefetch_buffer64 import super_pkg::*; #(
   input  logic          clk_i,
   input  logic          rst_ni,
                         
-  input  logic          cheri_const_fetch_i,  
+  input  logic          const_fetch_i,  
                         
   input  logic          req_i,
                         
@@ -150,7 +150,7 @@ module prefetch_buffer64 import super_pkg::*; #(
   ) fifo_i (
       .clk_i                 ( clk_i              ),
       .rst_ni                ( rst_ni             ),
-      .cheri_const_fetch_i   ( cheri_const_fetch_i),
+      .const_fetch_i         ( const_fetch_i      ),
       .clear_i               ( fifo_clear         ),
       .ex_alt_ctrl_i         ( ex_alt_ctrl_i      ),
       .apply_alt_ok_o        ( apply_alt_ok       ),

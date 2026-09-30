@@ -20,7 +20,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   input  logic                 cheri_pmode_i,
   input  logic                 debug_mode_i,
-  input  logic                 data_ind_timing_i,
+  input  cpu_ctrl_t            cpu_ctrl_i,
   input  logic                 flush_i,
 
   // upstream (issuer) side interface
@@ -468,7 +468,7 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
       .signed_mode_i       (md_signed_mode     ),
       .op_a_i              (md_op_a            ),
       .op_b_i              (md_op_b            ),
-      .data_ind_timing_i   (data_ind_timing_i  ),
+      .data_ind_timing_i   (cpu_ctrl_i.data_ind_timing),
       .mult_result_o       (md_mult_result     ),
       .div_result_o        (md_div_result      ),
       .mult_valid_o        (md_mult_valid      ),

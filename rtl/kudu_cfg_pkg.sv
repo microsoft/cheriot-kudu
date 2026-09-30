@@ -32,7 +32,6 @@ package kudu_cfg_pkg;
     bit [31:0] IrS0Depth;
 
     bit        PredictUseBtb;
-    bit        PredictIbufEn;
     bit [31:0] PredictBhtSize;
     bit        PredictRA;
     bit [20:0] RALimitHi;
@@ -63,7 +62,6 @@ package kudu_cfg_pkg;
     IfCompDecEn    : 1'b0,
     IrCompDecEn    : 1'b1,
     PredictUseBtb  : 1'b0,
-    PredictIbufEn  : 1'b0,
     PredictBhtSize : 32, 
     PredictRA      : 1'b1,
     RALimitHi      : 21'h080040,  
@@ -94,7 +92,6 @@ package kudu_cfg_pkg;
     IfCompDecEn    : 1'b0,
     IrCompDecEn    : 1'b1,
     PredictUseBtb  : 1'b0,
-    PredictIbufEn  : 1'b0,
     PredictBhtSize : 32, 
     PredictRA      : 1'b1,
     RALimitHi      : 21'h080040,  
@@ -125,7 +122,6 @@ package kudu_cfg_pkg;
     IfCompDecEn    : 1'b1,
     IrCompDecEn    : 1'b0,
     PredictUseBtb  : 1'b1,         // use table lookup insteand of compute target address for timing
-    PredictIbufEn  : 1'b0,
     PredictBhtSize : 16,           // smaller BHT table to help timing 
     PredictRA      : 1'b1,
     RALimitHi      : 21'h080040,  
@@ -156,7 +152,6 @@ package kudu_cfg_pkg;
     IfCompDecEn    : 1'b0,
     IrCompDecEn    : 1'b1,
     PredictUseBtb  : 1'b0,
-    PredictIbufEn  : 1'b0,
     PredictBhtSize : 32, 
     PredictRA      : 1'b1,
     RALimitHi      : 21'h080040,  
