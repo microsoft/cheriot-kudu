@@ -36,7 +36,7 @@ See the following block diagram for an overview of cheriot-kudu hardwared design
 ![image](doc/Kudu_block_diagram.svg)
 <br>
 ## Simulation and emulation
-For VCS simulation, see the instructions in [sim/](https://github.com/microsoft/cheriot-kudu/tree/main/sim) directory.
+For runing simulation, see the instructions in [sim/](https://github.com/microsoft/cheriot-kudu/tree/main/sim) directory.
 
 [cheriot-safe](https://github.com/microsoft/cheriot-safe) provides an open-source FPGA platform for emulation and prototyping.
 
