@@ -96,6 +96,12 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     return result;
   endfunction
    
+  function automatic logic decode_dcache_addr (logic [31:0] addr); 
+    logic result;
+    result = (addr[31:24] == 8'h80);
+    return result;
+  endfunction
+   
 `else
   `include "kudu_custom_addr_decode.sv"
 `endif
@@ -218,7 +224,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
       // QQQ will change to configurable range
       // don't do early load for lr/sc
       lsu_req_dec.early_load = EarlyLoad & is_load && decode_early_load_addr(lsu_req_dec.addr);
-      lsu_req_dec.cache_ok   = (lsu_req_dec.addr[31:24] == 8'h80) && ~is_lr && ~is_sc;
+      lsu_req_dec.cache_ok   = decode_dcache_addr(lsu_req_dec.addr) && ~is_lr && ~is_sc;
       lsu_req_dec.cs1_fcap   = cs1_fcap;
       lsu_req_dec.cs2_valid  = cs2_fcap.valid;
       lsu_req_dec.cs2_perms  = cs2_fcap.perms;

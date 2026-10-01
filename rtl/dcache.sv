@@ -37,7 +37,7 @@ module dcache import super_pkg::*; # (
   output logic [31:0]          fwd_act_o,
   output pl_fwd_t              fwd_info_o
 );
-  // localparam int unsigned addrLo = (MemW == 32) ? 2 : 3;
+
   localparam int unsigned CacheMemW = 32;
   localparam int unsigned addrLo    = 2;
 
