@@ -1,0 +1,105 @@
+#!/usr/bin/env zsh
+workDir="./temp_regression"
+echo "work directory: $workDir"
+
+mkdir -p $workDir 
+rm -rf $workDir/*
+cd $workDir
+ln -s ../bin 
+
+VlogDef1=""
+VlogDef2="+define+KUDU_PPL_CFG=1"
+VlogDef3=""
+
+# Loop over args
+for arg in "$@"; do
+  case "$arg" in
+    -conf0) VlogDef2="+define+KUDU_PPL_CFG=0" ;;
+    -conf1) VlogDef2="+define+KUDU_PPL_CFG=1" ;;
+    -conf2) VlogDef2="+define+KUDU_PPL_CFG=2" ;;
+    -conf3) VlogDef2="+define+KUDU_PPL_CFG=3" ;;
+    -dw)
+      VlogDef3="+define+KUDU_DW_MULT=1"
+      FileList="kudu_dw.vcs.f"
+      ;;
+    *)
+      echo "Warning: Unknown option $arg" >&2
+      ;;
+  esac
+done
+
+VlogDefs="$VlogDef1 $VlogDef2 $VlogDef3"
+echo "VlogDefs=$VlogDefs"
+
+export rtlRoot=../../../rtl
+export verifRoot=../../
+export dwRoot=../../../dw
+
+# vcscomp (rv32 only)
+vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps $VlogDefs+define+NO_FSDB -o simv32 -f ../kudu.vcs.f 
+# vcscomp (cheriot)
+vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L +define+CHERIoT $VlogDefs-timescale=1ns/1ps +define+NO_FSDB -f ../kudu.vcs.f
+
+# Run RV32 tests with CHERIoTEn=1, CHERI_PMODE=0
+tests=("coremark.rv32o3")
+testargs=("+PMODE=0" "+PMODE=0 +INSTR_GNT_WMAX=2 +INSTR_RESP_WMAX=2 +DATA_GNT_WMAX=2 +DATA_RESP_WMAX=2")
+testargstrs=("default_cp0" "memdly_cp0")
+simexe="./simv"
+
+for test in "${tests[@]}"; do
+  len=${#testargs[@]}
+  for ((i = 1; i <= len; i++)); do
+    echo "-----Current test: $test ${testargs[i]}"
+    echo "-----Current log ID: ${testargstrs[i]}"
+    $simexe +TEST=$test ${testargs[i]}
+    ../../scripts/clean_trace.pl  trace_kudu_core.log
+    mv  trace_kudu_core.log trace.$test.${testargstrs[i]}.log
+    mv  trace_kudu_core.clog trace.$test.${testargstrs[i]}.clog
+  done
+done
+
+# Run RV32 tests, compiled as CHERIoTEn = 0
+tests=("coremark.rv32o3")
+testargs=(" " "+INSTR_GNT_WMAX=2 +INSTR_RESP_WMAX=2 +DATA_GNT_WMAX=2 +DATA_RESP_WMAX=2")
+testargstrs=("default" "memdly")
+simexe="./simv32"
+
+for test in "${tests[@]}"; do
+  len=${#testargs[@]}
+  for ((i = 1; i <= len; i++)); do
+    echo "-----Current test: $test ${testargs[i]}"
+    echo "-----Current log ID: ${testargstrs[i]}"
+    $simexe +TEST=$test ${testargs[i]}
+    ../../scripts/clean_trace.pl  trace_kudu_core.log
+    mv  trace_kudu_core.log trace.$test.${testargstrs[i]}.log
+    mv  trace_kudu_core.clog trace.$test.${testargstrs[i]}.clog
+  done 
+done
+
+# Run CHERIoT tests
+tests=("isa_test1" "isa_test1a" "isa_test2" "isa_test2a" "coremark.cheriot")
+testargs=(" " "+INSTR_GNT_WMAX=2 +INSTR_RESP_WMAX=2 +DATA_GNT_WMAX=2 +DATA_RESP_WMAX=2")
+testargstrs=("default" "memdly")
+simexe="./simv"
+
+for test in "${tests[@]}"; do
+  len=${#testargs[@]}
+  for ((i = 1; i <= len; i++)); do
+    echo "-----Current test: $test ${testargs[i]}"
+    echo "-----Current log ID: ${testargstrs[i]}"
+    if [[ "$test" == "isa_test2a" ]]; then
+      $simexe +TEST=$test +INTR_INTVL=3 ${testargs[i]} 
+    else
+      $simexe +TEST=$test ${testargs[i]}
+    fi
+    ../../scripts/clean_trace.pl  trace_kudu_core.log
+    mv  trace_kudu_core.log trace.$test.${testargstrs[i]}.log
+    mv  trace_kudu_core.clog trace.$test.${testargstrs[i]}.clog
+  done 
+done
+
+# Run 1 debug test
+./simv +TEST=dbg_test1 +DBGROM=debug_rom 
+../../scripts/clean_trace.pl  trace_kudu_core.log
+mv  trace_kudu_core.log trace.dbg_test1.log
+mv  trace_kudu_core.clog trace.dbg_test1.clog

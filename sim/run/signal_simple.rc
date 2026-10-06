@@ -1,0 +1,86 @@
+Magic 271485
+Revision Verdi_U-2023.03-SP1
+
+; Window Layout <x> <y> <width> <height> <signalwidth> <valuewidth>
+viewPort 708 -10 1174 1037 242 146
+
+; File list:
+; openDirFile [-d delimiter] [-s time_offset] [-rf auto_bus_rule_file] path_name file_name
+openDirFile -d / "" "/home/kunyanliu/riscdev/super/sim/run/tb_kudu_top.fsdb"
+
+; file time scale:
+; fileTimeScale ### s|ms|us|ns|ps
+
+; signal spacing:
+signalSpacing 5
+
+; windowTimeUnit is used for zoom, cursor & marker
+; waveform viewport range
+zoom 5011146.205631 5227910.798574
+cursor 5085000.000000
+marker 1000.000000
+
+; user define markers
+; userMarker time_pos marker_name color linestyle
+; visible top row signal index
+top 0
+; marker line index
+markerPos 29
+
+; event list
+; addEvent event_name event_expression
+; curEvent event_name
+
+
+
+COMPLEX_EVENT_BEGIN
+
+
+COMPLEX_EVENT_END
+
+
+
+; toolbar current search type
+; curSTATUS search_type
+curSTATUS ByValue
+
+
+addGroup "Issuer1"
+activeDirFile "" "/home/kunyanliu/riscdev/super/sim/run/tb_kudu_top.fsdb"
+addSignal -h 16 /tb_kudu_top/dut/committer_i/clk_i
+addSignal -h 16 -UNSIGNED -HEX /tb_kudu_top/dut/issuer_i/ir_valid_i[1:0]
+addSignal -h 16 -UNSIGNED -HEX -holdScope issuer_rdy_o[1:0]
+addSignal -h 16 -UNSIGNED -HEX -holdScope ir_hazard[1:0]
+addSignal -h 16 -UNSIGNED -HEX -holdScope ir0_pl_sel[4:0]
+addSignal -h 16 -UNSIGNED -HEX -holdScope ir1_pl_sel[4:0]
+addSignal -h 16 -UNSIGNED -HEX -holdScope ex_rdy[4:0]
+addSignal -h 16 -UNSIGNED -HEX /tb_kudu_top/dut/committer_i/cmt_regwr_o[31:0]
+addGroup "Controller"
+addSignal -h 16 -UNSIGNED /tb_kudu_top/dut/issuer_i/ctrl_fsm_cs_dec[3:0]
+addSignal -h 16 -holdScope fetch_req_o
+addSignal -h 16 -holdScope pc_set_o
+addSignal -h 15 -UNSIGNED -HEX -holdScope pc_target_o[31:0]
+addSignal -h 16 -holdScope handle_special
+addSignal -h 17 -UNSIGNED -holdScope special_case_q[2:0]
+addSignal -h 16 -holdScope cmt_flush_o
+addSignal -h 16 -holdScope cmt_err_i
+addSignal -h 16 /tb_kudu_top/dut/committer_i/cmt_err_info_o
+addSignal -h 16 /tb_kudu_top/dut/issuer_i/handle_irq
+addSignal -h 15 -UNSIGNED -HEX -holdScope mispredict[1:0]
+addGroup "Issuer2"
+addSignal -h 16 -UNSIGNED -HEX /tb_kudu_top/dut/issuer_i/issue_pc0[31:0]
+addSignal -h 16 -UNSIGNED -HEX -holdScope issue_pc1[31:0]
+addSignal -h 16 -holdScope ira_is0_i
+addSignal -h 16 -holdScope ir0_dec
+addSignal -h 16 -holdScope ir1_dec
+addSignal -h 16 -UNSIGNED -HEX /tb_kudu_top/dut/committer_i/commit_pc0[31:0]
+addSignal -h 16 -UNSIGNED -HEX -holdScope commit_pc1[31:0]
+addGroup "G8"
+addGroup "G7"
+addGroup "G9"
+addGroup "G10"
+addGroup "G12"
+
+; getSignalForm Scope Hierarchy Status
+; active file of getSignalForm
+

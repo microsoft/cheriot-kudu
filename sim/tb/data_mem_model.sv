@@ -497,6 +497,11 @@ module data_mem_model import kudu_dv_pkg::*; # (
   assign uart_cs1    = mem_cs && (mem_addr32[29:22] == 8'h10) && (mem_addr32[21:8] == 14'h0000);
 
 `ifdef RISCV_TEST_SUITE
+  localparam bit RiscvTestSuiteDefault = 1'b1;
+`else
+  localparam bit RiscvTestSuiteDefault = 1'b0;
+`endif
+
   logic tohost_cs0, tohost_cs1;
   assign tohost_cs0   = mem_cs && (mem_addr32[29:0] == 30'h2000_2000);
   assign tohost_cs1   = mem_cs && (mem_addr32[29:0] == 30'h2000_2001);
@@ -508,42 +513,38 @@ module data_mem_model import kudu_dv_pkg::*; # (
     uart_stop_sim = 1'b0;
     @(posedge rst_n);
 
-    while (1) begin
-      @(posedge clk);
-      if (tohost_cs0 && (mem_wdata == 32'h1)) begin
-        while (~tohost_cs1) @(posedge clk);
-        if (tohost_cs1 && (mem_wdata == 32'h0)) begin
-          $display("RISCV Test passed :)");
-          uart_stop_sim = 1'b1;
-          repeat (100) @(posedge clk);
+    if (RiscvTestSuiteDefault || $test$plusargs("RISCV_TEST_SUITE")) begin
+      while (1) begin
+        @(posedge clk);
+        if (tohost_cs0 && (mem_wdata == 32'h1)) begin
+          while (~tohost_cs1) @(posedge clk);
+          if (tohost_cs1 && (mem_wdata == 32'h0)) begin
+            $display("RISCV Test passed :)");
+            uart_stop_sim = 1'b1;
+            repeat (100) @(posedge clk);
+          end
+        end else if (tohost_cs0) begin
+          while (~tohost_cs1) @(posedge clk);
+          if (tohost_cs1 && (mem_wdata == 32'h0)) begin
+            $display("RISCV Test failed :(");
+            uart_stop_sim = 1'b1;
+            repeat(100) @(posedge clk);
+          end
         end
-      end else if (tohost_cs0) begin
-        while (~tohost_cs1) @(posedge clk);
-        if (tohost_cs1 && (mem_wdata == 32'h0)) begin
-          $display("RISCV Test failed :(");
-          uart_stop_sim = 1'b1;
-          repeat(100) @(posedge clk);
-        end
+      end
+    end else begin
+      // UART printout
+      while (1) begin
+        @(posedge clk);
+        if ((uart_cs0 && mem_we && (uart_addr32 == 'h80)) ||
+            (uart_cs1 && mem_we && (uart_addr32 == 'h00)))
+          if (mem_wdata[7])
+            uart_stop_sim = 1'b1;
+          else
+            $write("%c", mem_wdata[7:0]);
       end
     end
   end
-`else
-  // UART printout
-  initial begin
-    uart_stop_sim = 1'b0;
-    @(posedge rst_n);
-
-    while (1) begin
-      @(posedge clk);
-      if ((uart_cs0 && mem_we && (uart_addr32 == 'h80)) || 
-          (uart_cs1 && mem_we && (uart_addr32 == 'h00)))  
-        if (mem_wdata[7]) 
-          uart_stop_sim = 1'b1;
-       else 
-          $write("%c", mem_wdata[7:0]);
-    end
-  end
-`endif
 
   //
   // Debug ROM

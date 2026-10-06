@@ -1,0 +1,234 @@
+#.option norelax
+
+.section .text
+.globl cheri_atest
+
+.macro PRINTMSG reg, symbol
+    lui        \reg, %hi(\symbol)
+    addi       \reg, \reg, %lo(\symbol)
+    csetaddr   c9, c6, \reg
+    ccall      print_string
+.endm
+
+print_string:                           # print a string pointed by C9
+    cincoffset csp, csp, -8
+    csc c11, (csp)
+
+    clb x11, (c9)
+print_loop:
+    csb x11, 512(c5)
+    cincoffset c9, c9, 0x1
+    clb x11, (c9)
+    bne x11, x0, print_loop
+
+    clc c11, (csp)
+    cincoffset csp, csp, 8
+    cret
+
+#
+#  Register allocation for this test
+#
+#   Globals
+#   --  c2: as the stack capability (created at startup)
+#   --  c3: as a "full" memory capability (entire address space)  
+#   --  c4: base capability for code execution from SRAM (code r/x)
+#   --  c5: base capability for peripheral accesses in tb_top 
+#   --  c6: base capability for accessing SRAM (data and cap r/w)
+#   --  c7: reserved for further use 
+#
+#   --  x1/cra: return address  
+#   --  x10/a0: argument/return value for subroutines
+#   --  x15/a5: is used to pass "argument" to the fault handler.
+#
+#   --  x8, x9(s0,s1): temp variables
+#   --  x11-x14 (a1-a4): temp varaibles
+
+
+#  ///////////////////////////////////////
+#  init
+#  ///////////////////////////////////////
+
+test_init:
+    cspecialrw c3, mtdc, c0    # read MTDC address 'd29, memory root
+
+    lui x11, 0x83800   
+    csetaddr c5, c3, x11      # set base address to 0x8380_0000
+    csetboundsimm c5, c5, 0x800   # set bounds to 0x800
+    addi x11, x0, 0x24            
+    candperm c5, c5, x11      # load/store data permission only 
+
+    lui x11, 0x80000   
+    csetaddr c6, c3, x11      # set base address to 0x8000_0000
+    lui x11, 0x4000   
+    csetbounds c6, c6, x11    # set lengths to 0x400_0000
+    addi x11, x0, 0x7f    
+    candperm c6, c6, x11      # full mem data/cap permission only
+   
+    auipcc c4, 0             # get PCC capability
+    lui x11, 0x80000   
+    csetaddr c4, c4, x11      # set address to 0x8000_0000
+    lui x11, 0x40   
+    csetbounds c4, c4, x11    # set length to 0x80000
+
+    cspecialr c7, mscratchc
+
+    li x11, 0x83800100        # write to this location to tell TB end of init
+    csetaddr c8, c6, x11 
+    li x11, 0xf
+    csw x11, (c8)
+
+    li x9, 0x800              # enable machine-mode ext/tmr/sw interrupts
+    csrs mie, x9
+
+    li a0, 0x0
+    cret
+
+#  ///////////////////////////////////////
+#  test debug features
+#  ///////////////////////////////////////
+test_dbg:
+    cincoffset csp, csp, -64    
+    csc c8,  0(csp)                
+    csc c9,  8(csp)                
+    csc c11, 16(csp)                
+    csc c12, 24(csp)                
+    csc c13, 32(csp)                
+    csc c14, 40(csp)                
+    csc c1,  48(csp)                
+ 
+    # setup debug configuration in TB registers
+    li x11, 0x8003
+    csw x11, 328(c5) # 0x83800148 (dcsr_w)
+
+    li x11, 4
+    csw x11, 332(c5) # 0x8380014c (tmatch_ctrl0)
+
+1:
+    auipcc  c11, %cheri_compartment_pccrel_hi(trigger_pt0)   
+    cincoffset c11, c11, %cheri_compartment_pccrel_lo(1b)
+    csw x11, 340(c5) # 0x83800154 (tmatch_val0)
+
+    # Tell testbench to issue a debug request. dbgrom will update core registes
+    li x11, 0x1
+    csw x11, 320(c5)   # 0x83800140
+
+    nop
+    nop
+    nop
+    nop
+
+    // disable trigger after 1st match 
+    // if we don't do this the test will stall since the breakpoint keep triggerring
+    // ibex shows the same behavior (save pc_if)
+    li x11, 0
+    csw x11, 332(c5) # 0x8380014c (tmatch_ctrl0)  
+
+    nop
+    nop
+    nop
+    nop
+trigger_pt0:
+    nop
+    nop
+    nop
+    nop
+
+    # check debug req/ack count in testbench
+    clw x11, 320(c5)   #0x838001480
+    li  x12, 0x01020000           
+    bne x11, x12, dbg_fail2 
+
+    # Single step debugging
+    li x11, 0x8007
+    csw x11, 328(c5) # 0x83800148 (dcsr_w)
+    li x11, 0x1
+    csw x11, 320(c5)   # 0x83800140
+
+    nop
+    nop
+    li x11, 0x8003
+    csw x11, 328(c5) # 0x83800148 (dcsr_w)
+    
+    # check debug req/ack count in testbench
+    clw x11, 320(c5)   #0x838001480
+    li  x12, 0x02060000           
+    bne x11, x12, dbg_fail3 
+    
+dbg_done:
+    li a0, 0x0
+    j dbg_exit
+
+dbg_fail1:
+    li a0, 0xf1     # error code
+    j dbg_exit
+dbg_fail2:
+    li a0, 0xf2     # error code
+    j dbg_exit
+dbg_fail3:
+    li a0, 0xf3     # error code
+    j dbg_exit
+
+dbg_exit:
+    clc c8,  0(csp)                
+    clc c9,  8(csp)                
+    clc c11, 16(csp)                
+    clc c12, 24(csp)                
+    clc c13, 32(csp)                
+    clc c14, 40(csp)                
+    clc c1,  48(csp)                
+    cincoffset csp, csp, 64    
+    cret
+
+
+#  ///////////////////////////////////////
+#  --- cheri_test (main test for CHERI instructions)
+#  ///////////////////////////////////////
+
+cheri_atest:
+    # save register context so that we won't have issue talking with the C program 
+    # note RISC-V uses x10/x11 (a0/a1) for args/return values, and x12-x17 (a2-7) for args
+    cincoffset csp, csp, -64    
+    csc c1, 0(csp)                
+    csc c3, 8(csp)                
+    csc c4, 16(csp)                
+    csc c5, 24(csp)                
+    csc c6, 32(csp)                
+    csc c7, 40(csp)                
+    csc c8, 48(csp)                
+    csc c9, 56(csp)                
+
+    ccall test_init
+    PRINTMSG x11, hello_msg
+
+    PRINTMSG x11, test_dbg_msg
+    ccall test_dbg
+    bne a0, x0, test_exit
+
+    j test_exit
+
+test_exit:
+    # restore register context
+    clc c1, 0(csp)                
+    clc c3, 8(csp)                
+    clc c4, 16(csp)                
+    clc c5, 24(csp)                
+    clc c6, 32(csp)                
+    clc c7, 40(csp)                
+    clc c8, 48(csp)                
+    clc c9, 56(csp)                
+    cincoffset csp, csp, 64
+
+    cret
+
+.section .rodata
+
+hello_msg :
+  .string "Doing something in assembly..\n"
+test_dbg_msg :
+  .string "Testing debug features.. \n"
+
+#.section .tohost
+#tohost :
+#  .dword 0
+#fromhost :
+#  .dword 0

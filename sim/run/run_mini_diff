@@ -1,0 +1,78 @@
+#!/usr/bin/env wish
+
+# Set window title
+wm title . "Compare Log File Pairs with tkdiff"
+
+# Create a menu bar
+menu .menubar
+. configure -menu .menubar
+
+# Create a submenu for comparisons
+menu .menubar.compare
+.menubar add cascade -label "Compare Logs" -menu .menubar.compare
+
+# Text widget to display diff output
+text .diff_output -width 50 -height 20 -wrap none
+pack .diff_output -fill both -expand 1
+
+# Your list of file pairs
+set file_pairs {
+    {"temp_regression/trace.coremark.rv32o3.default.clog"  "../run_ibex/trace.coremark.rv32o3.clog"}
+    {"temp_regression/trace.coremark.rv32o3.memdly.clog"   "../run_ibex/trace.coremark.rv32o3.clog"} 
+    {"temp_regression/trace.coremark.rv32o3.default_cp0.clog"  "../run_ibex/trace.coremark.rv32o3.clog"}
+    {"temp_regression/trace.coremark.rv32o3.memdly_cp0.clog"   "../run_ibex/trace.coremark.rv32o3.clog"} 
+    {"temp_regression/trace.coremark.cheriot.default.clog" "../run_ibex/trace.coremark.cheriot.clog"}
+    {"temp_regression/trace.coremark.cheriot.memdly.clog"  "../run_ibex/trace.coremark.cheriot.clog"}
+    {"temp_regression/trace.isa_test1.default.clog"        "../run_ibex/trace.isa_test1.clog"}
+    {"temp_regression/trace.isa_test1.memdly.clog"         "../run_ibex/trace.isa_test1.clog"}
+    {"temp_regression/trace.isa_test1a.default.clog"       "../run_ibex/trace.isa_test1a.clog"}
+    {"temp_regression/trace.isa_test1a.memdly.clog"        "../run_ibex/trace.isa_test1a.clog"}
+    {"temp_regression/trace.isa_test2.default.clog"        "../run_ibex/trace.isa_test2.clog"}
+    {"temp_regression/trace.isa_test2.memdly.clog"         "../run_ibex/trace.isa_test2.clog"}
+}
+
+# Keep the narrow isa_test1 exception opt-in, with simulation first.
+proc diff_command {file1 file2} {
+    set command [list ../scripts/diff_files.py --ignore-extra-lines 5]
+    if {[regexp {^trace\.isa_test1\.[^.]+\.clog$} [file tail $file1]] &&
+        $file2 eq "../run_ibex/trace.isa_test1.clog"} {
+        lappend command --isa-test1-clc-tag
+    }
+    lappend command $file1 $file2
+    return $command
+}
+
+# Both views use the same rules; tkdiff receives temporary normalized copies.
+proc compare_files_gui {file1 file2} {
+    puts "Comparing $file1 and $file2"
+    set command [diff_command $file1 $file2]
+    lappend command --tkdiff
+    if {[catch {exec {*}$command &} err]} {
+        puts stderr $err
+        tk_messageBox -icon error -message $err
+    }
+}
+
+# Function to run diff and print to the Text widget
+proc compare_files_stdout {file1 file2} {
+    puts "Diffing $file1 and $file2"
+    set command [diff_command $file1 $file2]
+    set result [catch {exec {*}$command 2>@1} output]
+    puts $output
+}
+
+set i 1
+foreach pair $file_pairs {
+    lassign $pair f1 f2
+    compare_files_stdout $f1 $f2
+    incr i
+}
+
+# Add menu entries for each pair
+set i 1
+foreach pair $file_pairs {
+    lassign $pair f1 f2
+    set label "$i: $f1 ↔ $f2"
+    .menubar.compare add command -label $label -command [list compare_files_gui $f1 $f2]
+    incr i
+}
