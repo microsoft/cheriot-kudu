@@ -450,6 +450,47 @@ module kudu_fcov_id
 
   cg_ma_id u_cg_ma_id = new();
 
+  for (genvar i = 0; i < 2; i++) begin : gen_decoder
+    localparam string DecoderName = i == 0 ? "ir0_decoder" : "ir1_decoder";
+    logic decode_valid, sample_checks;
+    logic hdrm_ge4, hdrm_ge2, hdrm_ok, base_ok, allow_all, cheri_perm_vio;
+
+    // Buffered inputs are age ordered. With stage 1 bypassed the decoders
+    // instead see physical mema/memb, so validity must follow that mapping.
+    assign decode_valid = StageBypass[1] && !ira_is0_o ?
+                          s0_rd_valid[1-i] : s0_rd_valid[i];
+    assign sample_checks = decode_valid && cheri_active && !debug_mode_i &&
+                           !(StageBypass[1] ? ir_flush_i : flush_s0);
+    if (i == 0) begin : gen_tap0
+      assign hdrm_ge4 = ir_stage.ir0_decoder_i.hdrm_ge4;
+      assign hdrm_ge2 = ir_stage.ir0_decoder_i.hdrm_ge2;
+      assign hdrm_ok = ir_stage.ir0_decoder_i.hdrm_ok;
+      assign base_ok = ir_stage.ir0_decoder_i.base_ok;
+      assign allow_all = ir_stage.ir0_decoder_i.allow_all;
+      assign cheri_perm_vio = ir_stage.ir0_decoder_i.cheri_perm_vio;
+    end else begin : gen_tap1
+      assign hdrm_ge4 = ir_stage.ir1_decoder_i.hdrm_ge4;
+      assign hdrm_ge2 = ir_stage.ir1_decoder_i.hdrm_ge2;
+      assign hdrm_ok = ir_stage.ir1_decoder_i.hdrm_ok;
+      assign base_ok = ir_stage.ir1_decoder_i.base_ok;
+      assign allow_all = ir_stage.ir1_decoder_i.allow_all;
+      assign cheri_perm_vio = ir_stage.ir1_decoder_i.cheri_perm_vio;
+    end
+
+    covergroup cg_ir_decoder @(posedge clk_i iff (rst_ni && sample_checks));
+      option.per_instance = 1;
+      option.name = {"FC_MA_ID.", DecoderName};
+      option.weight = CHERIoTEn ? 1 : 0;
+      cp_hdrm_ge4: coverpoint hdrm_ge4 { bins zero = {0}; bins one = {1}; }
+      cp_hdrm_ge2: coverpoint hdrm_ge2 { bins zero = {0}; bins one = {1}; }
+      cp_hdrm_ok: coverpoint hdrm_ok { bins zero = {0}; bins one = {1}; }
+      cp_base_ok: coverpoint base_ok { bins zero = {0}; bins one = {1}; }
+      cp_allow_all: coverpoint allow_all { bins zero = {0}; bins one = {1}; }
+      cp_cheri_perm_vio: coverpoint cheri_perm_vio { bins zero = {0}; bins one = {1}; }
+    endgroup
+    cg_ir_decoder u_cg_ir_decoder = new();
+  end
+
   // ==========================================================================
   // Structural assertions backing the illegal_bins above.
   // ==========================================================================

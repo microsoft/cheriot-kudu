@@ -31,7 +31,9 @@
 `ifdef RVFI
 bind tracer kudu_fcov_isa u_fcov_isa (
   .*,
-  .amo_retire ((amo_state == AMO_T_WAIT1) && cmt_valid[0])
+  .amo_retire (cmt_valid[0] &&
+               ((amo_state == AMO_T_WAIT1) ||
+                ((amo_state == AMO_T_WAIT0) && cmt_instr_err[0])))
 );
 `endif
 
