@@ -349,7 +349,6 @@ package super_pkg;
  // Operand a selection
   typedef enum logic[1:0] {
     OP_A_REG_A,
-    OP_A_FWD,
     OP_A_CURRPC,
     OP_A_IMM
   } op_a_sel_e;

@@ -256,7 +256,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .clk_i              (clk_i           ),
     .rst_ni             (rst_ni          ),
     .cheri_pmode_i      (cheri_pmode_i   ),
-    .debug_mode_i       (1'b0            ),
+    .debug_mode_i       (debug_mode      ),
     .pcc_cap_i          (ir_pcc_cap      ),
     .us_instr0_i        (if_instr0       ),   
     .us_instr1_i        (if_instr1       ),    
