@@ -267,13 +267,13 @@ module kudu_fcov_id
     cp_rf_ren0: coverpoint dec_out0.rf_ren iff (ir_valid_o[0]) {
       bins none = {2'b00};
       bins rs1  = {2'b01};
-      bins rs2  = {2'b10};
+      illegal_bins rs2 = {2'b10};
       bins both = {2'b11};
     }
     cp_rf_ren1: coverpoint dec_out1.rf_ren iff (ir_valid_o[1]) {
       bins none = {2'b00};
       bins rs1  = {2'b01};
-      bins rs2  = {2'b10};
+      illegal_bins rs2 = {2'b10};
       bins both = {2'b11};
     }
 
@@ -428,7 +428,7 @@ module kudu_fcov_id
       bins none = {2'b00};
       bins slot0 = {2'b01};
       bins slot1 = {2'b10};
-      bins both = {2'b11};
+      illegal_bins both = {2'b11};
     }
 
     // Only gen_stage1 drives this output, and prediction needs CHERI + RA.
@@ -453,13 +453,14 @@ module kudu_fcov_id
   for (genvar i = 0; i < 2; i++) begin : gen_decoder
     localparam string DecoderName = i == 0 ? "ir0_decoder" : "ir1_decoder";
     logic decode_valid, sample_checks;
-    logic hdrm_ge4, hdrm_ge2, hdrm_ok, base_ok, allow_all, cheri_perm_vio;
+    logic hdrm_ge4, hdrm_ge2, hdrm_ok, base_ok, allow_all;
+    logic cheri_perm_vio, cheri_bound_vio;
 
     // Buffered inputs are age ordered. With stage 1 bypassed the decoders
     // instead see physical mema/memb, so validity must follow that mapping.
     assign decode_valid = StageBypass[1] && !ira_is0_o ?
                           s0_rd_valid[1-i] : s0_rd_valid[i];
-    assign sample_checks = decode_valid && cheri_active && !debug_mode_i &&
+    assign sample_checks = decode_valid && cheri_active &&
                            !(StageBypass[1] ? ir_flush_i : flush_s0);
     if (i == 0) begin : gen_tap0
       assign hdrm_ge4 = ir_stage.ir0_decoder_i.hdrm_ge4;
@@ -468,6 +469,7 @@ module kudu_fcov_id
       assign base_ok = ir_stage.ir0_decoder_i.base_ok;
       assign allow_all = ir_stage.ir0_decoder_i.allow_all;
       assign cheri_perm_vio = ir_stage.ir0_decoder_i.cheri_perm_vio;
+      assign cheri_bound_vio = ir_stage.ir0_decoder_i.cheri_bound_vio;
     end else begin : gen_tap1
       assign hdrm_ge4 = ir_stage.ir1_decoder_i.hdrm_ge4;
       assign hdrm_ge2 = ir_stage.ir1_decoder_i.hdrm_ge2;
@@ -475,29 +477,62 @@ module kudu_fcov_id
       assign base_ok = ir_stage.ir1_decoder_i.base_ok;
       assign allow_all = ir_stage.ir1_decoder_i.allow_all;
       assign cheri_perm_vio = ir_stage.ir1_decoder_i.cheri_perm_vio;
+      assign cheri_bound_vio = ir_stage.ir1_decoder_i.cheri_bound_vio;
     end
 
     covergroup cg_ir_decoder @(posedge clk_i iff (rst_ni && sample_checks));
       option.per_instance = 1;
       option.name = {"FC_MA_ID.", DecoderName};
       option.weight = CHERIoTEn ? 1 : 0;
-      cp_hdrm_ge4: coverpoint hdrm_ge4 { bins zero = {0}; bins one = {1}; }
-      cp_hdrm_ge2: coverpoint hdrm_ge2 { bins zero = {0}; bins one = {1}; }
-      cp_hdrm_ok: coverpoint hdrm_ok { bins zero = {0}; bins one = {1}; }
-      cp_base_ok: coverpoint base_ok { bins zero = {0}; bins one = {1}; }
-      cp_allow_all: coverpoint allow_all { bins zero = {0}; bins one = {1}; }
+      cp_hdrm_ge4: coverpoint hdrm_ge4 iff (!debug_mode_i) { bins zero = {0}; bins one = {1}; }
+      cp_hdrm_ge2: coverpoint hdrm_ge2 iff (!debug_mode_i) { bins zero = {0}; bins one = {1}; }
+      cp_hdrm_ok: coverpoint hdrm_ok iff (!debug_mode_i) { bins zero = {0}; bins one = {1}; }
+      cp_base_ok: coverpoint base_ok iff (!debug_mode_i) { bins zero = {0}; bins one = {1}; }
+      cp_allow_all: coverpoint allow_all iff (!debug_mode_i) { bins zero = {0}; bins one = {1}; }
       cp_cheri_perm_vio: coverpoint cheri_perm_vio { bins zero = {0}; bins one = {1}; }
+      cp_cheri_bound_vio: coverpoint cheri_bound_vio { bins zero = {0}; bins one = {1}; }
+      cp_debug_mode: coverpoint debug_mode_i { bins normal = {0}; bins debug = {1}; }
+
+      x_perm_vio_debug: cross cp_cheri_perm_vio, cp_debug_mode {
+        ignore_bins suppressed_in_debug = binsof(cp_cheri_perm_vio.one) &&
+                                          binsof(cp_debug_mode.debug);
+      }
+      x_bound_vio_debug: cross cp_cheri_bound_vio, cp_debug_mode {
+        ignore_bins suppressed_in_debug = binsof(cp_cheri_bound_vio.one) &&
+                                          binsof(cp_debug_mode.debug);
+      }
     endgroup
     cg_ir_decoder u_cg_ir_decoder = new();
+
+    AssertDebugSuppressesCheriErrors: assert property (
+      @(posedge clk_i) disable iff (!rst_ni)
+      (sample_checks && debug_mode_i) |-> !(cheri_perm_vio || cheri_bound_vio))
+      else $error("FCOV: decoder %0d reports a CHERI error in debug mode", i);
   end
 
   // ==========================================================================
   // Structural assertions backing the illegal_bins above.
   // ==========================================================================
+  AssertCjalrPredictOneHot: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (CjalrPredictEn && cheri_active && (|s0_rd_valid)) |->
+      $onehot0(cjalr_predict_ok & s0_rd_valid))
+    else $error("FCOV: both valid decoder slots predict CJALR");
+
   AssertErr0Encoding: assert property (
     @(posedge clk_i) disable iff (!rst_ni)
     ir_valid_o[0] |-> (err0 inside {[ERR_NONE:ERR_MULTIPLE]}))
     else $error("FCOV: reserved error-category encoding in cp_err0");
+
+  AssertRfRen0Legal: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    ir_valid_o[0] |-> (dec_out0.rf_ren != 2'b10))
+    else $error("FCOV: rs2-only read enable in cp_rf_ren0");
+
+  AssertRfRen1Legal: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    ir_valid_o[1] |-> (dec_out1.rf_ren != 2'b10))
+    else $error("FCOV: rs2-only read enable in cp_rf_ren1");
 
   AssertErr1Encoding: assert property (
     @(posedge clk_i) disable iff (!rst_ni)

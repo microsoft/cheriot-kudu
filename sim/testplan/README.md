@@ -239,8 +239,11 @@ Impossible instruction/mode combinations are ignored in the crosses.
 RV32-only hardware requires only mode 0. **FC_ISA_OPERANDS** has one
 instruction/saved-mode cross; its other crosses omit mode. They cover only
 applicable sources, immediates and capability results, pairing corresponding
-CS1/CS2 and CD subfields with instruction identity. No operand cross exceeds
-three axes.
+CS1/CS2 and CD subfields with instruction identity. Crosses are partitioned by
+arithmetic, multiply/divide, bit manipulation, control, memory, atomic, system
+and CHERI instruction families. Genuine scalar values exclude capability
+cursors; applicable CHERI crosses add the actual CS1 tag. No operand cross
+exceeds four axes, and source-free operations never acquire dummy sources.
 
 | Dimension | Planned coverage |
 |---|---|
@@ -315,7 +318,7 @@ applicability exclusions remain necessary for sign-off.
 |---|---|
 | Every enabled instruction/format and meaningful operand class | TestRIG generation plus directed ISA/CHERIoT programs; Sail comparison and retire coverage |
 | Correct behavior under microarchitectural pressure | Dependency chains, independently varied instruction/data delays, queue boundaries, pipeline mixtures and recovery; microarchitectural coverage plus architectural comparison |
-| Register reservations and forwarding | Exercise each write-reservation bit 1–31 and CHERI reservation bit 1–15 with the four slot-hazard states; exercise all four forwarding/reservation pairs per register and both physical slot mappings |
+| Register reservations and forwarding | Exercise each write-reservation bit 1–31 and CHERI reservation bit 1–15 with the four slot-hazard states; cover legal forwarding/reservation pairs 00, 01, 11 per register, reject illegal 10, and exercise both physical slot mappings |
 | Commit writeback and destination collisions | Exercise each port's registers 1–15 in CHERI mode and 1–31 in RV32 mode; cover nonzero destination equality for port pairs 0/1, 1/2 and 0/2, including an early load suppressed by a younger writer |
 | Scoreboard pressure | Reach FIFO occupancy 0, 1, 2, 3, 4, 5 and 6 or more using producer/commit pressure and delayed operations; retain architectural comparison through drain and recovery |
 | LSU queue pressure | Reach WAW FIFO levels 0, 1 and 2+, and writeback FIFO levels 0 and 1+; exercise fill, drain, flush and write-through behavior without treating bypass traffic as stored occupancy |
@@ -400,7 +403,7 @@ coverage need not add one bind per child.
 | Group | Current focus |
 |---|---|
 | **FC_ISA_INSTR** | Retirement observations; all 30 instruction-encoding points crossed with saved CHERI-active mode, result/memory attributes and control-flow/trap indicators |
-| **FC_ISA_OPERANDS** | 165 instruction identities, one instruction/mode cross, applicable source registers/data and immediates, and matching CS1/CS2-to-CD capability fields; 45 crosses, each at most three-way |
+| **FC_ISA_OPERANDS** | 165 instruction identities, one instruction/mode cross and 127 family-qualified operand crosses; genuine scalar operands, actual capability sources/tags and matching CS1/CS2-to-CD fields; 128 crosses, each at most four-way |
 | **FC_ISA_CSR** | Architectural CSR, privilege, interrupt, trap and debug state/events |
 | **FC_MA_IF** | Fetch/prefetch handshakes, outstanding/discard state, fetch FIFO occupancy and alignment, split instructions, ALT buffering and prediction |
 | **FC_MA_ID** | IR storage/handshakes, decode categories and errors, register read/write address crosses, revocation, breakpoints, CJALR source role and prediction/PCC update |
@@ -455,7 +458,7 @@ coverpoints and their six crosses, which were removed.
 | **cp_reg_wrsv_q** | One overlapping set-bit bin per register 1–31 |
 | **cp_reg_cheri_trsv_q** | One overlapping set-bit bin per register 1–15 |
 | **x_cp_reg_wrsv_q**, **x_cp_reg_cheri_trsv_q** | Each reserved register crossed with **hazard_q** through **cp_hazard**: none, IR0, IR1 or both; 124 and 60 cross bins respectively |
-| **cp_fwd_wrsv_r1** through **cp_fwd_wrsv_r31** | Each **{ir0_pl_fwd_act[n], reg_wrsv_q[n]}** pair: 00 neither, 01 reserved only, 10 forwarding only, 11 both; 124 bins total |
+| **cp_fwd_wrsv_r1** through **cp_fwd_wrsv_r31** | Each **{ir0_pl_fwd_act[n], reg_wrsv_q[n]}** pair: 00 neither, 01 reserved only, 11 both are legal; **pair_2** (10, forwarding only) is illegal and backed by an SVA; 93 legal goals plus 31 illegal bins |
 | **cp_branch_mispredict_event** | Separate IR0/IR1 hit bins from the full two-bit event, already qualified by branch decode and issue in RTL |
 | **cp_ira_is0** | Both physical-to-logical mappings: IRA is IR0 when 1, IRB is IR0 when 0 |
 | **cp_mcause** | Issuer-generated exception/IRQ causes, each fast IRQ ID 0–14, and forwarded commit-error causes, sampled only on non-debug cause saves |
@@ -499,11 +502,16 @@ LSU uses valid request metadata, not WAW FIFO occupancy.
 
 IR bins combine category with **pl_type**, distinguish faults, PC-trigger
 debug, sysctl and complex AMO special instructions, and include **EMPTY**.
-The event axis preserves all 16 masks of **{cmt_err_i, handle_debug,
-handle_err, handle_irq}**, including none. Feature/routing filters remove
+The event axis has overlapping **irq**, **error**, **debug**, and
+**commit_error** bins (each tests only its asserted bit), plus **none** for
+zero, in **{cmt_err_i, handle_debug, handle_err, handle_irq}** order.
+An uncrossed **cp_special_event_value** retains all 16 exact masks in each
+frontend/execution group. Feature/routing filters remove
 impossible category/PL pairs and EX categories. Cross exclusions remove
-younger-valid/older-empty S0/IR pairs and masks inconsistent with IR0 fault
-status. A busy pipeline and a matching IR pipeline assignment can coexist;
+younger-valid/older-empty S0/IR pairs, **error** with nonfault IR0, and
+**none** with fault IR0. Other event bins retain both fault states because
+they overlap masks with and without **handle_err**. A busy pipeline and a
+matching IR pipeline assignment can coexist;
 these are not same-instruction or producer/consumer crosses.
 
 The **req_dly** tap excludes stale bypass copies in IDLE/DLY0_WGNT but includes
@@ -513,8 +521,12 @@ AMO halves use **amo_flag** because their request record omits the opcode.
 All invalid stages have an EMPTY bin. No new RTL state or decode is added.
 
 **Top level:** the coverage owner and queued bus timing helper are in
-**kudu_fcov_top.sv**, renamed from the bus owner; its groups are
-**FC_MA_TOP** and **FC_MA_TOP.fatal**. **cp_sbd_fifo_level** directly samples
+**kudu_fcov_top.sv**, renamed from the bus owner; its single group is
+**FC_MA_TOP**, including **cp_fatal_err**. Fatal state/transition coverage
+retains falling-edge sampling through reset; all other points retain
+rising-edge sampling outside reset. The fatal point has zero weight on
+RV32-only hardware. Recompile into a fresh database for this group consolidation.
+**cp_sbd_fifo_level** directly samples
 the full signed eight-bit **sbd_fifo_i.fifo_level**, with separate bins for
 **0 through 5**, plus **6 and above**. The current FIFO depth is eight.
 Occupancy is sampled before rising-edge updates, outside reset.
@@ -545,27 +557,27 @@ reports and do not merge incompatible schemas.
 
 ### 4.2 Source census, not achieved coverage
 
-The following snapshot is the coverage source census on 2026-10-06,
+The following snapshot is the coverage source census on 2026-10-10,
 after the updates in this plan. Mode-qualified bins
 and report denominators must be reviewed per hardware report domain.
 
 | Organization | Covergroup types | Coverpoint declarations | Explicit crosses |
 |---|---:|---:|---:|
 | ISA instructions | 1 | 44 | 30 |
-| ISA operands | 1 | 30 | 45 |
+| ISA operands | 1 | 30 | 128 |
 | ISA/CSR | 1 | 42 | 2 |
 | IF | 1 | 62 | 3 |
-| ID | 2 | 63 | 16 |
-| Issue | 4 | 93 | 7 |
-| EX, including branch groups | 4 | 99 | 14 |
-| Context | 2 | 9 | 2 |
+| ID | 2 | 65 | 18 |
+| Issue | 1 | 93 | 7 |
+| EX, including branch groups | 4 | 92 | 14 |
+| Context | 2 | 11 | 2 |
 | LSU | 3 | 99 | 9 |
 | Commit | 1 | 31 | 0 |
-| Top level | 2 | 42 | 0 |
-| **Total** | **22** | **614** | **128** |
+| Top level | 1 | 40 | 0 |
+| **Total** | **18** | **609** | **213** |
 
-The tool also reports **16 bind declarations**, **1,460 normal bin
-declarations**, **41 illegal-bin declarations**, and **85 ignore-bin
+The tool also reports **16 bind declarations**, **1,523 normal bin
+declarations**, **75 illegal-bin declarations**, and **169 ignore-bin
 declarations**. It reports the branch type separately as **cg_ma_branch**;
 the table folds it into EX.
 
@@ -886,8 +898,8 @@ commit flush landing in the WRITE cycle and may stay a hole in short tests.
 
 #### Forwarding, branch resolution and recovery
 
-**FC_MA_ISSUE.forwarding** samples every nonzero source operand read by a
-valid issue slot:
+The forwarding points in **FC_MA_ISSUE** sample every nonzero source operand
+read by a valid issue slot:
 
 | Point | Goals |
 |---|---|
@@ -900,13 +912,29 @@ valid issue slot:
 **x_operand_outcome_issue** (same-bundle outcomes only for IR1) and
 **x_fwd_producer_consumer** relate outcome, issue, producer and consumer.
 
-**FC_MA_ISSUE.bp_resolution** samples each issued branch, JAL or JALR:
+The prediction-resolution points in **FC_MA_ISSUE** sample each issued branch,
+JAL or JALR:
 slot × kind × predicted taken × actual taken × recovery path (none, ordinary
 PC set, alternate-path apply, alternate-path cancel/flush). Jumps never
 resolve not-taken. **cp_slot1_suppressed_by_mispredict0** covers IR1 being
-held because IR0 mispredicted. **FC_MA_ISSUE.cheri_temporal** covers CHERI
-instructions stalled or issued while load filtering is enabled (zero weight
-without CHERIoT or load filtering).
+held because IR0 mispredicted. The temporal-dependency points in
+**FC_MA_ISSUE** cover CHERI instructions stalled or issued while load filtering
+and runtime CHERI mode are enabled. Their point weights are zero without
+CHERIoT hardware; the cross additionally has zero weight without load filtering.
+
+All 93 issuer points and seven crosses belong to one **cg_ma_issue** instance.
+Typed event-kind guards keep cycle sampling (once per rising edge outside
+reset) separate from operand, resolution and temporal-dependency samples
+(up to four, two and two per edge). No cycle point is resampled by those
+event calls. **run_issue_sampling.py** checks simultaneous events, reset,
+FSM history, saved-RA tracking and both hardware/load-filter/mode settings;
+**--baseline** compares every native point/cross report against a preserved
+pre-consolidation source. Other legal-bin counters and applicability are
+preserved; only forwarding **pair_2** changes from a legal goal to an illegal
+bin. The old four-group weighted average is not the new single-group score.
+The negative forwarding sweep checks all 31 pair_2 bins and their paired
+assertions in both hardware/runtime modes, including idle cycles, with
+reset, between-edge and x0 rejection. Three legal goals per register remain.
 
 In **FC_MA_IF**, **cp_pdt_cand0/1** cover which predictor source (branch,
 JAL, JALR) each slot proposes, and **x_cp_pdt_priority_contention** crosses

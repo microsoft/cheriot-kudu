@@ -400,6 +400,27 @@ module kudu_fcov_isa
   endfunction
 
   typedef enum int unsigned {
+    OF_ARITHMETIC, OF_MULDIV, OF_BITMANIP, OF_CONTROL, OF_MEMORY,
+    OF_ATOMIC, OF_SYSTEM, OF_CHERI
+  } operand_family_e;
+
+  function automatic operand_family_e operand_family(isa_instr_e instruction);
+    if (instruction >= ISA_CSCRRW) return OF_CHERI;
+    if (instruction inside {[ISA_MUL:ISA_REMU]}) return OF_MULDIV;
+    if (instruction inside {[ISA_SH1ADD:ISA_BSETI]}) return OF_BITMANIP;
+    if (instruction inside {[ISA_LR_W:ISA_AMOMAXU]}) return OF_ATOMIC;
+    if (instruction inside {
+        ISA_JAL, [ISA_BEQ:ISA_BGEU], ISA_JALR, ISA_C_BEQZ, ISA_C_BNEZ,
+        ISA_C_JAL, ISA_C_J, ISA_C_JR, ISA_C_JALR}) return OF_CONTROL;
+    if (instruction inside {
+        ISA_SB, ISA_SH, ISA_SW, [ISA_LB:ISA_LHU],
+        ISA_C_LW, ISA_C_SW, ISA_C_LWSP, ISA_C_SWSP}) return OF_MEMORY;
+    if (instruction inside {
+        [ISA_FENCE:ISA_WFI], [ISA_CSRRW:ISA_CSRRCI], ISA_C_EBREAK}) return OF_SYSTEM;
+    return OF_ARITHMETIC;
+  endfunction
+
+  typedef enum int unsigned {
     OP_ZERO, OP_ONE, OP_MINUS_ONE, OP_MIN_INT, OP_MAX_INT, OP_POSITIVE, OP_NEGATIVE
   } operand_class_e;
 
@@ -494,6 +515,14 @@ module kudu_fcov_isa
            ((instruction_mode(instruction, 0) && !capability_source(instruction, 0, second)) ||
             (kudu_top.CHERIoTEn && instruction_mode(instruction, 1) &&
              !capability_source(instruction, 1, second)));
+  endfunction
+
+  function automatic bit integer_register_goal(isa_instr_e instruction, bit second,
+                                                int unsigned address);
+    return (source_register(instruction, 0, second, address) &&
+            !capability_source(instruction, 0, second)) ||
+           (kudu_top.CHERIoTEn && source_register(instruction, 1, second, address) &&
+            !capability_source(instruction, 1, second));
   endfunction
 
   function automatic bit capability_source_goal(isa_instr_e instruction, bit second);
@@ -1210,9 +1239,9 @@ module kudu_fcov_isa
       bins registers[] = {[0:31]};
     }
     cp_rs1_data: coverpoint operand_class(t.rvfi.rs1_rdata[31:0])
-        iff (source_available(t, instruction, 0)) { option.weight = 0; }
+        iff (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0)) { option.weight = 0; }
     cp_rs2_data: coverpoint operand_class(t.rvfi.rs2_rdata[31:0])
-        iff (source_available(t, instruction, 1)) { option.weight = 0; }
+        iff (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1)) { option.weight = 0; }
     cp_rs1_size: coverpoint operand_size(t.rvfi.rs1_rdata[31:0])
         iff (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0)) {
       option.weight = 0;
@@ -1351,346 +1380,1118 @@ module kudu_fcov_isa
 
     x_instruction_pmode: cross cp_instruction, cp_pmode {
       ignore_bins unused = x_instruction_pmode with
-        (!instruction_mode(cp_instruction, cp_pmode));
+        (!instruction_mode(isa_instr_e'(cp_instruction), cp_pmode));
     }
 
-    x_instruction_rs1: cross cp_instruction, cp_rs1_addr, cp_rs1_data
-        iff (source_available(t, instruction, 0)) {
-      ignore_bins unused = x_instruction_rs1 with
-        (!source_register_goal(cp_instruction, 0, cp_rs1_addr));
-      ignore_bins zero_register = x_instruction_rs1 with
-        (cp_rs1_addr == 0 && cp_rs1_data != OP_ZERO);
+    // BEGIN GENERATED FAMILY CROSSES
+
+    // Regenerate with fcov/generate_isa_operand_crosses.py --write.
+
+    // ARITHMETIC: only actual source/destination roles contribute goals.
+
+    x_arithmetic_rs1: cross cp_instruction, cp_rs1_addr, cp_rs1_data
+        iff (operand_family(instruction) == OF_ARITHMETIC && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_arithmetic_rs1 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ARITHMETIC ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         (cp_rs1_addr == 0 && cp_rs1_data != OP_ZERO));
     }
 
-    x_rs1_size: cross cp_instruction, cp_rs1_size
-        iff (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0)) {
-      ignore_bins unused = x_rs1_size with
-        (!integer_source_goal(cp_instruction, 0));
+    x_arithmetic_rs1_size: cross cp_instruction, cp_rs1_size
+        iff (operand_family(instruction) == OF_ARITHMETIC && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_arithmetic_rs1_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ARITHMETIC ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_instruction_rs2: cross cp_instruction, cp_rs2_addr, cp_rs2_data
-        iff (source_available(t, instruction, 1)) {
-      ignore_bins unused = x_instruction_rs2 with
-        (!source_register_goal(cp_instruction, 1, cp_rs2_addr));
-      ignore_bins zero_register = x_instruction_rs2 with
-        (cp_rs2_addr == 0 && cp_rs2_data != OP_ZERO);
+    x_arithmetic_rs2: cross cp_instruction, cp_rs2_addr, cp_rs2_data
+        iff (operand_family(instruction) == OF_ARITHMETIC && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_arithmetic_rs2 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ARITHMETIC ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr) ||
+         (cp_rs2_addr == 0 && cp_rs2_data != OP_ZERO));
     }
 
-    x_rs2_size: cross cp_instruction, cp_rs2_size
-        iff (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1)) {
-      ignore_bins unused = x_rs2_size with
-        (!integer_source_goal(cp_instruction, 1));
+    x_arithmetic_rs2_size: cross cp_instruction, cp_rs2_size
+        iff (operand_family(instruction) == OF_ARITHMETIC && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_arithmetic_rs2_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ARITHMETIC ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
     }
 
-    x_source_addresses: cross cp_instruction, cp_rs1_addr, cp_rs2_addr
-        iff (source_available(t, instruction, 0) && source_available(t, instruction, 1)) {
-      ignore_bins unused = x_source_addresses with
-        (!source_register_goal(cp_instruction, 0, cp_rs1_addr) ||
-         !source_register_goal(cp_instruction, 1, cp_rs2_addr));
+    x_arithmetic_source_addresses: cross cp_instruction, cp_rs1_addr, cp_rs2_addr
+        iff (operand_family(instruction) == OF_ARITHMETIC && (source_available(t, instruction, 0) && source_available(t, instruction, 1))) {
+      ignore_bins unused = x_arithmetic_source_addresses with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ARITHMETIC ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr));
     }
 
-    x_source_data: cross cp_instruction, cp_rs1_data, cp_rs2_data
-        iff (source_available(t, instruction, 0) && source_available(t, instruction, 1)) {
-      ignore_bins unused = x_source_data with
-        (!instruction_available(cp_instruction) ||
-         !uses_source(cp_instruction, 0) || !uses_source(cp_instruction, 1));
+    x_arithmetic_source_data: cross cp_instruction, cp_rs1_data, cp_rs2_data
+        iff (operand_family(instruction) == OF_ARITHMETIC && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_arithmetic_source_data with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ARITHMETIC ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
     }
 
-    x_instruction_immediate: cross cp_instruction, cp_immediate
-        iff (!t.rvfi.trap || t.is_ex) {
-      ignore_bins unused = x_instruction_immediate with
-        (!(immediate_goal(cp_instruction, 0, cp_immediate) ||
-           (kudu_top.CHERIoTEn && immediate_goal(cp_instruction, 1, cp_immediate))));
+    x_arithmetic_immediate: cross cp_instruction, cp_immediate
+        iff (operand_family(instruction) == OF_ARITHMETIC && (!t.rvfi.trap || t.is_ex)) {
+      ignore_bins unused = x_arithmetic_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ARITHMETIC ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
     }
 
-    x_rs1_immediate: cross cp_instruction, cp_rs1_data, cp_immediate
-        iff (source_available(t, instruction, 0)) {
-      ignore_bins unused = x_rs1_immediate with
-        (!uses_source(cp_instruction, 0) ||
-         !(immediate_goal(cp_instruction, 0, cp_immediate) ||
-           (kudu_top.CHERIoTEn && immediate_goal(cp_instruction, 1, cp_immediate))));
+    x_arithmetic_rs1_immediate: cross cp_instruction, cp_rs1_data, cp_immediate
+        iff (operand_family(instruction) == OF_ARITHMETIC && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_arithmetic_rs1_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ARITHMETIC ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
     }
 
-    x_rs2_immediate: cross cp_instruction, cp_rs2_data, cp_immediate
-        iff (source_available(t, instruction, 1)) {
-      ignore_bins unused = x_rs2_immediate with
-        (!uses_source(cp_instruction, 1) ||
-         !(immediate_goal(cp_instruction, 0, cp_immediate) ||
-           (kudu_top.CHERIoTEn && immediate_goal(cp_instruction, 1, cp_immediate))));
+    // MULDIV: only actual source/destination roles contribute goals.
+
+    x_muldiv_rs1: cross cp_instruction, cp_rs1_addr, cp_rs1_data
+        iff (operand_family(instruction) == OF_MULDIV && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_muldiv_rs1 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MULDIV ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         (cp_rs1_addr == 0 && cp_rs1_data != OP_ZERO));
     }
 
-    x_cs1_tag: cross cp_instruction, cp_cs1_tag
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+    x_muldiv_rs1_size: cross cp_instruction, cp_rs1_size
+        iff (operand_family(instruction) == OF_MULDIV && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_muldiv_rs1_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MULDIV ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_muldiv_rs2: cross cp_instruction, cp_rs2_addr, cp_rs2_data
+        iff (operand_family(instruction) == OF_MULDIV && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_muldiv_rs2 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MULDIV ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr) ||
+         (cp_rs2_addr == 0 && cp_rs2_data != OP_ZERO));
+    }
+
+    x_muldiv_rs2_size: cross cp_instruction, cp_rs2_size
+        iff (operand_family(instruction) == OF_MULDIV && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_muldiv_rs2_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MULDIV ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
+    }
+
+    x_muldiv_source_addresses: cross cp_instruction, cp_rs1_addr, cp_rs2_addr
+        iff (operand_family(instruction) == OF_MULDIV && (source_available(t, instruction, 0) && source_available(t, instruction, 1))) {
+      ignore_bins unused = x_muldiv_source_addresses with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MULDIV ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr));
+    }
+
+    x_muldiv_source_data: cross cp_instruction, cp_rs1_data, cp_rs2_data
+        iff (operand_family(instruction) == OF_MULDIV && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_muldiv_source_data with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MULDIV ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
+    }
+
+    // BITMANIP: only actual source/destination roles contribute goals.
+
+    x_bitmanip_rs1: cross cp_instruction, cp_rs1_addr, cp_rs1_data
+        iff (operand_family(instruction) == OF_BITMANIP && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_bitmanip_rs1 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_BITMANIP ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         (cp_rs1_addr == 0 && cp_rs1_data != OP_ZERO));
+    }
+
+    x_bitmanip_rs1_size: cross cp_instruction, cp_rs1_size
+        iff (operand_family(instruction) == OF_BITMANIP && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_bitmanip_rs1_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_BITMANIP ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_bitmanip_rs2: cross cp_instruction, cp_rs2_addr, cp_rs2_data
+        iff (operand_family(instruction) == OF_BITMANIP && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_bitmanip_rs2 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_BITMANIP ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr) ||
+         (cp_rs2_addr == 0 && cp_rs2_data != OP_ZERO));
+    }
+
+    x_bitmanip_rs2_size: cross cp_instruction, cp_rs2_size
+        iff (operand_family(instruction) == OF_BITMANIP && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_bitmanip_rs2_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_BITMANIP ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
+    }
+
+    x_bitmanip_source_addresses: cross cp_instruction, cp_rs1_addr, cp_rs2_addr
+        iff (operand_family(instruction) == OF_BITMANIP && (source_available(t, instruction, 0) && source_available(t, instruction, 1))) {
+      ignore_bins unused = x_bitmanip_source_addresses with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_BITMANIP ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr));
+    }
+
+    x_bitmanip_source_data: cross cp_instruction, cp_rs1_data, cp_rs2_data
+        iff (operand_family(instruction) == OF_BITMANIP && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_bitmanip_source_data with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_BITMANIP ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
+    }
+
+    x_bitmanip_immediate: cross cp_instruction, cp_immediate
+        iff (operand_family(instruction) == OF_BITMANIP && (!t.rvfi.trap || t.is_ex)) {
+      ignore_bins unused = x_bitmanip_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_BITMANIP ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
+    }
+
+    x_bitmanip_rs1_immediate: cross cp_instruction, cp_rs1_data, cp_immediate
+        iff (operand_family(instruction) == OF_BITMANIP && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_bitmanip_rs1_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_BITMANIP ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
+    }
+
+    // CONTROL: only actual source/destination roles contribute goals.
+
+    x_control_rs1: cross cp_instruction, cp_rs1_addr, cp_rs1_data
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_control_rs1 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         (cp_rs1_addr == 0 && cp_rs1_data != OP_ZERO));
+    }
+
+    x_control_rs1_size: cross cp_instruction, cp_rs1_size
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_control_rs1_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_control_rs2: cross cp_instruction, cp_rs2_addr, cp_rs2_data
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_control_rs2 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr) ||
+         (cp_rs2_addr == 0 && cp_rs2_data != OP_ZERO));
+    }
+
+    x_control_rs2_size: cross cp_instruction, cp_rs2_size
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_control_rs2_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
+    }
+
+    x_control_source_addresses: cross cp_instruction, cp_rs1_addr, cp_rs2_addr
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && source_available(t, instruction, 1))) {
+      ignore_bins unused = x_control_source_addresses with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr));
+    }
+
+    x_control_source_data: cross cp_instruction, cp_rs1_data, cp_rs2_data
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_control_source_data with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
+    }
+
+    x_control_immediate: cross cp_instruction, cp_immediate
+        iff (operand_family(instruction) == OF_CONTROL && (!t.rvfi.trap || t.is_ex)) {
+      ignore_bins unused = x_control_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
+    }
+
+    x_control_rs1_immediate: cross cp_instruction, cp_rs1_data, cp_immediate
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_control_rs1_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
+    }
+
+    x_control_rs2_immediate: cross cp_instruction, cp_rs2_data, cp_immediate
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_control_rs2_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
+    }
+
+    x_control_cs1_address: cross cp_instruction, cp_rs1_addr, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_tag with
-        (!capability_source_goal(cp_instruction, 0));
+      ignore_bins unused = x_control_cs1_address with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !source_register(isa_instr_e'(cp_instruction), 1, 0, cp_rs1_addr) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         (cp_rs1_addr == 0 && cp_cs1_tag != 0));
     }
 
-    x_cs1_reserved: cross cp_instruction, cp_cs1_reserved
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+    x_control_cs1_cd_tag: cross cp_instruction, cp_cs1_tag, cp_cd_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_reserved with
-        (!capability_source_goal(cp_instruction, 0));
+      ignore_bins unused = x_control_cs1_cd_tag with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_TAG, cp_cs1_tag, cp_cd_tag) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs1_cperms: cross cp_instruction, cp_cs1_cperms
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+    x_control_cs1_reserved: cross cp_instruction, cp_cs1_reserved, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_cperms with
-        (!capability_source_goal(cp_instruction, 0));
+      ignore_bins unused = x_control_cs1_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs1_otype: cross cp_instruction, cp_cs1_otype
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+    x_control_cs1_cd_reserved: cross cp_instruction, cp_cs1_reserved, cp_cd_reserved, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_otype with
-        (!capability_source_goal(cp_instruction, 0));
+      ignore_bins unused = x_control_cs1_cd_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_RESERVED, cp_cs1_reserved, cp_cd_reserved) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs1_cexp: cross cp_instruction, cp_cs1_cexp
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+    x_control_cs1_cperms: cross cp_instruction, cp_cs1_cperms, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_cexp with
-        (!capability_source_goal(cp_instruction, 0));
+      ignore_bins unused = x_control_cs1_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs1_base: cross cp_instruction, cp_cs1_base
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+    x_control_cs1_cd_cperms: cross cp_instruction, cp_cs1_cperms, cp_cd_cperms, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_base with
-        (!capability_source_goal(cp_instruction, 0));
+      ignore_bins unused = x_control_cs1_cd_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_CPERMS, cp_cs1_cperms, cp_cd_cperms) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs1_top: cross cp_instruction, cp_cs1_top
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+    x_control_cs1_otype: cross cp_instruction, cp_cs1_otype, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_top with
-        (!capability_source_goal(cp_instruction, 0));
+      ignore_bins unused = x_control_cs1_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_tag: cross cp_instruction, cp_cs2_tag
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
+    x_control_cs1_cd_otype: cross cp_instruction, cp_cs1_otype, cp_cd_otype, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_tag with
-        (!capability_source_goal(cp_instruction, 1));
+      ignore_bins unused = x_control_cs1_cd_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_OTYPE, cp_cs1_otype, cp_cd_otype) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_reserved: cross cp_instruction, cp_cs2_reserved
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
+    x_control_cs1_cexp: cross cp_instruction, cp_cs1_cexp, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_reserved with
-        (!capability_source_goal(cp_instruction, 1));
+      ignore_bins unused = x_control_cs1_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_cperms: cross cp_instruction, cp_cs2_cperms
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
+    x_control_cs1_cd_cexp: cross cp_instruction, cp_cs1_cexp, cp_cd_cexp, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_cperms with
-        (!capability_source_goal(cp_instruction, 1));
+      ignore_bins unused = x_control_cs1_cd_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_CEXP, cp_cs1_cexp, cp_cd_cexp) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_otype: cross cp_instruction, cp_cs2_otype
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
+    x_control_cs1_base: cross cp_instruction, cp_cs1_base, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_otype with
-        (!capability_source_goal(cp_instruction, 1));
+      ignore_bins unused = x_control_cs1_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_cexp: cross cp_instruction, cp_cs2_cexp
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
+    x_control_cs1_cd_base: cross cp_instruction, cp_cs1_base, cp_cd_base, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_cexp with
-        (!capability_source_goal(cp_instruction, 1));
+      ignore_bins unused = x_control_cs1_cd_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_BASE, cp_cs1_base, cp_cd_base) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_base: cross cp_instruction, cp_cs2_base
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
+    x_control_cs1_top: cross cp_instruction, cp_cs1_top, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_base with
-        (!capability_source_goal(cp_instruction, 1));
+      ignore_bins unused = x_control_cs1_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_top: cross cp_instruction, cp_cs2_top
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
+    x_control_cs1_cd_top: cross cp_instruction, cp_cs1_top, cp_cd_top, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_top with
-        (!capability_source_goal(cp_instruction, 1));
+      ignore_bins unused = x_control_cs1_cd_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_TOP, cp_cs1_top, cp_cd_top) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cd_tag: cross cp_instruction, cp_cd_tag
-        iff (destination_available(t, instruction, mode)) {
+    x_control_cd_no_cs1_tag: cross cp_instruction, cp_cd_tag
+        iff (operand_family(instruction) == OF_CONTROL && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cd_tag with
-        (!destination_field_goal(cp_instruction, CF_TAG, cp_cd_tag));
+      ignore_bins unused = x_control_cd_no_cs1_tag with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_TAG, cp_cd_tag) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
     }
 
-    x_cd_reserved: cross cp_instruction, cp_cd_reserved
-        iff (destination_available(t, instruction, mode)) {
+    x_control_cd_no_cs1_reserved: cross cp_instruction, cp_cd_reserved
+        iff (operand_family(instruction) == OF_CONTROL && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cd_reserved with
-        (!destination_field_goal(cp_instruction, CF_RESERVED, cp_cd_reserved));
+      ignore_bins unused = x_control_cd_no_cs1_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_RESERVED, cp_cd_reserved) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
     }
 
-    x_cd_cperms: cross cp_instruction, cp_cd_cperms
-        iff (destination_available(t, instruction, mode)) {
+    x_control_cd_no_cs1_cperms: cross cp_instruction, cp_cd_cperms
+        iff (operand_family(instruction) == OF_CONTROL && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cd_cperms with
-        (!destination_field_goal(cp_instruction, CF_CPERMS, cp_cd_cperms));
+      ignore_bins unused = x_control_cd_no_cs1_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_CPERMS, cp_cd_cperms) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
     }
 
-    x_cd_otype: cross cp_instruction, cp_cd_otype
-        iff (destination_available(t, instruction, mode)) {
+    x_control_cd_no_cs1_otype: cross cp_instruction, cp_cd_otype
+        iff (operand_family(instruction) == OF_CONTROL && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cd_otype with
-        (!destination_field_goal(cp_instruction, CF_OTYPE, cp_cd_otype));
+      ignore_bins unused = x_control_cd_no_cs1_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_OTYPE, cp_cd_otype) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
     }
 
-    x_cd_cexp: cross cp_instruction, cp_cd_cexp
-        iff (destination_available(t, instruction, mode)) {
+    x_control_cd_no_cs1_cexp: cross cp_instruction, cp_cd_cexp
+        iff (operand_family(instruction) == OF_CONTROL && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cd_cexp with
-        (!destination_field_goal(cp_instruction, CF_CEXP, cp_cd_cexp));
+      ignore_bins unused = x_control_cd_no_cs1_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_CEXP, cp_cd_cexp) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
     }
 
-    x_cd_base: cross cp_instruction, cp_cd_base
-        iff (destination_available(t, instruction, mode)) {
+    x_control_cd_no_cs1_base: cross cp_instruction, cp_cd_base
+        iff (operand_family(instruction) == OF_CONTROL && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cd_base with
-        (!destination_field_goal(cp_instruction, CF_BASE, cp_cd_base));
+      ignore_bins unused = x_control_cd_no_cs1_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_BASE, cp_cd_base) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
     }
 
-    x_cd_top: cross cp_instruction, cp_cd_top
-        iff (destination_available(t, instruction, mode)) {
+    x_control_cd_no_cs1_top: cross cp_instruction, cp_cd_top
+        iff (operand_family(instruction) == OF_CONTROL && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cd_top with
-        (!destination_field_goal(cp_instruction, CF_TOP, cp_cd_top));
+      ignore_bins unused = x_control_cd_no_cs1_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_TOP, cp_cd_top) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
     }
 
-    x_cs1_cd_tag: cross cp_instruction, cp_cs1_tag, cp_cd_tag
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) &&
-             destination_available(t, instruction, mode)) {
-      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_cd_tag with
-        (!source_destination_goal(cp_instruction, 0, CF_TAG,
-                                  cp_cs1_tag, cp_cd_tag));
+    // MEMORY: only actual source/destination roles contribute goals.
+
+    x_memory_rs1: cross cp_instruction, cp_rs1_addr, cp_rs1_data
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_memory_rs1 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         (cp_rs1_addr == 0 && cp_rs1_data != OP_ZERO));
     }
 
-    x_cs1_cd_reserved: cross cp_instruction, cp_cs1_reserved, cp_cd_reserved
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) &&
-             destination_available(t, instruction, mode)) {
-      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_cd_reserved with
-        (!source_destination_goal(cp_instruction, 0, CF_RESERVED,
-                                  cp_cs1_reserved, cp_cd_reserved));
+    x_memory_rs1_size: cross cp_instruction, cp_rs1_size
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_memory_rs1_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs1_cd_cperms: cross cp_instruction, cp_cs1_cperms, cp_cd_cperms
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) &&
-             destination_available(t, instruction, mode)) {
-      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_cd_cperms with
-        (!source_destination_goal(cp_instruction, 0, CF_CPERMS,
-                                  cp_cs1_cperms, cp_cd_cperms));
+    x_memory_rs2: cross cp_instruction, cp_rs2_addr, cp_rs2_data
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_memory_rs2 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr) ||
+         (cp_rs2_addr == 0 && cp_rs2_data != OP_ZERO));
     }
 
-    x_cs1_cd_otype: cross cp_instruction, cp_cs1_otype, cp_cd_otype
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) &&
-             destination_available(t, instruction, mode)) {
-      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_cd_otype with
-        (!source_destination_goal(cp_instruction, 0, CF_OTYPE,
-                                  cp_cs1_otype, cp_cd_otype));
+    x_memory_rs2_size: cross cp_instruction, cp_rs2_size
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_memory_rs2_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
     }
 
-    x_cs1_cd_cexp: cross cp_instruction, cp_cs1_cexp, cp_cd_cexp
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) &&
-             destination_available(t, instruction, mode)) {
-      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_cd_cexp with
-        (!source_destination_goal(cp_instruction, 0, CF_CEXP,
-                                  cp_cs1_cexp, cp_cd_cexp));
+    x_memory_source_addresses: cross cp_instruction, cp_rs1_addr, cp_rs2_addr
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && source_available(t, instruction, 1))) {
+      ignore_bins unused = x_memory_source_addresses with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr));
     }
 
-    x_cs1_cd_base: cross cp_instruction, cp_cs1_base, cp_cd_base
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) &&
-             destination_available(t, instruction, mode)) {
-      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_cd_base with
-        (!source_destination_goal(cp_instruction, 0, CF_BASE,
-                                  cp_cs1_base, cp_cd_base));
+    x_memory_source_data: cross cp_instruction, cp_rs1_data, cp_rs2_data
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_memory_source_data with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
     }
 
-    x_cs1_cd_top: cross cp_instruction, cp_cs1_top, cp_cd_top
-        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) &&
-             destination_available(t, instruction, mode)) {
-      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs1_cd_top with
-        (!source_destination_goal(cp_instruction, 0, CF_TOP,
-                                  cp_cs1_top, cp_cd_top));
+    x_memory_immediate: cross cp_instruction, cp_immediate
+        iff (operand_family(instruction) == OF_MEMORY && (!t.rvfi.trap || t.is_ex)) {
+      ignore_bins unused = x_memory_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
     }
 
-    x_cs2_cd_tag: cross cp_instruction, cp_cs2_tag, cp_cd_tag
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) &&
-             destination_available(t, instruction, mode)) {
-      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_cd_tag with
-        (!source_destination_goal(cp_instruction, 1, CF_TAG,
-                                  cp_cs2_tag, cp_cd_tag));
+    x_memory_rs1_immediate: cross cp_instruction, cp_rs1_data, cp_immediate
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_memory_rs1_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
     }
 
-    x_cs2_cd_reserved: cross cp_instruction, cp_cs2_reserved, cp_cd_reserved
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) &&
-             destination_available(t, instruction, mode)) {
-      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_cd_reserved with
-        (!source_destination_goal(cp_instruction, 1, CF_RESERVED,
-                                  cp_cs2_reserved, cp_cd_reserved));
+    x_memory_rs2_immediate: cross cp_instruction, cp_rs2_data, cp_immediate
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_memory_rs2_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
     }
 
-    x_cs2_cd_cperms: cross cp_instruction, cp_cs2_cperms, cp_cd_cperms
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) &&
-             destination_available(t, instruction, mode)) {
+    x_memory_cs1_address: cross cp_instruction, cp_rs1_addr, cp_cs1_tag
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_cd_cperms with
-        (!source_destination_goal(cp_instruction, 1, CF_CPERMS,
-                                  cp_cs2_cperms, cp_cd_cperms));
+      ignore_bins unused = x_memory_cs1_address with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !source_register(isa_instr_e'(cp_instruction), 1, 0, cp_rs1_addr) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         (cp_rs1_addr == 0 && cp_cs1_tag != 0));
     }
 
-    x_cs2_cd_otype: cross cp_instruction, cp_cs2_otype, cp_cd_otype
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) &&
-             destination_available(t, instruction, mode)) {
+    x_memory_cs1_reserved: cross cp_instruction, cp_cs1_reserved, cp_cs1_tag
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_cd_otype with
-        (!source_destination_goal(cp_instruction, 1, CF_OTYPE,
-                                  cp_cs2_otype, cp_cd_otype));
+      ignore_bins unused = x_memory_cs1_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_cd_cexp: cross cp_instruction, cp_cs2_cexp, cp_cd_cexp
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) &&
-             destination_available(t, instruction, mode)) {
+    x_memory_cs1_cperms: cross cp_instruction, cp_cs1_cperms, cp_cs1_tag
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_cd_cexp with
-        (!source_destination_goal(cp_instruction, 1, CF_CEXP,
-                                  cp_cs2_cexp, cp_cd_cexp));
+      ignore_bins unused = x_memory_cs1_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_cd_base: cross cp_instruction, cp_cs2_base, cp_cd_base
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) &&
-             destination_available(t, instruction, mode)) {
+    x_memory_cs1_otype: cross cp_instruction, cp_cs1_otype, cp_cs1_tag
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_cd_base with
-        (!source_destination_goal(cp_instruction, 1, CF_BASE,
-                                  cp_cs2_base, cp_cd_base));
+      ignore_bins unused = x_memory_cs1_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
-    x_cs2_cd_top: cross cp_instruction, cp_cs2_top, cp_cd_top
-        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) &&
-             destination_available(t, instruction, mode)) {
+    x_memory_cs1_cexp: cross cp_instruction, cp_cs1_cexp, cp_cs1_tag
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = kudu_top.CHERIoTEn ? 1 : 0;
-      ignore_bins unused = x_cs2_cd_top with
-        (!source_destination_goal(cp_instruction, 1, CF_TOP,
-                                  cp_cs2_top, cp_cd_top));
+      ignore_bins unused = x_memory_cs1_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
+
+    x_memory_cs1_base: cross cp_instruction, cp_cs1_base, cp_cs1_tag
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_memory_cs1_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_memory_cs1_top: cross cp_instruction, cp_cs1_top, cp_cs1_tag
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_memory_cs1_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    // ATOMIC: only actual source/destination roles contribute goals.
+
+    x_atomic_rs1: cross cp_instruction, cp_rs1_addr, cp_rs1_data
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_atomic_rs1 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         (cp_rs1_addr == 0 && cp_rs1_data != OP_ZERO));
+    }
+
+    x_atomic_rs1_size: cross cp_instruction, cp_rs1_size
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_atomic_rs1_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_atomic_rs2: cross cp_instruction, cp_rs2_addr, cp_rs2_data
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_atomic_rs2 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr) ||
+         (cp_rs2_addr == 0 && cp_rs2_data != OP_ZERO));
+    }
+
+    x_atomic_rs2_size: cross cp_instruction, cp_rs2_size
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_atomic_rs2_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
+    }
+
+    x_atomic_source_addresses: cross cp_instruction, cp_rs1_addr, cp_rs2_addr
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && source_available(t, instruction, 1))) {
+      ignore_bins unused = x_atomic_source_addresses with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr));
+    }
+
+    x_atomic_source_data: cross cp_instruction, cp_rs1_data, cp_rs2_data
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && !capability_source(instruction, mode, 1))) {
+      ignore_bins unused = x_atomic_source_data with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1));
+    }
+
+    x_atomic_cs1_address: cross cp_instruction, cp_rs1_addr, cp_cs1_tag
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_atomic_cs1_address with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !source_register(isa_instr_e'(cp_instruction), 1, 0, cp_rs1_addr) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         (cp_rs1_addr == 0 && cp_cs1_tag != 0));
+    }
+
+    x_atomic_cs1_reserved: cross cp_instruction, cp_cs1_reserved, cp_cs1_tag
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_atomic_cs1_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_atomic_cs1_cperms: cross cp_instruction, cp_cs1_cperms, cp_cs1_tag
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_atomic_cs1_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_atomic_cs1_otype: cross cp_instruction, cp_cs1_otype, cp_cs1_tag
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_atomic_cs1_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_atomic_cs1_cexp: cross cp_instruction, cp_cs1_cexp, cp_cs1_tag
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_atomic_cs1_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_atomic_cs1_base: cross cp_instruction, cp_cs1_base, cp_cs1_tag
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_atomic_cs1_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_atomic_cs1_top: cross cp_instruction, cp_cs1_top, cp_cs1_tag
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_atomic_cs1_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    // SYSTEM: only actual source/destination roles contribute goals.
+
+    x_system_rs1: cross cp_instruction, cp_rs1_addr, cp_rs1_data
+        iff (operand_family(instruction) == OF_SYSTEM && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_system_rs1 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_SYSTEM ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         (cp_rs1_addr == 0 && cp_rs1_data != OP_ZERO));
+    }
+
+    x_system_rs1_size: cross cp_instruction, cp_rs1_size
+        iff (operand_family(instruction) == OF_SYSTEM && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      ignore_bins unused = x_system_rs1_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_SYSTEM ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_system_immediate: cross cp_instruction, cp_immediate
+        iff (operand_family(instruction) == OF_SYSTEM && (!t.rvfi.trap || t.is_ex)) {
+      ignore_bins unused = x_system_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_SYSTEM ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))));
+    }
+
+    // CHERI: only actual source/destination roles contribute goals.
+
+    x_cheri_rs1: cross cp_instruction, cp_rs1_addr, cp_rs1_data
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_rs1 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         (cp_rs1_addr == 0 && cp_rs1_data != OP_ZERO));
+    }
+
+    x_cheri_rs1_size: cross cp_instruction, cp_rs1_size
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && !capability_source(instruction, mode, 0))) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_rs1_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_rs2: cross cp_instruction, cp_rs2_addr, cp_rs2_data, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_rs2 with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !integer_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr) ||
+         (cp_rs2_addr == 0 && cp_rs2_data != OP_ZERO) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_rs2_size: cross cp_instruction, cp_rs2_size, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && !capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_rs2_size with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_source_addresses: cross cp_instruction, cp_rs1_addr, cp_rs2_addr, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && source_available(t, instruction, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_source_addresses with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 0, cp_rs1_addr) ||
+         !source_register_goal(isa_instr_e'(cp_instruction), 1, cp_rs2_addr) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         (cp_rs1_addr == 0 && cp_cs1_tag != 0));
+    }
+
+    x_cheri_immediate: cross cp_instruction, cp_immediate, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (!t.rvfi.trap || t.is_ex) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_pcc_immediate: cross cp_instruction, cp_immediate
+        iff (operand_family(instruction) == OF_CHERI && (!t.rvfi.trap || t.is_ex)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_pcc_immediate with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !(immediate_goal(isa_instr_e'(cp_instruction), 0, immediate_class_e'(cp_immediate)) || (kudu_top.CHERIoTEn && immediate_goal(isa_instr_e'(cp_instruction), 1, immediate_class_e'(cp_immediate)))) ||
+         isa_instr_e'(cp_instruction) != ISA_AUIPCC);
+    }
+
+    x_cheri_cs1_address: cross cp_instruction, cp_rs1_addr, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_address with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !source_register(isa_instr_e'(cp_instruction), 1, 0, cp_rs1_addr) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         (cp_rs1_addr == 0 && cp_cs1_tag != 0));
+    }
+
+    x_cheri_cs1_cd_tag: cross cp_instruction, cp_cs1_tag, cp_cd_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_cd_tag with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_TAG, cp_cs1_tag, cp_cd_tag) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_reserved: cross cp_instruction, cp_cs1_reserved, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_cd_reserved: cross cp_instruction, cp_cs1_reserved, cp_cd_reserved, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_cd_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_RESERVED, cp_cs1_reserved, cp_cd_reserved) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_cperms: cross cp_instruction, cp_cs1_cperms, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_cd_cperms: cross cp_instruction, cp_cs1_cperms, cp_cd_cperms, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_cd_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_CPERMS, cp_cs1_cperms, cp_cd_cperms) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_otype: cross cp_instruction, cp_cs1_otype, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_cd_otype: cross cp_instruction, cp_cs1_otype, cp_cd_otype, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_cd_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_OTYPE, cp_cs1_otype, cp_cd_otype) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_cexp: cross cp_instruction, cp_cs1_cexp, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_cd_cexp: cross cp_instruction, cp_cs1_cexp, cp_cd_cexp, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_cd_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_CEXP, cp_cs1_cexp, cp_cd_cexp) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_base: cross cp_instruction, cp_cs1_base, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_cd_base: cross cp_instruction, cp_cs1_base, cp_cd_base, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_cd_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_BASE, cp_cs1_base, cp_cd_base) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_top: cross cp_instruction, cp_cs1_top, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs1_cd_top: cross cp_instruction, cp_cs1_top, cp_cd_top, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs1_cd_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_TOP, cp_cs1_top, cp_cd_top) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_address: cross cp_instruction, cp_rs2_addr, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_address with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !source_register(isa_instr_e'(cp_instruction), 1, 1, cp_rs2_addr) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_tag: cross cp_instruction, cp_cs2_tag, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_tag with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_cd_tag: cross cp_instruction, cp_cs2_tag, cp_cd_tag, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_cd_tag with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 1, CF_TAG, cp_cs2_tag, cp_cd_tag) ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_TAG, cp_cs1_tag, cp_cd_tag) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_reserved: cross cp_instruction, cp_cs2_reserved, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_cd_reserved: cross cp_instruction, cp_cs2_reserved, cp_cd_reserved, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_cd_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 1, CF_RESERVED, cp_cs2_reserved, cp_cd_reserved) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_cperms: cross cp_instruction, cp_cs2_cperms, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_cd_cperms: cross cp_instruction, cp_cs2_cperms, cp_cd_cperms, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_cd_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 1, CF_CPERMS, cp_cs2_cperms, cp_cd_cperms) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_otype: cross cp_instruction, cp_cs2_otype, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_cd_otype: cross cp_instruction, cp_cs2_otype, cp_cd_otype, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_cd_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 1, CF_OTYPE, cp_cs2_otype, cp_cd_otype) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_cexp: cross cp_instruction, cp_cs2_cexp, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_cd_cexp: cross cp_instruction, cp_cs2_cexp, cp_cd_cexp, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_cd_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 1, CF_CEXP, cp_cs2_cexp, cp_cd_cexp) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_base: cross cp_instruction, cp_cs2_base, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_cd_base: cross cp_instruction, cp_cs2_base, cp_cd_base, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_cd_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 1, CF_BASE, cp_cs2_base, cp_cd_base) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_top: cross cp_instruction, cp_cs2_top, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cs2_cd_top: cross cp_instruction, cp_cs2_top, cp_cd_top, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && destination_available(t, instruction, mode)) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cs2_cd_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !source_destination_goal(isa_instr_e'(cp_instruction), 1, CF_TOP, cp_cs2_top, cp_cd_top) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_cd_no_cs1_tag: cross cp_instruction, cp_cd_tag
+        iff (operand_family(instruction) == OF_CHERI && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cd_no_cs1_tag with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_TAG, cp_cd_tag) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
+    }
+
+    x_cheri_cd_no_cs1_reserved: cross cp_instruction, cp_cd_reserved
+        iff (operand_family(instruction) == OF_CHERI && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cd_no_cs1_reserved with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_RESERVED, cp_cd_reserved) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
+    }
+
+    x_cheri_cd_no_cs1_cperms: cross cp_instruction, cp_cd_cperms
+        iff (operand_family(instruction) == OF_CHERI && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cd_no_cs1_cperms with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_CPERMS, cp_cd_cperms) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
+    }
+
+    x_cheri_cd_no_cs1_otype: cross cp_instruction, cp_cd_otype
+        iff (operand_family(instruction) == OF_CHERI && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cd_no_cs1_otype with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_OTYPE, cp_cd_otype) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
+    }
+
+    x_cheri_cd_no_cs1_cexp: cross cp_instruction, cp_cd_cexp
+        iff (operand_family(instruction) == OF_CHERI && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cd_no_cs1_cexp with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_CEXP, cp_cd_cexp) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
+    }
+
+    x_cheri_cd_no_cs1_base: cross cp_instruction, cp_cd_base
+        iff (operand_family(instruction) == OF_CHERI && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cd_no_cs1_base with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_BASE, cp_cd_base) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
+    }
+
+    x_cheri_cd_no_cs1_top: cross cp_instruction, cp_cd_top
+        iff (operand_family(instruction) == OF_CHERI && (destination_available(t, instruction, mode) && !source_available(t, instruction, 0))) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_cd_no_cs1_top with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !destination_field_goal(isa_instr_e'(cp_instruction), CF_TOP, cp_cd_top) ||
+         (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
+    }
+
+    // END GENERATED FAMILY CROSSES
   endgroup
 
   cg_isa_operands u_cg_isa_operands = new();

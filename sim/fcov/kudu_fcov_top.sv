@@ -133,12 +133,12 @@ module kudu_fcov_top
   // ==========================================================================
   // FC_MA_TOP - top-level queues, bus and I/O
   // ==========================================================================
-  covergroup cg_ma_top @(posedge clk_i iff rst_ni);
+  covergroup cg_ma_top with function sample(bit normal_sample);
     option.per_instance = 1;
     option.name         = "FC_MA_TOP";
 
     // Each hardware report covers only its applicable runtime modes.
-    cp_operating_mode: coverpoint {CHERIoTEn, cheri_active} {
+    cp_operating_mode: coverpoint {CHERIoTEn, cheri_active} iff (normal_sample) {
       bins rv32_only = {2'b00};
       bins rv32_compatible = {2'b10};
       bins cheriot = {2'b11};
@@ -146,7 +146,7 @@ module kudu_fcov_top
           with (CHERIoTEn ? item == 2'b00 : item != 2'b00);
     }
 
-    cp_sbd_fifo_level: coverpoint kudu_top.sbd_fifo_i.fifo_level {
+    cp_sbd_fifo_level: coverpoint kudu_top.sbd_fifo_i.fifo_level iff (normal_sample) {
       bins level_0 = {0};
       bins level_1 = {1};
       bins level_2 = {2};
@@ -160,88 +160,89 @@ module kudu_fcov_top
     // 14.1 Instruction bus
     // ======================================================================
 
-    cp_ibus_req_gnt: coverpoint {instr_req_o, instr_gnt_i} {
+    cp_ibus_req_gnt: coverpoint {instr_req_o, instr_gnt_i} iff (normal_sample) {
       bins idle      = {2'b00};
       bins ready_no_req = {2'b01};
       bins waiting   = {2'b10};
       bins accepted  = {2'b11};
     }
-    cp_ibus_rvalid: coverpoint instr_rvalid_i { bins hit = {1'b1}; }
-    cp_ibus_err: coverpoint instr_err_i iff (instr_rvalid_i) {
+    cp_ibus_rvalid: coverpoint instr_rvalid_i iff (normal_sample) { bins hit = {1'b1}; }
+    cp_ibus_err: coverpoint instr_err_i iff (normal_sample && instr_rvalid_i) {
       bins ok  = {1'b0};
       bins err = {1'b1};
     }
     // prefetch_buffer64 masks two or three low bits by UnalignedFetch.
-    cp_ibus_addr_align: coverpoint instr_addr_o[2:0] iff (instr_req_o) {
+    cp_ibus_addr_align: coverpoint instr_addr_o[2:0] iff (normal_sample && instr_req_o) {
       bins a[] = {3'd0, 3'd4} with (UnalignedFetch || item == 0);
     }
     // instr_rdata_i is 64 bits; covering every value is meaningless, so the
     // useful property is whether either half decodes as compressed.
     cp_rdata_comp: coverpoint {instr_rdata_i[33:32] == 2'b11, instr_rdata_i[1:0] == 2'b11}
-                   iff (instr_rvalid_i) {
+                   iff (normal_sample && instr_rvalid_i) {
       bins both_comp   = {2'b00};
       bins hi_comp     = {2'b01};
       bins lo_comp     = {2'b10};
       bins neither     = {2'b11};
     }
 
-    cp_gnt_delay: coverpoint igw_obs iff (igw_ev) {
+    cp_gnt_delay: coverpoint igw_obs iff (normal_sample && igw_ev) {
       bins d0   = {0};
       bins d1   = {1};
       bins d2   = {2};
       bins d3_7 = {[3:7]};
       bins d8up = {[64'd8:64'hffff_ffff_ffff_ffff]};
     }
-    cp_rvalid_delay: coverpoint irw_obs iff (irw_ev) {
+    cp_rvalid_delay: coverpoint irw_obs iff (normal_sample && irw_ev) {
       bins d0   = {0};
       bins d1   = {1};
       bins d2   = {2};
       bins d3_7 = {[3:7]};
       bins d8up = {[64'd8:64'hffff_ffff_ffff_ffff]};
     }
-    cp_ibus_same_cycle_resp: coverpoint irw_same_cycle iff (irw_ev);
-    cp_ibus_back_to_back: coverpoint (instr_gnt_q & instr_req_o & instr_gnt_i) {
+    cp_ibus_same_cycle_resp: coverpoint irw_same_cycle iff (normal_sample && irw_ev);
+    cp_ibus_back_to_back: coverpoint (instr_gnt_q & instr_req_o & instr_gnt_i)
+        iff (normal_sample) {
       bins hit = {1'b1};
     }
 
     // ======================================================================
     // 14.2 Data bus
     // ======================================================================
-    cp_dbus_req_gnt: coverpoint {data_req_o, data_gnt_i} {
+    cp_dbus_req_gnt: coverpoint {data_req_o, data_gnt_i} iff (normal_sample) {
       bins idle      = {2'b00};
       bins ready_no_req = {2'b01};
       bins waiting   = {2'b10};
       bins accepted  = {2'b11};
     }
-    cp_dbus_rvalid: coverpoint data_rvalid_i { bins hit = {1'b1}; }
-    cp_we:     coverpoint data_we_o iff (data_req_o);
-    cp_is_cap: coverpoint data_is_cap_o iff (cheri_active && data_req_o) {
+    cp_dbus_rvalid: coverpoint data_rvalid_i iff (normal_sample) { bins hit = {1'b1}; }
+    cp_we:     coverpoint data_we_o iff (normal_sample && data_req_o);
+    cp_is_cap: coverpoint data_is_cap_o iff (normal_sample && cheri_active && data_req_o) {
       option.weight = CHERIoTEn ? 1 : 0;
     }
-    cp_be: coverpoint data_be_o iff (data_req_o) {
+    cp_be: coverpoint data_be_o iff (normal_sample && data_req_o) {
       bins byte_[] = {4'b0001, 4'b0010, 4'b0100, 4'b1000};
       bins half_[] = {4'b0011, 4'b1100};
       bins word_   = {4'b1111};
       // Split word and halfword accesses (load_store_unit byte-enable mux).
       bins split[] = {4'b0110, 4'b0111, 4'b1110};
     }
-    cp_amo: coverpoint data_amo_flag_o iff (data_req_o) {
+    cp_amo: coverpoint data_amo_flag_o iff (normal_sample && data_req_o) {
       bins none  = {4'b0000};
       bins lr    = {4'b0001};
       bins sc    = {4'b0010};
       bins amo_r = {4'b0100};
       bins amo_w = {4'b1000};
     }
-    cp_dbus_addr_align: coverpoint data_addr_o[2:0] iff (data_req_o) {
+    cp_dbus_addr_align: coverpoint data_addr_o[2:0] iff (normal_sample && data_req_o) {
       // load_store_unit drives {data_addr[31:2], 2'b00}.
       bins a[] = {3'd0, 3'd4};
     }
-    cp_dbus_err: coverpoint data_err_i iff (data_rvalid_i) {
+    cp_dbus_err: coverpoint data_err_i iff (normal_sample && data_rvalid_i) {
       bins ok  = {1'b0};
       bins err = {1'b1};
     }
     cp_sc_resp: coverpoint data_sc_resp_q
-        iff (drw_ev && data_resp_meta[1] && !data_resp_err_q) {
+        iff (normal_sample && drw_ev && data_resp_meta[1] && !data_resp_err_q) {
       bins succeeded = {1'b0};
       bins failed = {1'b1};
     }
@@ -249,42 +250,44 @@ module kudu_fcov_top
     // The capability tag bit is the top bit of the memory word; a capability
     // must be seen crossing the bus in both directions with the tag set.
     cp_wdata_tag: coverpoint data_wdata_o[MemW-1]
-        iff (cheri_active && data_req_o && data_we_o && data_is_cap_o) {
+        iff (normal_sample && cheri_active && data_req_o && data_we_o && data_is_cap_o) {
       option.weight = CHERIoTEn ? 1 : 0;
     }
     cp_rdata_tag: coverpoint data_rtag_q
-        iff (cheri_active && drw_ev && data_resp_meta[6] &&
+        iff (normal_sample && cheri_active && drw_ev && data_resp_meta[6] &&
              data_resp_meta[5] && !data_resp_meta[4] && !data_resp_err_q) {
       option.weight = CHERIoTEn ? 1 : 0;
     }
 
-    cp_dbus_gnt_delay: coverpoint dgw_obs iff (dgw_ev) {
+    cp_dbus_gnt_delay: coverpoint dgw_obs iff (normal_sample && dgw_ev) {
       bins d0 = {0};
       bins d1 = {1};
       bins d2 = {2};
       bins d3_7 = {[3:7]};
       bins d8up = {[64'd8:64'hffff_ffff_ffff_ffff]};
     }
-    cp_dbus_rvalid_delay: coverpoint drw_obs iff (drw_ev) {
+    cp_dbus_rvalid_delay: coverpoint drw_obs iff (normal_sample && drw_ev) {
       bins d0 = {0};
       bins d1 = {1};
       bins d2 = {2};
       bins d3_7 = {[3:7]};
       bins d8up = {[64'd8:64'hffff_ffff_ffff_ffff]};
     }
-    cp_dbus_same_cycle_resp: coverpoint drw_same_cycle iff (drw_ev);
-    cp_dbus_back_to_back: coverpoint (data_gnt_q & data_req_o & data_gnt_i) {
+    cp_dbus_back_to_back: coverpoint (data_gnt_q & data_req_o & data_gnt_i)
+        iff (normal_sample) {
       bins hit = {1'b1};
     }
     // Both buses busy in the same cycle: the case a single-port memory model
     // in the testbench would never produce.
-    cp_both_buses: coverpoint (instr_req_o & data_req_o) { bins hit = {1'b1}; }
+    cp_both_buses: coverpoint (instr_req_o & data_req_o) iff (normal_sample) {
+      bins hit = {1'b1};
+    }
 
     // ======================================================================
     // 14.3 Temporal safety map, configuration and the fatal error output
     // ======================================================================
     // The scalar tsmap_cs hit is owned by FC_MA_LSU.trvk.
-    cp_tsmap_addr: coverpoint tsmap_addr_o iff (cheri_active && tsmap_cs_o) {
+    cp_tsmap_addr: coverpoint tsmap_addr_o iff (normal_sample && cheri_active && tsmap_cs_o) {
       option.weight = CHERIoTEn ? 1 : 0;
       bins zero  = {16'h0};
       bins low   = {[16'h1:16'hff]};
@@ -292,7 +295,7 @@ module kudu_fcov_top
       bins high  = {[16'h4000:16'hffff]};
     }
     cp_tsmap_addr_bits: coverpoint tsmap_addr_o[9:0]
-        iff (cheri_active && tsmap_cs_o) {
+        iff (normal_sample && cheri_active && tsmap_cs_o) {
       option.weight = CHERIoTEn ? 1 : 0;
       // Overlapping wildcard bins track each bit independently.
       wildcard bins bit0_zero = {10'b?????????0};
@@ -320,7 +323,7 @@ module kudu_fcov_top
     // all-clear word and a word with bits set must be returned or half the
     // trvk stage is untested from the outside.
     cp_tsmap_rdata: coverpoint $countones(tsmap_rdata_i)
-        iff (cheri_active && tsmap_resp_valid_q) {
+        iff (normal_sample && cheri_active && tsmap_resp_valid_q) {
       option.weight = CHERIoTEn ? 1 : 0;
       bins none = {0};
       bins few  = {[1:4]};
@@ -329,11 +332,10 @@ module kudu_fcov_top
     }
 
     // PMODE is ignored by RV32-only hardware; both values matter on CHERI hardware.
-    cp_pmode: coverpoint cheri_pmode_i iff (CHERIoTEn) {
+    cp_pmode: coverpoint cheri_pmode_i iff (normal_sample && CHERIoTEn) {
       option.weight = CHERIoTEn ? 1 : 0;
     }
-    cp_hart_id:  coverpoint (hart_id_i != 32'h0) { bins zero = {1'b0}; bins nonzero = {1'b1}; }
-    cp_boot_addr: coverpoint boot_addr_i[15:0] {
+    cp_boot_addr: coverpoint boot_addr_i[15:0] iff (normal_sample) {
       bins aligned_256 = {16'h0000};
       bins other       = {[16'h0001:16'hffff]};
     }
@@ -341,14 +343,14 @@ module kudu_fcov_top
     // ======================================================================
     // 14.4 Interrupts and debug request
     // ======================================================================
-    cp_irq_software: coverpoint irq_software_i;
-    cp_irq_timer:    coverpoint irq_timer_i;
-    cp_irq_external: coverpoint irq_external_i;
+    cp_irq_software: coverpoint irq_software_i iff (normal_sample);
+    cp_irq_timer:    coverpoint irq_timer_i iff (normal_sample);
+    cp_irq_external: coverpoint irq_external_i iff (normal_sample);
 
     // Each of the fifteen fast interrupt lines has its own vector, so each
     // must be asserted individually; the count bin catches simultaneous
     // arrivals, which is where the priority encoder matters.
-    cp_irq_fast_id: coverpoint irq_fast_i {
+    cp_irq_fast_id: coverpoint irq_fast_i iff (normal_sample) {
       wildcard bins f0  = {15'b??????????????1};
       wildcard bins f1  = {15'b?????????????1?};
       wildcard bins f2  = {15'b????????????1??};
@@ -366,7 +368,7 @@ module kudu_fcov_top
       wildcard bins f14 = {15'b1??????????????};
       bins none = {15'h0};
     }
-    cp_irq_fast_count: coverpoint $countones(irq_fast_i) {
+    cp_irq_fast_count: coverpoint $countones(irq_fast_i) iff (normal_sample) {
       bins none  = {0};
       bins one   = {1};
       bins two   = {2};
@@ -375,49 +377,45 @@ module kudu_fcov_top
     // Several interrupt classes pending at once exercises the m-mode
     // priority order (external > software > timer > fast).
     cp_irq_class_count: coverpoint $countones({irq_external_i, irq_software_i,
-                                               irq_timer_i, |irq_fast_i}) {
+                                               irq_timer_i, |irq_fast_i})
+        iff (normal_sample) {
       bins none = {0};
       bins one  = {1};
       bins two  = {2};
       bins many = {[3:4]};
     }
 
-    cp_debug_req: coverpoint debug_req_i;
+    cp_debug_req: coverpoint debug_req_i iff (normal_sample);
     // A debug request arriving at the same time as an interrupt is the
     // arbitration case in issuer.sv:719-744.
     cp_dbg_and_irq: coverpoint (debug_req_i &
                                 (irq_external_i | irq_software_i |
-                                 irq_timer_i | (|irq_fast_i))) {
+                                 irq_timer_i | (|irq_fast_i))) iff (normal_sample) {
       bins hit = {1'b1};
+    }
+
+    cp_fatal_err: coverpoint {rst_ni, cheri_fatal_err_o}
+        iff (!normal_sample && cheri_active) {
+      option.weight = CHERIoTEn ? 1 : 0;
+      bins reset_clear = {2'b00};
+      bins quiet = {2'b10};
+      bins fatal = {2'b11};
+      bins raised = (2'b10 => 2'b11);
+      bins sticky = (2'b11 => 2'b11);
+      bins reset_after_fatal = (2'b11 => 2'b00);
     }
   endgroup
 
   cg_ma_top u_cg_ma_top = new();
 
-  // ==========================================================================
-  // mem_obi_if generates grants from requests, but the RTL counts transactions
-  // using req && gnt. Do not turn that TB policy into a core invariant: a
-  // ready-style grant while idle is legal to the monitor and enqueues nothing.
-  //
+  always @(posedge clk_i)
+    if (rst_ni) u_cg_ma_top.sample(1'b1);
+
   // cs_registers.gen_scr latches invalid-MTCC trap entry until external reset;
   // gen_no_scr ties the output low. No assertions infer unavailable CSR inputs.
-  // Sample reset too, on the falling clock edge after the reset's NBA update.
-  // ==========================================================================
-  if (CHERIoTEn) begin : gen_fatal
-    covergroup cg_top_fatal @(negedge clk_i);
-      option.per_instance = 1;
-      option.name = "FC_MA_TOP.fatal";
-      cp_fatal_err: coverpoint {rst_ni, cheri_fatal_err_o} iff (cheri_active) {
-        bins reset_clear = {2'b00};
-        bins quiet = {2'b10};
-        bins fatal = {2'b11};
-        bins raised = (2'b10 => 2'b11);
-        bins sticky = (2'b11 => 2'b11);
-        bins reset_after_fatal = (2'b11 => 2'b00);
-      }
-    endgroup
-    cg_top_fatal u_cg_top_fatal = new();
-  end
+  // Sample fatal/reset after NBA updates without resampling the rising-edge points.
+  always @(negedge clk_i)
+    if (CHERIoTEn) u_cg_ma_top.sample(1'b0);
 
 `endif  // KUDU_FCOV_OFF
 

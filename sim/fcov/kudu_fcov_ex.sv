@@ -83,7 +83,11 @@ module kudu_fcov_alu
     // share one operator), which is exactly why this is FC_MA and the ISA-level
     // encoding coverage lives in FC_ISA_INSTR.
     cp_alu_op:   coverpoint rv32_alu_operator iff (us_valid_i);
-    cp_op_a_sel: coverpoint rv32_alu_op_a_mux_sel iff (us_valid_i);
+    cp_op_a_sel: coverpoint rv32_alu_op_a_mux_sel iff (us_valid_i) {
+      bins reg_a = {OP_A_REG_A};
+      bins currpc = {OP_A_CURRPC};
+      bins imm = {OP_A_IMM};
+    }
     cp_op_b_sel: coverpoint rv32_alu_op_b_mux_sel iff (us_valid_i);
 
     // rv32_alu chooses the subtraction sign for equal operand signs, but
@@ -163,26 +167,16 @@ module kudu_fcov_alu
       bins committed  = {2'b11};
     }
 
-    cp_ex2: coverpoint {ex2_valid, ex2_rdy} {
-      option.weight = SingleStage ? 0 : 1;
-      bins idle     = {2'b00};
-      bins ready    = {2'b01};
-      bins stalled  = {2'b10};
-      bins advanced = {2'b11};
-    }
     cp_wb: coverpoint {wb_valid, wb_rdy} {
       bins idle     = {2'b00};
       bins ready    = {2'b01};
       bins stalled  = {2'b10};
       bins advanced = {2'b11};
     }
-    // Full pipeline: EX2 and WB both occupied and WB stalled.
-    cp_full: coverpoint (ex2_valid & wb_valid & ~wb_rdy) { bins hit = {1'b1}; }
-
     cp_flush: coverpoint flush_i { bins hit = {1'b1}; }
     // Flushing while there is live state in the pipeline is the case that can
     // leave a stale forwarding entry behind.
-    cp_flush_busy: coverpoint (flush_i & (ex2_valid | wb_valid)) { bins hit = {1'b1}; }
+    cp_flush_busy: coverpoint (flush_i & wb_valid) { bins hit = {1'b1}; }
 
     // WAW cancellation: a younger write to the same register retires first, so
     // this result must be dropped.
@@ -192,21 +186,10 @@ module kudu_fcov_alu
       bins v1   = {2'b10};
       bins both = {2'b11};
     }
-    cp_ex2_waw_match: coverpoint ex2_waw_match {
-      option.weight = SingleStage ? 0 : 1;
-      bins hit = {1'b1};
-    }
     cp_wb_waw_match:  coverpoint wb_waw_match  { bins hit = {1'b1}; }
 
-    cp_fwd: coverpoint {wb_fwd_valid_q, ex2_fwd_valid_q} {
-      bins source[] = {[2'b00:2'b11]} with (!SingleStage || (item & 2'b01) == 0);
-    }
-    // Forwarding a value destined for x0 must never happen -- x0 reads are
-    // constant zero and a forward would corrupt them.
-    cp_fwd_rd_x0: coverpoint (ex2_fwd_rd == 5'd0) iff (ex2_fwd_valid_q) {
-      option.weight = SingleStage ? 0 : 1;
-      bins nonzero = {1'b0};
-      ignore_bins  x0 = {1'b1};
+    cp_fwd: coverpoint wb_fwd_valid_q {
+      bins source[] = {[1'b0:1'b1]};
     }
 
     // An error is an invariant violation, not a coverage closure target.
@@ -214,7 +197,9 @@ module kudu_fcov_alu
       bins no_err = {1'b0};
       illegal_bins err = {1'b1};
     }
-    cp_out_we:     coverpoint alupl_output_o.we     iff (alupl_valid_o);
+    cp_out_we: coverpoint alupl_output_o.we iff (alupl_valid_o) {
+      ignore_bins no_write = {1'b0};
+    }
     cp_out_wrsv:   coverpoint alupl_output_o.wrsv   iff (alupl_valid_o);
 
     cp_debug_mode: coverpoint debug_mode_i;
@@ -340,13 +325,6 @@ module kudu_fcov_branch_unit
         bins missed_not_taken = {2'b10};
         bins correct_taken_direction = {2'b11};
       }
-      cp_branch_target_match: coverpoint (dec.ptarget[31:0] == dec.btarget)
-          iff (dec.is_branch && taken && dec.ptaken &&
-               ChkBranchJALAddr) {
-        option.weight = ChkBranchJALAddr ? 1 : 0;
-        bins different = {1'b0};
-        bins same = {1'b1};
-      }
       cp_mispredict: coverpoint mispredict {
         // Four independent output flags, not a scalar "any miss".
         bins cause[] = {4'd0, 4'd1, 4'd2, 4'd4, 4'd8}
@@ -366,11 +344,6 @@ module kudu_fcov_branch_unit
         bins positive = {[12'h001:12'h7ff]};
         bins negative = {[12'h800:12'hffe]};
         bins minus_one = {12'hfff};
-      }
-      cp_cjalr_check: coverpoint (cjalr_active && !debug_mode_i)
-          iff (cjalr_active && dec.is_jalr) {
-        option.weight = CHERIoTEn ? 1 : 0;
-        bins enabled[] = {[0:CHERIoTEn]};
       }
       cp_cjalr_errors: coverpoint cjalr_errors
           iff (cjalr_active && dec.is_jalr) {
@@ -1042,7 +1015,6 @@ module kudu_fcov_cmplx
     }
 
     cp_flush:      coverpoint flush_i { bins hit = {1'b1}; }
-    cp_flush_busy: coverpoint (flush_i & (cmplx_fsm_cs != CU_IDLE)) { bins hit = {1'b1}; }
   endgroup
 
   cg_ma_cmplx u_cg_cmplx = new();

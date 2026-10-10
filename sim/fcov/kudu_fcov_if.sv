@@ -363,7 +363,10 @@ module kudu_fcov_if
       bins ok  = {1'b0};
     }
 
-    x_cp_comp_align: cross cp_is_comp0, cp_is_comp1, cp_unaligned0;
+    x_cp_comp_align: cross cp_is_comp0, cp_is_comp1, cp_unaligned0 {
+      // Split coverage only samples 32-bit slot-0 instructions.
+      ignore_bins compressed_slot0 = binsof(cp_is_comp0) intersect {1'b1};
+    }
 
     // ======================================================================
     // 8.3 Redirects and the alt (shadow-fetch) path

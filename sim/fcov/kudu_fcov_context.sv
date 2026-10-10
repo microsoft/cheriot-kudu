@@ -94,10 +94,6 @@ module kudu_fcov_context
     endcase
   endfunction
 
-  function automatic bit ir_fault(int value);
-    return value inside {[int'(IR_FAULT_LOCAL):int'(IR_FAULT_JALR)]};
-  endfunction
-
   function automatic ir_context_e classify_ir(ir_dec_t d, bit valid, bit fault);
     if (!valid) return IR_EMPTY;
     if (fault) return ir_context_e'(int'(IR_FAULT_LOCAL) | int'(d.pl_type));
@@ -184,15 +180,25 @@ module kudu_fcov_context
       cp_ir1: coverpoint ir_context[1] {
         bins category_pl[] = {[IR_ALU_RI_ALU:IR_CMPLX_LOCAL]} with (ir_enabled(int'(item)));
       }
-      cp_special_event: coverpoint special_event { bins mask[] = {[0:15]}; }
+      cp_special_event: coverpoint special_event {
+        bins none = {4'b0000};
+        wildcard bins irq = {4'b???1};
+        wildcard bins error = {4'b??1?};
+        wildcard bins debug = {4'b?1??};
+        wildcard bins commit_error = {4'b1???};
+      }
+      cp_special_event_value: coverpoint special_event { bins mask[] = {[0:15]}; }
       x_s0_ir_special: cross cp_s0_rdata0, cp_s0_rdata1, cp_ir0, cp_ir1, cp_special_event {
         ignore_bins s0_order = binsof(cp_s0_rdata0) intersect {EMPTY} &&
                               !binsof(cp_s0_rdata1) intersect {EMPTY};
         ignore_bins ir_order = binsof(cp_ir0) intersect {IR_EMPTY} &&
                               !binsof(cp_ir1) intersect {IR_EMPTY};
-        // handle_err is exactly ir_valid[0] && ir_any_err[0].
-        ignore_bins error_mismatch = x_s0_ir_special with
-          (((cp_special_event & 2) != 0) != ir_fault(int'(cp_ir0)));
+        // Other event bins overlap both fault states; exclude only definite mismatches.
+        ignore_bins error_mismatch =
+          (binsof(cp_special_event.error) &&
+           !binsof(cp_ir0) intersect {[IR_FAULT_LOCAL:IR_FAULT_JALR]}) ||
+          (binsof(cp_special_event.none) &&
+           binsof(cp_ir0) intersect {[IR_FAULT_LOCAL:IR_FAULT_JALR]});
       }
     endgroup
     cg_frontend u_cg_frontend = new();
@@ -240,7 +246,14 @@ module kudu_fcov_context
       cp_ir1: coverpoint ir_context[1] {
         bins category_pl[] = {[IR_ALU_RI_ALU:IR_CMPLX_LOCAL]} with (ir_enabled(int'(item)));
       }
-      cp_special_event: coverpoint special_event { bins mask[] = {[0:15]}; }
+      cp_special_event: coverpoint special_event {
+        bins none = {4'b0000};
+        wildcard bins irq = {4'b???1};
+        wildcard bins error = {4'b??1?};
+        wildcard bins debug = {4'b?1??};
+        wildcard bins commit_error = {4'b1???};
+      }
+      cp_special_event_value: coverpoint special_event { bins mask[] = {[0:15]}; }
       cp_ex_resident: coverpoint context_category_e'(ex_category[i]) {
         bins category[] = {[C_ALU_RI:C_ILLEGAL], EMPTY}
           with (ex_enabled(int'(item), i));
@@ -248,8 +261,11 @@ module kudu_fcov_context
       x_ir_special_ex: cross cp_ir0, cp_ir1, cp_special_event, cp_ex_resident {
         ignore_bins ir_order = binsof(cp_ir0) intersect {IR_EMPTY} &&
                               !binsof(cp_ir1) intersect {IR_EMPTY};
-        ignore_bins error_mismatch = x_ir_special_ex with
-          (((cp_special_event & 2) != 0) != ir_fault(int'(cp_ir0)));
+        ignore_bins error_mismatch =
+          (binsof(cp_special_event.error) &&
+           !binsof(cp_ir0) intersect {[IR_FAULT_LOCAL:IR_FAULT_JALR]}) ||
+          (binsof(cp_special_event.none) &&
+           binsof(cp_ir0) intersect {[IR_FAULT_LOCAL:IR_FAULT_JALR]});
       }
     endgroup
     cg_execution u_cg_execution = new();
