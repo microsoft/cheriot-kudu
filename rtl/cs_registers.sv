@@ -1653,7 +1653,7 @@ module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg:
 
   assign mtvec_xepc_rcap = rv32_mtvec_wr ? mtvec_q : 
                            rv32_depc_wr ? depc_q : mepc_q;
-  assign new_addr_tmp    = csr_wdata_i[31:0];
+  assign new_addr_tmp    = csr_wdata32[31:0];  // include the csr bit set/clear case 
 
   assign scr_wfcap1  = (rv32_mtvec_wr | rv32_mepc_wr | rv32_depc_wr) ? op2fullcap(reg2opcap(mtvec_xepc_rcap)) : 
                        full_cap_t'(csr_wdata_i);
