@@ -47,7 +47,7 @@ module cheri_trvk_stage import cheri_pkg::*; #(
   assign tsmap_addr_o  = tsmap_ptr[20:5];
 
   // not a sealling cap and pointing to valid TSMAP range
-  assign range_ok      = (tsmap_ptr[31:5] <= TSMapSize) && 
+  assign range_ok      = (tsmap_ptr[31:5] < TSMapSize) && 
                          ~((in_cap_q.cperms[4:3]==2'b00) && (|in_cap_q.cperms[2:0]));
   assign tsmap_cs_o    = clc_valid_q[0]  & cap_good_q[0];
 
