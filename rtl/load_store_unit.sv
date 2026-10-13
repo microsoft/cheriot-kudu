@@ -640,7 +640,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
       lsu_err_mcause = EXC_CAUSE_CHERI_FAULT;
       lsu_err_mtval  = {21'h0, 1'b1, scr_addr & {5{csr_cheri}}, 5'h18};
     end else if (data_or_pmp_err) begin
-      lsu_err_mcause = EXC_CAUSE_LOAD_ACCESS_FAULT;
+      lsu_err_mcause = lsu_req_info_q.is_load ? EXC_CAUSE_LOAD_ACCESS_FAULT : EXC_CAUSE_STORE_ACCESS_FAULT;
       lsu_err_mtval  = addr_last_q;
     end
   end
