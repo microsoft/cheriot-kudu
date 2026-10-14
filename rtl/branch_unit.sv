@@ -85,7 +85,7 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
     result[1] = ir_dec.is_branch && ir_dec.ptaken & ~branch_taken;
   
     // bit 2: jal target mispredict
-    result[2] = ir_dec.is_jal && ChkBranchJALAddr && (ir_dec.ptarget[31:0] != ir_dec.btarget);
+    result[2] = ir_dec.is_jal & (~ir_dec.ptaken || (ChkBranchJALAddr && (ir_dec.ptarget[31:0] != ir_dec.btarget)));
 
     // bit 3: jalr target mispredict. compare the full capability for CHERIoT
     result[3] = ir_dec.is_jalr & (~ir_dec.ptaken || (ir_dec.ptaken && 
