@@ -777,17 +777,17 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   always_comb begin
     if (cmt_err_i) 
-      special_case_comb = EXEC;
+      special_case_comb = EXEC;     // exception (cmt_flush)
     else if (handle_debug | ebreak_enter_debug)
-      special_case_comb = DEBUG;
+      special_case_comb = DEBUG;    // entering debug mode
     else if (ir_valid_i[0] & (ir_any_err[0]  | (ir0_dec.sysctl.dret & ~debug_mode_q)) )  
-      special_case_comb = EXEC;
+      special_case_comb = EXEC;     // exception (issue-time errors)
     else if (handle_irq)
-      special_case_comb = IRQ;
+      special_case_comb = IRQ;      // Interrupt handling
     else if (handle_sysctl)
-      special_case_comb = SYSCTL;
+      special_case_comb = SYSCTL;   // sysctl instructions (including ebrk/ecall)
     else if (handle_cmplx)
-      special_case_comb = CMPLX;
+      special_case_comb = CMPLX;    // complex (AMO, etc) instructions
     else 
       special_case_comb = NULL;
   end
@@ -805,8 +805,6 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         special_case_q  <= EXEC;
         special_setpc_q <= 1'b1;  // really don't care in this case
         special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};
-      end else if (ctrl_fsm_cs[CSM_DECODE] & ctrl_fsm_ns[CSM_WAIT_CMT0]) begin
-        special_pc_q <=  ir0_jalr_target_i;
       end else if (ctrl_fsm_cs[CSM_WAIT_CMT0] & ~ctrl_fsm_ns[CSM_WAIT_CMT0]) begin
         case (special_case_comb) 
           DEBUG: begin
@@ -972,7 +970,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       end else if (ir0_dec.errs.fetch_err) begin 
         csr_exc_info_o.mcause = EXC_CAUSE_INSTR_ACCESS_FAULT;
         csr_exc_info_o.mtval  = ir0_dec.pc;
-      end else if (ir0_dec.errs.illegal_insn | ir0_dec.errs.illegal_c_insn) begin
+      end else if (ir0_dec.errs.illegal_insn | ir0_dec.errs.illegal_c_insn |
+                   (~debug_mode_q & ir0_dec.sysctl.dret)) begin
         csr_exc_info_o.mcause = EXC_CAUSE_ILLEGAL_INSN;
         csr_exc_info_o.mtval  = cheri_pmode ? 32'h0 :
                                 (ir0_dec.is_comp ? {16'b0, ir0_dec.c_insn} : ir0_dec.insn);
@@ -1002,7 +1001,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
                               (priv_mode_i == PRIV_LVL_M) ?  EXC_CAUSE_ECALL_MMODE :
                               EXC_CAUSE_ECALL_UMODE;
 
-      csr_exc_info_o.mtval  = ir0_dec.pc;
+      csr_exc_info_o.mtval  = sysctl_q.ebrk ? ir0_dec.pc : 32'h0;
     end
 
   end
