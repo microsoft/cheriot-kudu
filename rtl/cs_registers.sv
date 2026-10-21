@@ -1671,10 +1671,10 @@ module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg:
     if (rv32_mepc_wr | cheri_mepcc_wr) begin
       mepc_en = 1'b1;
       mepc_d  = scr_wdata_legalized;
-    end else if (cheri_pmode & csr_save_cause_i & ~debug_mode_i) begin
+    end else if (cheri_pmode & csr_save_cause_i & ~debug_csr_save_i & ~debug_mode_i) begin
       mepc_en = 1'b1;
       mepc_d  = (cheri_pmode & csr_exc_info_i.has_pcc) ? csr_exc_info_i.pc : pcc_exc_rcap;
-    end else if (~cheri_pmode & csr_save_cause_i & ~debug_mode_i) begin
+    end else if (~cheri_pmode & csr_save_cause_i & ~debug_csr_save_i & ~debug_mode_i) begin
       mepc_en = 1'b1;
       mepc_d  = pcc_exc_rcap;
     end else begin

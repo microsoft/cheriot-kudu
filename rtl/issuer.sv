@@ -595,7 +595,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       end
 
       ctrl_fsm_cs[CSM_SLEEP]: begin
-        if (irq_pending_i)                 // don't look at MIE in sleep state
+        // don't look at MIE in sleep state
+        if (irq_pending_i | debug_req_i | debug_mode_q | debug_single_step_i)  
           ctrl_fsm_ns = 1 << CSM_DECODE;   // QQQ should we clear IF after exiting sleep? don't really see why..
       end
       
@@ -769,10 +770,15 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ir0_sysctl_setpc = (ir0_dec.sysctl.ebrk | ir0_dec.sysctl.ecall | ir0_dec.sysctl.mret | 
                              ir0_dec.sysctl.dret | ir0_dec.sysctl.fencei);
 
+  logic ebreak_enter_debug;
+  assign ebreak_enter_debug = ~debug_mode_q &  ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.sysctl.ebrk & 
+                              debug_ebreak;
+  
+
   always_comb begin
     if (cmt_err_i) 
       special_case_comb = EXEC;
-    else if (handle_debug | (ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.sysctl.ebrk & debug_ebreak))
+    else if (handle_debug | ebreak_enter_debug)
       special_case_comb = DEBUG;
     else if (ir_valid_i[0] & (ir_any_err[0]  | (ir0_dec.sysctl.dret & ~debug_mode_q)) )  
       special_case_comb = EXEC;
@@ -826,7 +832,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
             special_setpc_q <= ir0_sysctl_setpc;
             sysctl_q        <= ir0_dec.sysctl;
             unique case (1'b1)
-              ir0_dec.sysctl.ebrk:   special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
+              ir0_dec.sysctl.ebrk:   special_pc_q <= debug_mode_q ? DmHaltAddr : {csr_mtvec_i[31:2], 2'b00};
               ir0_dec.sysctl.ecall:  special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
               ir0_dec.sysctl.mret:   special_pc_q <= csr_mepc_i;
               ir0_dec.sysctl.dret:   special_pc_q <= csr_depc_i;
@@ -940,7 +946,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       csr_exc_info_o   = cmt_err_info_i;
     end else if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == DEBUG)) begin  
       csr_save_cause_o  = 1'b1;
-      csr_exc_info_o.pc = ir0_dec.pc;
+      csr_exc_info_o.pc = ir_valid_i[0] ? ir0_dec.pc : ir0_nxt_pc_q;
       debug_csr_save_o  = 1'b1;
       if (ir_valid_i[0] & ir0_dec.is_brkpt)
         debug_cause_o = DBG_CAUSE_TRIGGER;
@@ -948,7 +954,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         debug_cause_o = DBG_CAUSE_STEP;
       else if (debug_req_i)
         debug_cause_o = DBG_CAUSE_HALTREQ;
-      else if (debug_ebreak)
+      else if (ebreak_enter_debug)
         debug_cause_o = DBG_CAUSE_EBREAK;
     end else if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == EXEC)) begin
       csr_save_cause_o      = 1'b1;
