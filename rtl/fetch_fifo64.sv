@@ -158,7 +158,7 @@ module fetch_fifo64 import super_pkg::*; #(
   assign out_instr0_o.is_comp   = out_is_comp[0];
   assign out_instr0_o.is_branch = out_is_branch[0];
   assign out_instr0_o.is_jal    = out_is_jal[0];
-  assign out_instr0_o.errs      = ir_errs_t'({4'h0, fetch_err[0]});
+  assign out_instr0_o.errs      = ir_errs_t'({5'h0, fetch_err[0]});
 
   assign out_instr0_o.ptaken    = 1'b0;
   assign out_instr0_o.ptarget   = 32'h0;

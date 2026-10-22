@@ -975,6 +975,9 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         csr_exc_info_o.mcause = EXC_CAUSE_ILLEGAL_INSN;
         csr_exc_info_o.mtval  = cheri_pmode ? 32'h0 :
                                 (ir0_dec.is_comp ? {16'b0, ir0_dec.c_insn} : ir0_dec.insn);
+      end else if (ir0_dec.errs.asr_vio) begin 
+        csr_exc_info_o.mcause = EXC_CAUSE_CHERI_FAULT;
+        csr_exc_info_o.mtval  = {21'h0, 1'b1, 5'h0, 5'h18};   // s=1, cap_idx=0
       end else if (|ir0_cjalr_err_i) begin
         csr_exc_info_o.mcause = EXC_CAUSE_CHERI_FAULT;
         csr_exc_info_o.mtval  = {21'h0, 1'b0, ir0_dec.rs1, cjalr_err_cause};

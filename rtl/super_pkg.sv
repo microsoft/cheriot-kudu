@@ -36,6 +36,7 @@ package super_pkg;
   } pl_type_e;
 
   typedef struct packed {
+    logic asr_vio;                 // cheri ASR violation
     logic perm_vio;                // cheri permission violation
     logic bound_vio;               // cheri bound violation
     logic illegal_insn;

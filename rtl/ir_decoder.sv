@@ -51,7 +51,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   logic        cheri_csc_en;
   logic        cheri_clc_en;
   logic        cheri_pmode;
-  logic        cheri_perm_vio, cheri_bound_vio;
+  logic        cheri_asr_vio, cheri_perm_vio, cheri_bound_vio;
   logic        is_csr, is_csr_wr;
   logic        csr_wr, cscr_wr, csr_is_mie;
 
@@ -86,11 +86,12 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   assign ir_dec_o.rf_we   = rf_we_final;
 
   assign ir_dec_o.any_err = illegal_insn | illegal_reg_cheri | (|ir_reg_i.errs) | 
-                            cheri_perm_vio | cheri_bound_vio;
+                            cheri_perm_vio | cheri_bound_vio | cheri_asr_vio;
   assign ir_dec_o.is_comp = ir_reg_i.is_comp;
   assign ir_dec_o.c_insn  = ir_reg_i.c_insn;
 
   assign ir_dec_o.errs.illegal_insn   = illegal_insn | illegal_reg_cheri;
+  assign ir_dec_o.errs.asr_vio        = cheri_asr_vio;
   assign ir_dec_o.errs.perm_vio       = cheri_perm_vio;
   assign ir_dec_o.errs.bound_vio      = cheri_bound_vio;
   assign ir_dec_o.errs.illegal_c_insn = ir_reg_i.errs.illegal_c_insn;
@@ -394,10 +395,6 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
               pl_type       = PL_ALU;
               illegal_insn  = ~RV32B | (instr[24:20] != 0); 
             end
-            {7'b011_0100, 3'b101}: begin  // RV32B rev8
-              pl_type       = PL_ALU;
-              illegal_insn  = ~RV32B | (instr[24:20] != 5'b11000); 
-            end
 
             default: begin
               illegal_insn = 1'b1;
@@ -578,7 +575,7 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   // we still check seal/perm here to be safe, however by ISA those can't happen at fetch time 
   // since they are check elsewhere already
   assign cheri_perm_vio = cheri_pmode & ~debug_mode_i &
-                         (~pcc_cap_i.perms[PERM_EX] || ~pcc_cap_i.valid || (pcc_cap_i.otype!=0) ||
-                          (mret_insn & ~pcc_cap_i.perms[PERM_SR]));
+                         (~pcc_cap_i.perms[PERM_EX] || ~pcc_cap_i.valid || (pcc_cap_i.otype!=0));
+  assign cheri_asr_vio = cheri_pmode & ~debug_mode_i &  (mret_insn & ~pcc_cap_i.perms[PERM_SR]);
 
 endmodule 
