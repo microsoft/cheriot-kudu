@@ -724,7 +724,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ir_cmplx[0]   = ir0_dec.is_cmplx;
   assign ir_cmplx[1]   = ir1_dec.is_cmplx;
 
-  assign handle_irq     = irq_pending_i  & csr_mstatus_mie_i;
+  assign handle_irq     = irq_pending_i  & csr_mstatus_mie_i & ~debug_mode_q;
   assign handle_debug   = ~debug_mode_q & (debug_req_i | (ir_valid_i[0] & (ir0_dec.is_brkpt | single_step_trap_q)));
   assign handle_cmplx   = RV32A & ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.is_cmplx;
   assign handle_sysctl  = ir_valid_i[0] & ~ir_any_err[0] & ir_sysctl[0];
@@ -804,7 +804,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       end else if (ctrl_fsm_ns[CSM_CMT_FLUSH]) begin
         special_case_q  <= EXEC;
         special_setpc_q <= 1'b1;  // really don't care in this case
-        special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};
+        special_pc_q    <= debug_mode_q ? DmExcAddr : {csr_mtvec_i[31:2], 2'b00};
       end else if (ctrl_fsm_cs[CSM_WAIT_CMT0] & ~ctrl_fsm_ns[CSM_WAIT_CMT0]) begin
         case (special_case_comb) 
           DEBUG: begin
@@ -817,7 +817,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
             special_case_q  <= EXEC;
             special_setpc_q <= 1'b1;
             sysctl_q        <= ir0_dec.sysctl;
-            special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};
+            special_pc_q    <= debug_mode_q ? DmExcAddr : {csr_mtvec_i[31:2], 2'b00};
           end
           IRQ: begin
             special_case_q  <= IRQ;

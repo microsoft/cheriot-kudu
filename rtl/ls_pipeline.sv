@@ -214,7 +214,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
       lsu_req_dec.data_type  = data_type;
       lsu_req_dec.wdata      = (cheri_pmode & is_cap) ? op2memcap(full_data2.d1[OpW-1:0]) : 
                                                         full_data2.d1[MemW-1:0];   
-      lsu_req_dec.clrperm    = debug_mode_i ? 4'h0 : {lc_ctag, 1'b0, lc_csdlm, lc_cglg};
+      lsu_req_dec.clrperm    = {lc_ctag, 1'b0, lc_csdlm, lc_cglg};
       lsu_req_dec.sign_ext   = ~instr_dec.insn[14]; 
       lsu_req_dec.addr       = sel_ira_i ? ira_ls_addr : irb_ls_addr;
       lsu_req_dec.insn       = instr_dec.insn;

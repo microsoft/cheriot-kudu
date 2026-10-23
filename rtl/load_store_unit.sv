@@ -585,7 +585,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign csr_addr   = csr_insn[31:20];
   assign csr_addr_o = csr_cheri ? csr_num_e'({7'h0, scr_addr}) : csr_num_e'(csr_addr);
 
-  assign csr_cheri_always_ok = ~csr_cheri & 
+  assign csr_cheri_always_ok = ~csr_cheri & (csr_op_o == CSR_OP_READ) &&  
                               (((csr_insn[31:28] == 4'hb) || (csr_insn[31:28] == 4'hc)) &&
                                ((csr_insn[27] == 1'b0) || (csr_insn[26:25] == 2'b00)));
 
@@ -595,7 +595,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
 
   assign csr_cheri_asr_err   = cheri_pmode & csr_go_q & ~debug_mode_i & ~pcc_asr_bit & ~csr_cheri_always_ok;
 
-  assign csr_err  = ~debug_mode_i & lsu_req_info_q.is_csr & (illegal_csr_insn_i | csr_cheri_asr_err);
+  assign csr_err  = lsu_req_info_q.is_csr & (illegal_csr_insn_i | csr_cheri_asr_err);
 
   always_comb begin
     logic        rs1_is_zero;

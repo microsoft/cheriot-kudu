@@ -130,7 +130,7 @@ module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg:
   localparam int unsigned RV32BEnabled = CFG.RV32B;
   localparam int unsigned RV32MEnabled = CFG.RV32M;
   localparam int unsigned RV32EEnabled = CHERIoTEn;
-  localparam int unsigned RV32IEnabled = ~CHERIoTEn;;
+  localparam int unsigned RV32IEnabled = {31'h0, ~CHERIoTEn};
   localparam bit          DbgTriggerEn = CFG.DbgTriggerEn;
 
   localparam bit          DataIndTiming = 1'b1;
@@ -511,15 +511,15 @@ module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg:
 
       CSR_DPC: begin
         csr_rdata32 = depc_q[31:0];
-        illegal_csr = ~debug_mode_i;
+        illegal_csr = ~debug_mode_i | cheri_pmode;
       end
       CSR_DSCRATCH0: begin
         csr_rdata32 = dscratch0_q[31:0];
-        illegal_csr = ~debug_mode_i;
+        illegal_csr = ~debug_mode_i | cheri_pmode;
       end
       CSR_DSCRATCH1: begin
         csr_rdata32 = dscratch1_q[31:0];
-        illegal_csr = ~debug_mode_i;
+        illegal_csr = ~debug_mode_i | cheri_pmode;
       end
 
 
