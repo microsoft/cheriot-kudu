@@ -48,29 +48,31 @@ module lsu_if import super_pkg::*; import cheri_pkg::*; # (
   assign valid_new_req = us_valid_i & lsif_rdy_o;
   assign is_early_load = us_valid_i & lsu_req_dec_i.early_load;
 
-  if (CHERIoTEn) begin : gen_req_check
-    logic [7:0] cheri_check_raw, cheri_check_result;
-    always_comb begin
-      cheri_check_raw = cheri_ls_check (.cs1_fcap  (req_dly_q.cs1_fcap),
-                                        .cs2_valid (req_dly_q.cs2_valid), 
-                                        .cs2_perms (req_dly_q.cs2_perms), 
-                                        .mem_addr  (req_dly_q.addr),
-                                        .is_load   (req_dly_q.is_load), 
-                                        .is_cap    (req_dly_q.is_cap), 
-                                        .data_type (req_dly_q.data_type));
+  lschk_err_t lschk_err;
 
-      cheri_check_result = (~cheri_pmode | debug_mode_i) ? 7'h0 : cheri_check_raw;
-        
-      req_dly_tmp                 = req_dly_q;
-      req_dly_tmp.cheri_err       = cheri_check_result[0];
-      req_dly_tmp.align_err_only  = cheri_check_result[2];
-      req_dly_tmp.cheri_cause     = cheri_check_result[7:3];
-      req_dly_tmp.wdata[MEM_TAG] &= ~cheri_check_result[1];    // SLC tag clearing
-    end
-  end else begin : gen_no_req_check
-    assign req_dly_tmp = req_dly_q;
+  always_comb begin
+    lschk_err = check_ls_err (.cheri_pmode (cheri_pmode),
+                              .debug_mode  (debug_mode_i),
+                              .cs1_fcap    (req_dly_q.cs1_fcap),
+                              .cs2_valid   (req_dly_q.cs2_valid), 
+                              .cs2_perms   (req_dly_q.cs2_perms), 
+                              .mem_addr    (req_dly_q.addr),
+                              .is_load     (req_dly_q.is_load), 
+                              .is_cap      (req_dly_q.is_cap), 
+                              .data_type   (req_dly_q.data_type),
+                              .amo_flag    (req_dly_q.amo_flag));
   end
 
+  if (CHERIoTEn) begin
+    always_comb begin
+      req_dly_tmp                 = req_dly_q;
+      req_dly_tmp.lschk_err       = lschk_err;
+      req_dly_tmp.wdata[MEM_TAG] &= ~lschk_err.slc;    // SLC tag clearing
+    end
+  end else begin
+    assign req_dly_tmp = req_dly_q;
+  end
+  
   always_comb begin
     if (lsif_fsm_q == DLY1) begin
       lsu_req_info_o = req_dly_tmp;

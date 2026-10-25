@@ -199,9 +199,6 @@ package super_pkg;
     logic               is_load;
     logic               is_cap;
     logic [3:0]         amo_flag;  // amo1, amo0, sc, lr             
-    logic               cheri_err;
-    logic               align_err_only;
-    logic [4:0]         cheri_cause;    
     logic [1:0]         data_type;    
     logic [3:0]         clrperm;
     logic               sign_ext;
@@ -218,6 +215,7 @@ package super_pkg;
     logic               cs2_valid;
     logic [PERMS_W-1:0] cs2_perms;
     logic [FullW-1:0]   cs1_fcap;
+    lschk_err_t         lschk_err;
   } lsu_req_info_t;
 
   parameter lsu_req_info_t NULL_LSU_REQ_INFO = lsu_req_info_t'(0);

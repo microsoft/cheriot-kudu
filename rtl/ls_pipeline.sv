@@ -221,9 +221,8 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
       lsu_req_dec.rs1        = instr_dec.rs1;
       lsu_req_dec.rd         = instr_dec.rd;
 
-      // QQQ will change to configurable range
-      // don't do early load for lr/sc
-      lsu_req_dec.early_load = EarlyLoad & is_load && decode_early_load_addr(lsu_req_dec.addr);
+      // don't do early load or caching for lr/sc
+      lsu_req_dec.early_load = EarlyLoad & is_load & ~is_lr && decode_early_load_addr(lsu_req_dec.addr);
       lsu_req_dec.cache_ok   = decode_dcache_addr(lsu_req_dec.addr) && ~is_lr && ~is_sc;
       lsu_req_dec.cs1_fcap   = cs1_fcap;
       lsu_req_dec.cs2_valid  = cs2_fcap.valid;
@@ -256,7 +255,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
 
   // Output to CSR (for mshwm update)
   //  note for mshmwm we only care about write accesses, no need to include resp-side checks
-  assign csr_lsu_wr_req_o = lsu_req & lsu_req_done & ~lsu_req_info.rf_we & ~lsu_req_info.cheri_err;
+  assign csr_lsu_wr_req_o = lsu_req & lsu_req_done & ~lsu_req_info.rf_we & ~lsu_req_info.lschk_err.any_fault;
   assign csr_lsu_addr_o   = lsu_req_info.addr;
 
   //

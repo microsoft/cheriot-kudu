@@ -916,51 +916,60 @@ package cheri_pkg;
   parameter logic [4:0] CHERI_SCR_DEPCC      = 5'd24;
 
   // permission violations
-  parameter int unsigned PVIO_W = 8;
-
-  parameter logic [2:0] PVIO_TAG   = 3'h0;
-  parameter logic [2:0] PVIO_SEAL  = 3'h1;
-  parameter logic [2:0] PVIO_EX    = 3'h2;
-  parameter logic [2:0] PVIO_LD    = 3'h3;
-  parameter logic [2:0] PVIO_SD    = 3'h4;
-  parameter logic [2:0] PVIO_SC    = 3'h5;
-  parameter logic [2:0] PVIO_ASR   = 3'h6;
-  parameter logic [2:0] PVIO_ALIGN = 3'h7;
+  typedef struct packed {
+    logic tag;
+    logic seal;
+    logic ex;
+    logic ld;
+    logic sd;
+    logic sc;
+    logic slc;
+    logic align;
+    logic align_only;
+    logic bound;
+    logic bound_ext;
+    logic any_fault;
+  } lschk_err_t;
   
-
-  function automatic logic [4:0] vio_cause_enc (logic bound_vio, logic[PVIO_W-1:0] perm_vio_vec);
+  function automatic logic [5:0] vio_cause_enc (lschk_err_t lschk_err);
     logic [4:0] vio_cause;
+    logic       align_only;
+    logic [5:0] result;
     
-    if (perm_vio_vec[PVIO_TAG])
+    if (lschk_err.tag)
       vio_cause = 5'h2;
-    else if (perm_vio_vec[PVIO_SEAL])
+    else if (lschk_err.seal)
       vio_cause = 5'h3;
-    else if (perm_vio_vec[PVIO_EX])
+    else if (lschk_err.ex)
       vio_cause = 5'h11;
-    else if (perm_vio_vec[PVIO_LD])
+    else if (lschk_err.ld)
       vio_cause = 5'h12;
-    else if (perm_vio_vec[PVIO_SD])
+    else if (lschk_err.sd)
       vio_cause = 5'h13;
-    else if (perm_vio_vec[PVIO_SC])
+    else if (lschk_err.sc)
       vio_cause = 5'h15;
-    else if (perm_vio_vec[PVIO_ASR])
-      vio_cause = 5'h18;
-    else if (bound_vio)
+    else if (lschk_err.bound | lschk_err.bound_ext)
       vio_cause = 5'h1;
     else
       vio_cause = 5'h0;
 
-    return vio_cause;
+    align_only = lschk_err.align & ~(lschk_err.tag | lschk_err.seal | lschk_err.ex | lschk_err.ld |
+                                     lschk_err.sd | lschk_err.sc | lschk_err.bound | lschk_err.bound_ext); 
+
+    result = {align_only, vio_cause};
+    return result;
   endfunction
 
   //
   // new stuff..
   //
-  function automatic logic [7:0] cheri_ls_check (full_cap_t cs1_fcap, logic cs2_valid,
-                                                 logic [PERMS_W-1:0] cs2_perms,
-                                                 logic [31:0] mem_addr, logic is_load, 
-                                                 logic is_cap, logic [1:0] data_type);   
-    logic [7:0]  result;    
+  function automatic lschk_err_t check_ls_err (logic cheri_pmode, logic debug_mode,
+                                                     full_cap_t cs1_fcap, logic cs2_valid,
+                                                     logic [PERMS_W-1:0] cs2_perms,
+                                                     logic [31:0] mem_addr, logic is_load, 
+                                                     logic is_cap, logic [1:0] data_type,
+                                                     logic [3:0] amo_flag);
+    lschk_err_t  result;    
     logic [31:0] top_offset;
     logic [32:0] top_bound;
     logic [31:0] base_bound, base_chkaddr;
@@ -968,14 +977,10 @@ package cheri_pkg;
     logic        top_size_ok;
     logic        is_load_cap, is_store_cap;
     logic        top_vio, base_vio, top_equal;
-    logic        cheri_perm_vio, cheri_bound_vio;
-    logic [PVIO_W-1:0] perm_vio_vec;
-    logic        perm_vio_slc;
-    logic [4:0]  cheri_vio_cause;
     logic        addr_bound_vio_ext;
     logic [32:0] cheri_top_chkaddr_ext;
-    logic        align_err_only;
 
+    result = '0;
     //
     // cheri address bound violation
     //
@@ -1016,7 +1021,7 @@ package cheri_pkg;
     base_vio  = (base_chkaddr < base_bound);
     top_equal = (top_chkaddr == top_bound);
 
-    cheri_bound_vio = (top_vio | base_vio | (is_cap & top_equal));
+    result.bound = cheri_pmode & ~debug_mode & (top_vio | base_vio | (is_cap & top_equal));
 
     //
     // cheri permission violation
@@ -1025,39 +1030,38 @@ package cheri_pkg;
     is_load_cap  = is_cap & is_load;
     is_store_cap = is_cap & ~is_load;
 
-    perm_vio_vec = '0;
-    perm_vio_slc = 1'b0;
-
-    if (is_load_cap) begin
-      perm_vio_vec[PVIO_TAG]   = ~cs1_fcap.valid;
-      perm_vio_vec[PVIO_SEAL]  = (cs1_fcap.otype != OTYPE_UNSEALED);
-      perm_vio_vec[PVIO_LD]    = ~(cs1_fcap.perms[PERM_LD]);
-      perm_vio_vec[PVIO_ALIGN] = (mem_addr[2:0] != 0);
-    end else if (is_store_cap) begin
-      perm_vio_vec[PVIO_TAG]   = (~cs1_fcap.valid);
-      perm_vio_vec[PVIO_SEAL]  = (cs1_fcap.otype != OTYPE_UNSEALED);
-      perm_vio_vec[PVIO_SD]    = ~cs1_fcap.perms[PERM_SD];
-      perm_vio_vec[PVIO_SC]    = (~cs1_fcap.perms[PERM_MC] && cs2_valid);
-      perm_vio_vec[PVIO_ALIGN] = (mem_addr[2:0] != 0);
-      perm_vio_slc             = ~cs1_fcap.perms[PERM_SL] && cs2_valid &&
-                                 ~cs2_perms[PERM_GL] ;
-    end else begin  // RV32 accesses
-      perm_vio_vec[PVIO_TAG]   = ~cs1_fcap.valid;
-      perm_vio_vec[PVIO_SEAL]  = (cs1_fcap.otype != OTYPE_UNSEALED);
-      perm_vio_vec[PVIO_LD]    = is_load & ~cs1_fcap.perms[PERM_LD];
-      perm_vio_vec[PVIO_SD]    = ~is_load && ~cs1_fcap.perms[PERM_SD];
+    if (cheri_pmode & ~debug_mode & is_load_cap) begin
+      result.tag    = ~cs1_fcap.valid;
+      result.seal   = (cs1_fcap.otype != OTYPE_UNSEALED);
+      result.ld     = ~(cs1_fcap.perms[PERM_LD]);
+      result.align  = (mem_addr[2:0] != 0);
+    end else if (cheri_pmode & ~debug_mode & is_store_cap) begin
+      result.tag    = (~cs1_fcap.valid);
+      result.seal   = (cs1_fcap.otype != OTYPE_UNSEALED);
+      result.sd     = ~cs1_fcap.perms[PERM_SD];
+      result.sc     = (~cs1_fcap.perms[PERM_MC] && cs2_valid);
+      result.align  = (mem_addr[2:0] != 0);
+      result.slc    = ~cs1_fcap.perms[PERM_SL] && cs2_valid && ~cs2_perms[PERM_GL] ;
+    end else if (cheri_pmode & ~debug_mode) begin  // RV32 accesses, pmode = 1
+      result.tag    = ~cs1_fcap.valid;
+      result.seal   = (cs1_fcap.otype != OTYPE_UNSEALED);
+      result.ld     = is_load & ~cs1_fcap.perms[PERM_LD];
+      result.sd     = ~is_load && ~cs1_fcap.perms[PERM_SD];
+      result.align  = (mem_addr[1:0] != 2'b00) && (|amo_flag);
+    end else begin  // AMO/LR/SC alignment checks are performed in all cases
+      result.align  = (mem_addr[1:0] != 2'b00) && (|amo_flag);
     end
 
-    cheri_perm_vio  = | perm_vio_vec;
+    result.any_fault = result.tag | result.seal | result.ex | result.ld | result.sd |
+                          result.sc | result.bound | result.align;
 
+    // find out whether we only have alignment error, for mcause/mtval encoding purpose only.
+    // current bound checking for clc/csc assumes aligned access so if not properly adjusted, 
+    // bound_vio + align_vio might be reported as align_vio, which is inconsistent with the arch 
+    // spec encoding priority. 
     cheri_top_chkaddr_ext = mem_addr + 8;   // extend to 33 bit for compare
-    addr_bound_vio_ext = is_cap ? cheri_bound_vio | (cheri_top_chkaddr_ext > cs1_fcap.top33) :
-                                  cheri_bound_vio;
+    result.bound_ext = is_cap ? (cheri_top_chkaddr_ext > cs1_fcap.top33) : 1'b0;
 
-    cheri_vio_cause = vio_cause_enc(addr_bound_vio_ext, perm_vio_vec);
-    align_err_only = perm_vio_vec[PVIO_ALIGN] &  (perm_vio_vec[PVIO_ALIGN-1:0] == 0) && ~addr_bound_vio_ext;
-
-    result = {cheri_vio_cause, align_err_only, perm_vio_slc, (cheri_bound_vio|cheri_perm_vio)};
     return result;
   endfunction
 

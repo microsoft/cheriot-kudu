@@ -914,8 +914,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign csr_restore_mret_o = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == SYSCTL) & sysctl_q.mret;
   assign csr_restore_dret_o = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == SYSCTL) & sysctl_q.dret;
 
-  logic [4:0]        cjalr_err_cause;
-  logic [PVIO_W-1:0] ir0_pvio_vec;
+  logic [4:0]     cjalr_err_cause;
+  lschk_err_t     ir0_perm_err;
 
   always_comb begin
     logic [3:0]      mfip_id;
@@ -932,12 +932,12 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       end
     end
 
-    ir0_pvio_vec            = 0;
-    ir0_pvio_vec[PVIO_TAG]  = ir0_cjalr_err_i[0];
-    ir0_pvio_vec[PVIO_SEAL] = ir0_cjalr_err_i[1];
-    ir0_pvio_vec[PVIO_EX]   = ir0_cjalr_err_i[2];
+    ir0_perm_err      = 0;
+    ir0_perm_err.tag  = ir0_cjalr_err_i[0];
+    ir0_perm_err.seal = ir0_cjalr_err_i[1];
+    ir0_perm_err.ex   = ir0_cjalr_err_i[2];
 
-    cjalr_err_cause = vio_cause_enc (1'b0, ir0_pvio_vec);
+    cjalr_err_cause = vio_cause_enc (ir0_perm_err);
 
     if (ctrl_fsm_cs[CSM_CMT_FLUSH] & cmt_err_i) begin
       csr_save_cause_o = 1'b1;

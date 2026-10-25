@@ -96,9 +96,9 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   logic            handle_misaligned_q, handle_misaligned_d; // high after receiving grant for first
                                                              // part of a misaligned access
   logic            pmp_err_q, pmp_err_d;
-  logic            lsu_err_q, lsu_err_d;
+  logic            bus_err_q, bus_err_d;
   logic            data_or_pmp_err;
-  logic            cheri_err_d, cheri_err_q;
+  logic            req_err_d, req_err_q;
                    
   logic            outstanding_resp_q, resp_wait;
   logic            lsu_resp_valid;
@@ -366,8 +366,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     addr_incr_req       = 1'b0;
     handle_misaligned_d = handle_misaligned_q;
     pmp_err_d           = pmp_err_q;
-    lsu_err_d           = lsu_err_q;
-    cheri_err_d         = 1'b0;
+    bus_err_d           = bus_err_q;
+    req_err_d           = 1'b0;
 
     addr_update         = 1'b0;
     ctrl_update         = 1'b0;
@@ -387,16 +387,16 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
         if (lsu_req_i & ~resp_wait & ds_rdy_i & lsu_req_info_i.is_csr) begin
           csr_go = 1'b1;
         end else if (lsu_req_i & ~resp_wait & ds_rdy_i) begin
-          data_req_o     = ~lsu_req_info_i.cheri_err;
+          data_req_o     = ~lsu_req_info_i.lschk_err.any_fault;
           pmp_err_d      = data_pmp_err_i;
-          lsu_err_d      = 1'b0;
+          bus_err_d      = 1'b0;
           perf_load_o    = lsu_req_info_i.is_load;
           perf_store_o   = ~lsu_req_info_i.is_load;
           ls_go          = 1'b1;         // decision to move forward with a request
 
-          if (lsu_req_info_i.cheri_err) begin
+          if (lsu_req_info_i.lschk_err.any_fault) begin
             ls_fsm_ns           = IDLE;
-            cheri_err_d         = 1'b1;
+            req_err_d           = 1'b1;
           end else if (data_gnt_i) begin
             ctrl_update         = 1'b1;
             addr_update         = 1'b1;
@@ -433,7 +433,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
           // Update the PMP error for the second part
           pmp_err_d = data_pmp_err_i;
           // Record the error status of the first part
-          lsu_err_d = data_err_i | pmp_err_q;
+          bus_err_d = data_err_i | pmp_err_q;
           // Capture the first rdata for loads
           rdata_update = lsu_req_info_q.is_load;
           // If already granted, wait for second rvalid
@@ -459,7 +459,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
         if (data_gnt_i || pmp_err_q) begin
           ctrl_update         = 1'b1;
           // Update the address, unless there was an error
-          addr_update         = ~lsu_err_q;
+          addr_update         = ~bus_err_q;
           ls_fsm_ns           = IDLE;
           handle_misaligned_d = 1'b0;
         end
@@ -474,7 +474,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
           // Update the pmp error for the second part
           pmp_err_d = data_pmp_err_i ;
           // The first part cannot see a PMP error in this state
-          lsu_err_d = data_err_i;
+          bus_err_d = data_err_i;
           // Now we can update the address for the second part if no error
           addr_update = ~data_err_i;
           // Capture the first rdata for loads
@@ -506,8 +506,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
       ls_fsm_cs           <= IDLE;
       handle_misaligned_q <= '0;
       pmp_err_q           <= '0;
-      lsu_err_q           <= '0;
-      cheri_err_q         <= 1'b0;
+      bus_err_q           <= '0;
+      req_err_q           <= 1'b0;
       outstanding_resp_q  <= 1'b0;
       lsu_req_info_q      <= NULL_LSU_REQ_INFO;
       csr_go_q            <= 1'b0;
@@ -515,8 +515,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
       ls_fsm_cs           <= ls_fsm_ns;
       handle_misaligned_q <= handle_misaligned_d;
       pmp_err_q           <= pmp_err_d;
-      lsu_err_q           <= lsu_err_d;
-      cheri_err_q         <= cheri_err_d;
+      bus_err_q           <= bus_err_d;
+      req_err_q           <= req_err_d;
 
       if (ls_go | csr_go)
         lsu_req_info_q  <= lsu_req_info_i;
@@ -532,33 +532,24 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   end
 
   // cheri checking at response side (for earlyLoads)
-  logic cheri_ls_err;
-  logic ls_align_err_only;
-  logic [4:0] cheri_err_cause;
+  logic [5:0] ls_err_cause;
 
-  if (CHERIoTEn) begin : gen_resp_chk
-    always_comb begin
-      logic [7:0] cheri_check_raw, cheri_check_result;
-      cheri_check_raw = cheri_ls_check (.cs1_fcap  (lsu_req_info_q.cs1_fcap),
-                                        .cs2_valid (lsu_req_info_q.cs2_valid), 
-                                        .cs2_perms (lsu_req_info_q.cs2_perms), 
-                                        .mem_addr  (lsu_req_info_q.addr),
-                                        .is_load   (lsu_req_info_q.is_load), 
-                                        .is_cap    (lsu_req_info_q.is_cap), 
-                                        .data_type (lsu_req_info_q.data_type));
+  lschk_err_t lschk_err_raw, lschk_err_final;
+  always_comb begin
+    lschk_err_raw = check_ls_err (.cheri_pmode (cheri_pmode),
+                                  .debug_mode  (debug_mode_i),
+                                  .cs1_fcap    (lsu_req_info_q.cs1_fcap),
+                                  .cs2_valid   (lsu_req_info_q.cs2_valid), 
+                                  .cs2_perms   (lsu_req_info_q.cs2_perms), 
+                                  .mem_addr    (lsu_req_info_q.addr),
+                                  .is_load     (lsu_req_info_q.is_load), 
+                                  .is_cap      (lsu_req_info_q.is_cap), 
+                                  .data_type   (lsu_req_info_q.data_type),
+                                  .amo_flag    (lsu_req_info_q.amo_flag));
 
-      cheri_check_result = (~cheri_pmode | debug_mode_i) ? 7'h0 : cheri_check_raw;
-      ls_align_err_only  = cheri_check_result[2] & (~lsu_req_info_q.cheri_err | lsu_req_info_q.align_err_only);
-      cheri_ls_err       = ~lsu_req_info_q.is_csr & (cheri_check_result[0] | lsu_req_info_q.cheri_err); 
+    lschk_err_final = lsu_req_info_q.is_csr ? '0 : (lschk_err_raw | lsu_req_info_q.lschk_err);
 
-      if (lsu_req_info_q.cheri_err) 
-        cheri_err_cause = lsu_req_info_q.cheri_cause;
-      else 
-        cheri_err_cause = cheri_check_result[7:3];
-    end
-  end else begin : gen_no_resp_chk
-    assign cheri_ls_err    = 1'b0;
-    assign cheri_err_cause = 5'h0;
+    ls_err_cause = vio_cause_enc(lschk_err_final);
   end
 
   // CSR r/w operations
@@ -621,17 +612,19 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   end
   
   // load/store/csr error mcause/mtval encoding
+
   always_comb begin
     lsu_err_mcause = 6'h0;
     lsu_err_mtval  = 32'h0;
 
-    if (cheri_ls_err & ls_align_err_only) begin
-      lsu_err_mcause = lsu_req_info_q.is_load ? EXC_CAUSE_LOAD_ADDR_MISALIGN : EXC_CAUSE_STORE_ADDR_MISALIGN;
+    if (lschk_err_final.any_fault & ls_err_cause[5] ) begin
+      lsu_err_mcause = (lsu_req_info_q.is_load & (lsu_req_info_q.amo_flag[3:2] == 2'b00)) ? 
+                       EXC_CAUSE_LOAD_ADDR_MISALIGN : EXC_CAUSE_STORE_ADDR_MISALIGN;
       lsu_err_mtval  = addr_last_q;
-    end else if (cheri_ls_err) begin
+    end else if (lschk_err_final.any_fault) begin
       // CHERIoT requires rs1 as part of MTVAL info for cheri faults
       lsu_err_mcause = EXC_CAUSE_CHERI_FAULT;
-      lsu_err_mtval  = {22'h0, lsu_req_info_q.rs1, cheri_err_cause};
+      lsu_err_mtval  = {22'h0, lsu_req_info_q.rs1, ls_err_cause[4:0]};
     end else if (csr_err & illegal_csr_insn_i) begin
       lsu_err_mcause = EXC_CAUSE_ILLEGAL_INSN;
       lsu_err_mtval  = 32'h0;
@@ -640,7 +633,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
       lsu_err_mcause = EXC_CAUSE_CHERI_FAULT;
       lsu_err_mtval  = {21'h0, 1'b1, scr_addr & {5{csr_cheri}}, 5'h18};
     end else if (data_or_pmp_err) begin
-      lsu_err_mcause = lsu_req_info_q.is_load ? EXC_CAUSE_LOAD_ACCESS_FAULT : EXC_CAUSE_STORE_ACCESS_FAULT;
+      lsu_err_mcause = (lsu_req_info_q.is_load & (lsu_req_info_q.amo_flag[3:2] == 2'b00)) ? 
+                       EXC_CAUSE_LOAD_ACCESS_FAULT : EXC_CAUSE_STORE_ACCESS_FAULT;
       lsu_err_mtval  = addr_last_q;
     end
   end
@@ -660,10 +654,10 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   /////////////
 
   logic all_resp, lsu_resp_err;
-  assign data_or_pmp_err    = lsu_err_q | data_err_i | pmp_err_q | cheri_ls_err;
+  assign data_or_pmp_err    = bus_err_q | data_err_i | pmp_err_q | lschk_err_final.any_fault;
   assign lsu_resp_err       = csr_go_q ?  csr_err : data_or_pmp_err;
 
-  assign all_resp           = data_rvalid_i | pmp_err_q | (cheri_pmode & cheri_err_q) | csr_go_q;
+  assign all_resp           = data_rvalid_i | pmp_err_q | req_err_q | csr_go_q;
   assign lsu_resp_valid     = all_resp & outstanding_resp_q && (ls_fsm_cs == IDLE) ;
   assign lsu_resp_valid_o   = lsu_resp_valid;
   
