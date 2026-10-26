@@ -419,6 +419,9 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
       assign irb_op_rdata2_o.d1 = rf_rdata2_p1_i.d1;
     end
 
+    assign cjalr_pcc_set_o = 1'b0;
+    assign cjalr_rcap_o    = '0;
+
   end else begin : gen_stage1
     // cascade wr/rd signals between 2 fifo stages 
     // makes cjalr single-issue if CJALR and PredictRA==1

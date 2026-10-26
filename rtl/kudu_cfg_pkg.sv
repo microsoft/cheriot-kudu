@@ -123,7 +123,7 @@ package kudu_cfg_pkg;
     IrCompDecEn    : 1'b0,
     PredictUseBtb  : 1'b1,         // use table lookup insteand of compute target address for timing
     PredictBhtSize : 16,           // smaller BHT table to help timing 
-    PredictRA      : 1'b1,
+    PredictRA      : 1'b0,         // not supported for CFG2
     RALimitHi      : 21'h080040,  
     RALimitLo      : 21'h080000,
     PrefetchDepth  : 2,
