@@ -98,6 +98,7 @@ module dcache import super_pkg::*; # (
   logic [3:0]       line_valid;
                     
   logic [3:0]       rd_tag_match, wr_tag_match;
+  logic             rd_data_good;
   logic             unaligned_access, unaligned_access_q;
   logic             byp_tag_match, byp_data_good;
   logic [31:0]      cache_rdata, cache_rdata_ext;
@@ -127,12 +128,18 @@ module dcache import super_pkg::*; # (
     assign line_rdata[i] = cache_mem[i] & {CacheMemW{rd_tag_match[i]}};
   end
 
+  // cache data wil be invalidated by unaligned accesses, etc, so must take those into consideration
+  assign rd_data_good = (|rd_tag_match) & (~lsu_req_q | (~lsu_req_info_q.is_cap & ~unaligned_access_q &
+                         ~lsu_req_info_q.amo_flag [1]));
+ 
   // bypass/forward wdata to the new load instruction (full word write only)
   // - note it is possible that byp_tag_match and one of the rd_tag_match are both true
   // - if bypass tag match, don't use the stored cacheline data
+  // - don't 
   assign byp_tag_match  = lsu_req_q & (lsu_req_info_i.addr[31:addrLo] == lsu_req_info_q.addr[31:addrLo]);
-  assign byp_data_good  = byp_tag_match & ~unaligned_access_q & ~lsu_req_info_q.is_load &
-                          ~lsu_req_info_q.is_csr & (lsu_req_info_q.data_type == 2'b00);
+  assign byp_data_good  = byp_tag_match & ~unaligned_access_q & ~lsu_req_info_q.is_load & 
+                          ~lsu_req_info_q.amo_flag [1] & ~lsu_req_info_q.is_csr & ~lsu_req_info_q.is_cap & 
+                          (lsu_req_info_q.data_type == 2'b00);
 
   // assign last_wdata  = lsu_req_info_q.wdata & {CacheMemW{byp_tag_match}};
   assign cache_rdata = byp_data_good ? lsu_req_info_q.wdata :
@@ -159,8 +166,8 @@ module dcache import super_pkg::*; # (
 
   // we don't yet handle bypass case for partial-word writes, so if one of the lines match but
   // there is a partial-word write, don't treat this as a chache hit
-  // 
-  assign cache_rd_match_ok = byp_tag_match ? byp_data_good : (|rd_tag_match);
+  //
+  assign cache_rd_match_ok = byp_tag_match ? byp_data_good : rd_data_good;
   assign cache_rd_hit      = lsu_req_info_i.is_load & lsu_req_info_i.cache_ok & ~lsu_req_info_i.is_cap &
                              ~unaligned_access & cache_rd_match_ok; 
 
@@ -263,7 +270,8 @@ module dcache import super_pkg::*; # (
                              ~unaligned_access_q & ~lsu_req_info_q.is_cap & lsu_req_info_q.cache_ok;
   assign resp_partial_word = resp_good & ~lsu_req_info_q.is_load & (lsu_req_info_q.data_type != 2'b00) & 
                              ~unaligned_access_q & ~lsu_req_info_q.is_cap & lsu_req_info_q.cache_ok;
-  assign resp_invalidate   = resp_bad | (resp_good & (lsu_req_info_q.is_cap | ~lsu_req_info_q.cache_ok));
+  assign resp_invalidate   = resp_bad | (resp_good & (lsu_req_info_q.is_cap | ~lsu_req_info_q.cache_ok |
+                                                      lsu_req_info_q.amo_flag[1]));
 
   for (genvar i=0; i<4; i++) begin : gen_cache_line
     logic tag_match64;
