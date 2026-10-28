@@ -18,7 +18,7 @@ package kudu_dv_pkg;
     logic [64:0]   wdata;
     logic [64:0]   rdata;
     logic          err;
-    logic          sc_resp;
+    logic          sc_fail;
   } mem_cmd_t;
 
 endpackage

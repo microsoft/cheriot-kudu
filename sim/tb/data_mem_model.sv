@@ -49,7 +49,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
   output logic              data_rvalid,
   output logic [64:0]       data_rdata,
   output logic              data_err,
-  output logic              data_sc_resp,
+  output logic              data_sc_fail,
   output mem_cmd_t          data_resp_info,
 
   input  logic              tsmap_cs,
@@ -119,7 +119,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
   logic [DW-1:0] mem_wdata;
   logic [DW-1:0] mem_rdata;
   logic          mem_err;
-  logic          mem_sc_resp;
+  logic          mem_sc_fail;
 
   // simple unified memory system model
   logic [DW-1:0]      dram[0:2**DRAM_AW-1];
@@ -174,7 +174,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
     .data_rvalid    (data_rvalid),
     .data_rdata     (data_rdata),
     .data_err       (data_err),
-    .data_sc_resp   (data_sc_resp),
+    .data_sc_fail   (data_sc_fail),
     .data_resp_info (data_resp_info),
     .mem_cs         (mem_cs),
     .mem_is_cap     (mem_is_cap),
@@ -186,13 +186,13 @@ module data_mem_model import kudu_dv_pkg::*; # (
     .mem_wdata      (mem_wdata),
     .mem_rdata      (mem_rdata),
     .mem_err        (mem_err),
-    .mem_sc_resp    (mem_sc_resp)
+    .mem_sc_fail    (mem_sc_fail)
   );
 
   if (UseSparseMem) begin : g_data_rw_dpi
     // QQQ let's worry about lr/sc later
     assign mem_err     = 1'b0;
-    assign mem_sc_resp = 1'b1;
+    assign mem_sc_fail = 1'b1;
 
 
     assign debug_req = 1'b0;
@@ -248,7 +248,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
                                                  (dbgrom_sel_q ? {1'h0, dbgrom_rdata} : 
                                                  65'h0)));
 
-    assign mem_sc_resp = dram_sel? ~dram_lr_status_q : 1'b0;
+    assign mem_sc_fail = dram_sel? ~dram_lr_status_q : 1'b0;
 
     // mem_err is in the mem_cs
     assign mem_err   = (DATA_ERR_RATE == 0) ? (mem_cs & (~dram_sel & ~tsram_p0_sel & ~uart_cs0 & ~uart_cs1 & ~mmreg_sel)) :
@@ -593,7 +593,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
     .data_rvalid    (instr_rvalid),
     .data_rdata     (instr_rdata),
     .data_err       (instr_err),
-    .data_sc_resp   (),
+    .data_sc_fail   (),
     .data_resp_info (),
     .mem_cs         (instr_mem_cs),
     .mem_is_cap     (),
@@ -605,7 +605,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
     .mem_wdata      (),
     .mem_rdata      (instr_mem_rdata),
     .mem_err        (instr_mem_err),
-    .mem_sc_resp    (1'b0)
+    .mem_sc_fail    (1'b0)
   );
 
 
@@ -634,7 +634,18 @@ module data_mem_model import kudu_dv_pkg::*; # (
     assign instr_mem_rdata = instr_dram_sel_q ? instr_dram_rdata : 
                              instr_dbgrom_sel_q ? instr_dbgrom_rdata : 64'h0;
 
-    assign instr_mem_err = 1'b0;
+    // +INSTR_ERR_ADDR=<hex>: return a bus error for fetches of that 64-bit word
+    int unsigned cfg_instr_err_addr;
+    logic        cfg_instr_err_addr_valid;
+
+    initial begin
+      cfg_instr_err_addr_valid = $value$plusargs("INSTR_ERR_ADDR=%h", cfg_instr_err_addr);
+      if (cfg_instr_err_addr_valid)
+        $display("TB> Address-based instruction error at 0x%08x", cfg_instr_err_addr);
+    end
+
+    assign instr_mem_err = cfg_instr_err_addr_valid & instr_mem_cs &
+                           ({instr_mem_addr32, 2'b00} == cfg_instr_err_addr);
 
     assign instr_dram_sel    = instr_mem_cs & instr_mem_addr32[29] & (instr_mem_addr32[28:DRAM_AW32+1] == 0);   
     assign instr_dram_addr   = instr_mem_addr32[DRAM_AW-1:1];

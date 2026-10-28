@@ -36,7 +36,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   output logic [MemW-1:0]              data_wdata_o,
   input  logic [MemW-1:0]              data_rdata_i,
   input  logic                         data_err_i,
-  input  logic                         data_sc_resp_i,
+  input  logic                         data_sc_fail_i,
 
   output logic                         tsmap_cs_o,
   output logic [15:0]                  tsmap_addr_o,
@@ -502,7 +502,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .data_rvalid_i         (data_rvalid_i     ),
     .data_err_i            (data_err_i        ),
     .data_rdata_i          (data_rdata_i      ),
-    .data_sc_resp_i        (data_sc_resp_i    ),
+    .data_sc_fail_i        (data_sc_fail_i    ),
     .data_pmp_err_i        (1'b0              ),
     .waw_act_i             (waw_act           ),
     .fwd_act_o             (lspl_fwd_act      ),

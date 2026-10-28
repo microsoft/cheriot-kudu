@@ -31,7 +31,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   input  logic             data_rvalid_i,
   input  logic             data_err_i,
   input  logic             data_pmp_err_i,
-  input  logic             data_sc_resp_i,
+  input  logic             data_sc_fail_i,
                            
   output logic [31:0]      data_addr_o,
   output logic             data_we_o,
@@ -63,6 +63,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   output logic [FullW-1:0] csr_wdata_o,
   input  logic [RegW-1:0]  csr_rdata_i,
   input  logic             illegal_csr_insn_i,      // access to non-existent CSR,
+  output logic             csr_lsu_wr_req_o,
+  output logic [31:0]      csr_lsu_addr_o,
 
   // Performance counter signals    
   output logic             busy_o,
@@ -641,7 +643,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
 
   logic [31:0]  rdata_sc_muxed;
 
-  assign rdata_sc_muxed = lsu_req_info_q.amo_flag[1] ? {31'h0, data_sc_resp_i} : data_rdata_ext;
+  assign rdata_sc_muxed = lsu_req_info_q.amo_flag[1] ? {31'h0, data_sc_fail_i} : data_rdata_ext;
   
   if (CHERIoTEn) begin : gen_cap_rd
     assign lsu_rdata = lsu_req_info_q.is_cap ? mem2regcap(data_rdata_i, lsu_req_info_q.clrperm) : {33'h0, rdata_sc_muxed};
@@ -691,5 +693,11 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
 
   assign addr_last_o    = addr_last_q;
   assign busy_o = (ls_fsm_cs != IDLE);
+
+  // Output to CSR (for mshwm update)
+  //  note for mshmwm we only care about write accesses, no need to include resp-side checks
+  assign csr_lsu_wr_req_o = cheri_pmode & lsu_resp_valid & ~lsu_resp_err & ~lsu_req_info_q.is_load &
+                            ~lsu_req_info_q.is_csr & (~lsu_req_info_q.amo_flag[1] | ~data_sc_fail_i);
+  assign csr_lsu_addr_o   = lsu_req_info_q.addr;
 
 endmodule

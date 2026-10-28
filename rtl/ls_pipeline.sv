@@ -53,7 +53,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   input  logic             data_gnt_i,
   input  logic             data_rvalid_i,
   input  logic             data_err_i,
-  input  logic             data_sc_resp_i,
+  input  logic             data_sc_fail_i,
   input  logic [MemW-1:0]  data_rdata_i,
   input  logic             data_pmp_err_i,
                            
@@ -253,11 +253,6 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     lspl_output_o.wrsv = lspl_output_o.we & waw_fifo_rdata[5];
   end
 
-  // Output to CSR (for mshwm update)
-  //  note for mshmwm we only care about write accesses, no need to include resp-side checks
-  assign csr_lsu_wr_req_o = lsu_req & lsu_req_done & ~lsu_req_info.rf_we & ~lsu_req_info.lschk_err.any_fault;
-  assign csr_lsu_addr_o   = lsu_req_info.addr;
-
   //
   // LSU interface
   //
@@ -299,7 +294,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     .data_rvalid_i         (data_rvalid_i     ),
     .data_rdata_i          (data_rdata_i      ),
     .data_err_i            (data_err_i        ),
-    .data_sc_resp_i        (data_sc_resp_i    ),
+    .data_sc_fail_i        (data_sc_fail_i    ),
     .data_pmp_err_i        (data_pmp_err      ),
     .lsu_req_i             (lsu_req           ),      
     .lsu_req_done_o        (lsu_req_done      ),
@@ -317,6 +312,8 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     .csr_wdata_o           (csr_wdata_o       ),
     .csr_rdata_i           (csr_rdata_i       ),
     .illegal_csr_insn_i    (illegal_csr_insn_i),
+    .csr_lsu_wr_req_o      (csr_lsu_wr_req_o  ),
+    .csr_lsu_addr_o        (csr_lsu_addr_o    ),
     .busy_o                (),
     .perf_load_o           (),
     .perf_store_o          ()

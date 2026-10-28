@@ -56,7 +56,7 @@ module tb_kudu_top;
   logic [31:0] data_addr;
   logic [DBusW-1:0] data_wdata;
   logic [DBusW-1:0] data_rdata;
-  logic        data_err, data_sc_resp;
+  logic        data_err, data_sc_fail;
   logic        data_is_cap;
   logic [3:0]  data_amo_flag;
   logic [7:0]  data_flag;
@@ -269,7 +269,7 @@ module tb_kudu_top;
     .data_wdata_o         (data_wdata  ),
     .data_rdata_i         (data_rdata  ),
     .data_err_i           (data_err    ),
-    .data_sc_resp_i       (data_sc_resp),
+    .data_sc_fail_i       (data_sc_fail),
     .tsmap_cs_o           (tsmap_cs    ),
     .tsmap_addr_o         (tsmap_addr  ),
     .tsmap_rdata_i        (tsmap_rdata ),
@@ -606,7 +606,7 @@ module tb_kudu_top;
     .data_rvalid     (data_rvalid  ),
     .data_rdata      (data_rdata65 ),
     .data_err        (data_err     ),
-    .data_sc_resp    (data_sc_resp ),
+    .data_sc_fail    (data_sc_fail ),
     .data_resp_info  (data_resp_info),  // to mem_monitor
     .tsmap_cs        (tsmap_cs     ),
     .tsmap_addr      (tsmap_addr   ),

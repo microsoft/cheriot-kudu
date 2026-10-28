@@ -27,7 +27,7 @@ module mem_obi_if import kudu_dv_pkg::*; #(
   output logic          data_rvalid,
   output logic [DW-1:0] data_rdata,
   output logic          data_err,
-  output logic          data_sc_resp,
+  output logic          data_sc_fail,
   output mem_cmd_t      data_resp_info,  // loopback information for checking
 
   output logic          mem_cs,
@@ -40,7 +40,7 @@ module mem_obi_if import kudu_dv_pkg::*; #(
   output logic [DW-1:0] mem_wdata,
   input  logic [DW-1:0] mem_rdata,
   input  logic          mem_err,
-  input  logic          mem_sc_resp
+  input  logic          mem_sc_fail
 );
   
   function automatic logic[3:0] gen_wait(int unsigned wmax);
@@ -164,13 +164,13 @@ module mem_obi_if import kudu_dv_pkg::*; #(
     if (~rst_ni) begin
       data_rvalid    <= 1'b0;
       data_err       <= 1'b0;
-      data_sc_resp   <= 1'b0;
+      data_sc_fail   <= 1'b0;
       cmd_rd_ptr_ext <= 0;
       resp_waits     <= 0;
     end else begin
       data_rvalid  <= resp_valid;
       data_err     <= resp_valid & mem_err;
-      data_sc_resp <= resp_valid & mem_sc_resp;
+      data_sc_fail <= resp_valid & mem_sc_fail;
 
       if (cmd_fifo_rd) begin
          resp_waits      <= gen_wait(RESP_WMAX);
