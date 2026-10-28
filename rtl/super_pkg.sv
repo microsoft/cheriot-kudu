@@ -48,6 +48,7 @@ package super_pkg;
     logic [31:0] insn;
     logic [31:0] pc;
     ir_errs_t    errs;             
+    logic        ferr2w;           // fetch error is in 2nd word of a "straddling" instruction
     logic        is_comp;          // instr is compressed 
     logic        is_branch;
     logic        is_jal;
@@ -57,7 +58,6 @@ package super_pkg;
     logic [31:0] ptarget;
     logic        alt_valid;
     logic [1:0]  alt_id;
-    logic [4:0]  alt_seq;
   } ir_reg_t;
 
   parameter ir_reg_t NULL_IR_REG = ir_reg_t'(0);
@@ -114,6 +114,7 @@ package super_pkg;
     logic [31:0]     pc;
     logic            any_err;
     ir_errs_t        errs;   
+    logic            ferr2w;  
     logic            is_comp;
     logic            is_branch;
     logic            is_jal;
@@ -137,7 +138,6 @@ package super_pkg;
     logic            is_brkpt;
     logic            alt_valid;
     logic [1:0]      alt_id;
-    logic [4:0]      alt_seq;
   } ir_dec_t;
 
   typedef struct packed {

@@ -87,6 +87,8 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
 
   assign ir_dec_o.any_err = illegal_insn | illegal_reg_cheri | (|ir_reg_i.errs) | 
                             cheri_perm_vio | cheri_bound_vio | cheri_asr_vio;
+
+  assign ir_dec_o.ferr2w  = ir_reg_i.ferr2w;
   assign ir_dec_o.is_comp = ir_reg_i.is_comp;
   assign ir_dec_o.c_insn  = ir_reg_i.c_insn;
 
@@ -116,7 +118,6 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
 
   assign ir_dec_o.alt_valid = ir_reg_i.alt_valid;
   assign ir_dec_o.alt_id    = ir_reg_i.alt_id;
-  assign ir_dec_o.alt_seq   = ir_reg_i.alt_seq;
 
   assign imm_j_type = { {12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1'b0 };
   assign imm_b_type = { {19{instr[31]}}, instr[31], instr[7], instr[30:25], instr[11:8], 1'b0 };

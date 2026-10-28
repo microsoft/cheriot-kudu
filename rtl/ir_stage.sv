@@ -14,8 +14,8 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
   parameter bit           RV32B          = 1'b1,
   parameter bit           RV32A          = 1'b1,
   parameter bit           PredictRA      = 1'b0,
-  parameter logic [20:0]  RALimitHi       = 21'h080040,  // in 4kB unit
-  parameter logic [20:0]  RALimitLo       = 21'h080000,
+  parameter logic [20:0]  RALimitHi      = 21'h080040,  // in 4kB unit
+  parameter logic [20:0]  RALimitLo      = 21'h080000,
   parameter bit           DbgTriggerEn   = 1'b0,
   parameter int unsigned  BrkptNum       = 1
 ) (
@@ -595,7 +595,7 @@ module ir_stage import super_pkg::*; import cheri_pkg::*; #(
     always_ff @(posedge clk_i or negedge rst_ni) begin
       if (!rst_ni) begin
         cur_ra_q   <= '0;
-        cur_ra32_q <= RALimitLo;
+        cur_ra32_q <= {RALimitLo[19:0], 12'h0};
       end else begin
         cur_ra_q   <= cur_ra_d;
         cur_ra32_q <= cur_ra32_d;

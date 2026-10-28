@@ -16,7 +16,7 @@
 
 module fetch_fifo64 import super_pkg::*; #(
   parameter int unsigned NUM_REQS       = 2,
-  parameter bit          UnalignedFetch = 1'b1,
+  parameter bit          UnalignedFetch = 1'b0,
   parameter bit          AltEnable      = 1'b0
 ) (
   input  logic                clk_i,
@@ -137,6 +137,7 @@ module fetch_fifo64 import super_pkg::*; #(
   logic [31:0]  out_rdata1;
   logic         rdata_align64;
   logic [1:0]   fetch_err;
+  logic [1:0]   fetch_err2w; 
 
   // ALT logic outputs
   logic         apply_alt, alloc_alt, flush_alt;
@@ -159,9 +160,12 @@ module fetch_fifo64 import super_pkg::*; #(
   assign out_instr0_o.is_branch = out_is_branch[0];
   assign out_instr0_o.is_jal    = out_is_jal[0];
   assign out_instr0_o.errs      = ir_errs_t'({5'h0, fetch_err[0]});
+  assign out_instr0_o.ferr2w    = fetch_err2w[0];
 
   assign out_instr0_o.ptaken    = 1'b0;
   assign out_instr0_o.ptarget   = 32'h0;
+  assign out_instr0_o.alt_valid = 1'b0;
+  assign out_instr0_o.alt_id    = '0;
 
   assign out_instr1_o.insn      = out_rdata1;
   assign out_instr1_o.pc        = out_addr1;
@@ -169,9 +173,12 @@ module fetch_fifo64 import super_pkg::*; #(
   assign out_instr1_o.is_branch = out_is_branch[1];
   assign out_instr1_o.is_jal    = out_is_jal[1];
   assign out_instr1_o.errs      = ir_errs_t'({4'h0, fetch_err[1]});
+  assign out_instr1_o.ferr2w    = fetch_err2w[1];
 
   assign out_instr1_o.ptaken    = 1'b0;
   assign out_instr1_o.ptarget   = 32'h0;
+  assign out_instr1_o.alt_valid = 1'b0;
+  assign out_instr1_o.alt_id    = '0;
 
 
   ////////////////////////////////////////
@@ -238,21 +245,39 @@ module fetch_fifo64 import super_pkg::*; #(
       else
         fetch_err = 2'b00;
 
+      fetch_err2w = 2'b00;
+
     end else if ((in_valid_i & valid_q[0]) | valid_q[1]) begin       // more than 1 entry available
       first_word_err  = err_q[0];
       second_word_err = valid_q[1] ? err_q[1] : in_err_i;
 
       out_valid_o = 2'b11;
 
-      if (first_word_err) 
-        fetch_err  = 2'b11;
-      else if (second_word_err && (instr_addr16 == 2'h3) && ~comp_flag[3])
-        fetch_err = 2'b01;   // 32-bit instruction stradles word boundary
-      else
-        fetch_err = 2'b00;
+
+      if (first_word_err) begin
+        fetch_err   = 2'b11;   
+        fetch_err2w = 2'b00;
+      end else if (second_word_err && (instr_addr16 == 2'h3) && ~comp_flag[3]) begin
+        //2nd word error and instr0 is 32-bit and stradles 1st/2nd word boundary
+        fetch_err   = 2'b11;   
+        fetch_err2w = 2'b01;
+      end else if (second_word_err && (instr_addr16 == 2'h3)) begin
+        fetch_err   = 2'b10;   
+        fetch_err2w = 2'b00;
+      end else if (second_word_err && (instr_addr16 == 2'h2) && (comp_flag[3:2] != 2'b11)) begin 
+        fetch_err   = 2'b10;
+        fetch_err2w = {comp_flag[2] & ~comp_flag[3], 1'b0};   // instr 1 stradding word boundary   
+      end else if (second_word_err && (instr_addr16 == 2'h1) && ~comp_flag[1] && ~comp_flag[3]) begin
+        fetch_err   = 2'b10;   
+        fetch_err2w = 2'b10;   // instr 1 stradding word boundary   
+      end else begin
+        fetch_err   = 2'b00;
+        fetch_err2w = 2'b00;  
+      end
     end else begin
       out_valid_o = 2'b00;
       fetch_err   = 2'b00;
+      fetch_err2w = 2'b00;  
     end
 
     if (instr_addr16 == 2'h0) begin

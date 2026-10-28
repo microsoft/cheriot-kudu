@@ -685,6 +685,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     apply_alt     = 1'b0;
     cancel_alt    = 2'b00;
     alt_ir_sel    = 1'b0;
+    flush_alt     = 1'b0;
+    apply_cause   = 2'b00;
 
     if (AltEnable) begin
       flush_alt = ir_flush_o;
@@ -969,7 +971,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         csr_exc_info_o.clrtag = 1'b1; 
       end else if (ir0_dec.errs.fetch_err) begin 
         csr_exc_info_o.mcause = EXC_CAUSE_INSTR_ACCESS_FAULT;
-        csr_exc_info_o.mtval  = ir0_dec.pc;
+        csr_exc_info_o.mtval  = ir0_dec.ferr2w ? ir0_dec.pc + 2 : ir0_dec.pc;
       end else if (ir0_dec.errs.illegal_insn | ir0_dec.errs.illegal_c_insn |
                    (~debug_mode_q & ir0_dec.sysctl.dret)) begin
         csr_exc_info_o.mcause = EXC_CAUSE_ILLEGAL_INSN;
