@@ -68,9 +68,12 @@ module lsu_if import super_pkg::*; import cheri_pkg::*; # (
       req_dly_tmp                 = req_dly_q;
       req_dly_tmp.lschk_err       = lschk_err;
       req_dly_tmp.wdata[MEM_TAG] &= ~lschk_err.slc;    // SLC tag clearing
-    end
+    end 
   end else begin
-    assign req_dly_tmp = req_dly_q;
+    always_comb begin
+      req_dly_tmp                 = req_dly_q;
+      req_dly_tmp.lschk_err       = lschk_err;
+    end 
   end
   
   always_comb begin

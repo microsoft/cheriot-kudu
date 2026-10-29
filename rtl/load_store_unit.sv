@@ -569,7 +569,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign csr_cheri = cheri_pmode & lsu_req_info_q.is_csr && (csr_insn[6:0] == OPCODE_CHERI);
 
   assign csr_op_en_o  = csr_go_q & lsu_req_info_q.is_csr & ~csr_cheri_asr_err;
-  assign csr_access_o = lsu_req_info_q.is_csr & ~csr_cheri_asr_err;  // this qualifies illegal_csr_insn
+  assign csr_access_o = lsu_req_info_q.is_csr;   // this qualifies illegal_csr_insn
   assign csr_cheri_o  = csr_cheri;
   assign csr_wdata_o  = csr_cheri ? lsu_req_info_q.cs1_fcap : 
                         (csr_insn[14] ? csr_insn[19:15] : lsu_req_info_q.cs1_fcap[31:0]);
@@ -622,22 +622,23 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     if (lschk_err_final.any_fault & ls_err_cause[5] ) begin
       lsu_err_mcause = (lsu_req_info_q.is_load & (lsu_req_info_q.amo_flag[3:2] == 2'b00)) ? 
                        EXC_CAUSE_LOAD_ADDR_MISALIGN : EXC_CAUSE_STORE_ADDR_MISALIGN;
-      lsu_err_mtval  = addr_last_q;
+      lsu_err_mtval  = (lsu_req_info_q.is_cap || (|lsu_req_info_q.amo_flag)) ? 
+                       lsu_req_info_q.addr : addr_last_q;
     end else if (lschk_err_final.any_fault) begin
       // CHERIoT requires rs1 as part of MTVAL info for cheri faults
       lsu_err_mcause = EXC_CAUSE_CHERI_FAULT;
       lsu_err_mtval  = {22'h0, lsu_req_info_q.rs1, ls_err_cause[4:0]};
-    end else if (csr_err & illegal_csr_insn_i) begin
-      lsu_err_mcause = EXC_CAUSE_ILLEGAL_INSN;
-      lsu_err_mtval  = 32'h0;
-    end else if (csr_err & csr_cheri_asr_err) begin
-      //  ASR error for SCR access: fill in scr address. ASR error for CSR: use zero
-      lsu_err_mcause = EXC_CAUSE_CHERI_FAULT;
-      lsu_err_mtval  = {21'h0, 1'b1, scr_addr & {5{csr_cheri}}, 5'h18};
     end else if (data_or_pmp_err) begin
       lsu_err_mcause = (lsu_req_info_q.is_load & (lsu_req_info_q.amo_flag[3:2] == 2'b00)) ? 
                        EXC_CAUSE_LOAD_ACCESS_FAULT : EXC_CAUSE_STORE_ACCESS_FAULT;
       lsu_err_mtval  = addr_last_q;
+    end else if (csr_err & illegal_csr_insn_i) begin
+      lsu_err_mcause = EXC_CAUSE_ILLEGAL_INSN;
+      lsu_err_mtval  = cheri_pmode ? 32'h0 : lsu_req_info_q.insn;
+    end else if (csr_err) begin
+      //  ASR error for SCR access: fill in scr address. ASR error for CSR: use zero
+      lsu_err_mcause = EXC_CAUSE_CHERI_FAULT;
+      lsu_err_mtval  = {21'h0, 1'b1, scr_addr & {5{csr_cheri}}, 5'h18};
     end
   end
 
