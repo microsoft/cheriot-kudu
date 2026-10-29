@@ -160,7 +160,8 @@ module cmplx_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
   always_comb begin
     cmplx_lsu_req_info_o = NULL_LSU_REQ_INFO;
     cmplx_lsu_req_info_o.is_load   = ~(cmplx_fsm_cs == AMO_WRITE);
-    cmplx_lsu_req_info_o.rf_we     = ~(cmplx_fsm_cs == AMO_WRITE);
+    // AMO can only update regiseter if both read and write are successful
+    cmplx_lsu_req_info_o.rf_we     = (cmplx_fsm_cs == AMO_WRITE);
     cmplx_lsu_req_info_o.pc        = CHERIoTEn ? pcc_rcap_q : ir_dec_q.pc;
     cmplx_lsu_req_info_o.data_type = 2'b00;
     cmplx_lsu_req_info_o.amo_flag  = ~(cmplx_fsm_cs == AMO_WRITE) ? 4'b0100 : 4'b1000;

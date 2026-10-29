@@ -140,37 +140,37 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   //  EX1 (address generation) stage
   // 
   
-  logic is_lr_a, is_lr_b, is_sc_a, is_sc_b;
-  logic is_lr, is_sc;
+  logic lr_insn_a, lr_insn_b, sc_insn_a, sc_insn_b;
+  logic lr_insn, sc_insn;
 
   // decode and address generation
-  assign is_lr_a    = RV32A && (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_AMO) && ~ira_dec_i.insn[27]; 
-  assign is_lr_b    = RV32A && (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_AMO) && ~irb_dec_i.insn[27]; 
-  assign is_sc_a    = RV32A && (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_AMO) && ira_dec_i.insn[27]; 
-  assign is_sc_b    = RV32A && (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_AMO) && irb_dec_i.insn[27]; 
+  assign lr_insn_a = RV32A && (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_AMO) && ~ira_dec_i.insn[27]; 
+  assign lr_insn_b = RV32A && (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_AMO) && ~irb_dec_i.insn[27]; 
+  assign sc_insn_a = RV32A && (opcode_e'(ira_dec_i.insn[6:0]) == OPCODE_AMO) && ira_dec_i.insn[27]; 
+  assign sc_insn_b = RV32A && (opcode_e'(irb_dec_i.insn[6:0]) == OPCODE_AMO) && irb_dec_i.insn[27]; 
  
   assign ira_imm12 = ira_dec_i.rf_we ? ira_dec_i.insn[31:20] : {ira_dec_i.insn[31:25], ira_dec_i.insn[11:7]};
   assign irb_imm12 = irb_dec_i.rf_we ? irb_dec_i.insn[31:20] : {irb_dec_i.insn[31:25], irb_dec_i.insn[11:7]};
 
-  assign ira_ls_addr = (is_lr_a | is_sc_a) ?  ira_full_data2_i.d0[31:0] : 
+  assign ira_ls_addr = (lr_insn_a | sc_insn_a) ?  ira_full_data2_i.d0[31:0] : 
                        ira_full_data2_i.d0[31:0] + {{20{ira_imm12[11]}}, ira_imm12};
-  assign irb_ls_addr = (is_lr_b | is_sc_b) ?  irb_full_data2_i.d0[31:0] : 
+  assign irb_ls_addr = (lr_insn_b | sc_insn_b) ?  irb_full_data2_i.d0[31:0] : 
                        irb_full_data2_i.d0[31:0] + {{20{irb_imm12[11]}}, irb_imm12};
 
   // select input
   assign instr_dec  = sel_ira_i ? ira_dec_i : irb_dec_i;
   assign full_data2 = sel_ira_i ? ira_full_data2_i : irb_full_data2_i;
-  assign is_lr      = sel_ira_i ? is_lr_a : is_lr_b;
-  assign is_sc      = sel_ira_i ? is_sc_a : is_sc_b;
+  assign lr_insn    = sel_ira_i ? lr_insn_a : lr_insn_b;
+  assign sc_insn    = sel_ira_i ? sc_insn_a : sc_insn_b;
 
-  assign cs1_fcap       = full_cap_t'(full_data2.d0);
-  assign cs2_fcap       = full_cap_t'(full_data2.d1);
+  assign cs1_fcap   = full_cap_t'(full_data2.d0);
+  assign cs2_fcap   = full_cap_t'(full_data2.d1);
 
   assign opcode   = opcode_e'(instr_dec.insn[6:0]);
 
   always_comb begin
     logic          lc_cglg, lc_csdlm, lc_ctag;
-    logic          is_cap, is_load;
+    logic          is_cap, load_insn;
 
     unique case (instr_dec.insn[13:12])
       2'b00:   data_type = 2'b10; // sb
@@ -184,17 +184,18 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
     lc_ctag   = ~cs1_fcap.perms[PERM_MC];
     
     is_cap    = instr_dec.cheri_op.clc | instr_dec.cheri_op.csc;
-    is_load   = (opcode == OPCODE_LOAD); 
+    load_insn = (opcode == OPCODE_LOAD); 
 
     lsu_req_dec = NULL_LSU_REQ_INFO;
 
     lsu_req_dec.pc   = CHERIoTEn ? pcc2regcap(pcc_cap_i, instr_dec.pc, 1'b0) : 
                       instr_dec.pc;
-    lsu_req_dec.mie  = csr_mstatus_mie_i;
 
     if (cmplx_lsu_req_valid_i) begin
-      lsu_req_dec = cmplx_lsu_req_info_i;
+      lsu_req_dec            = cmplx_lsu_req_info_i;
+      lsu_req_dec.mie        = csr_mstatus_mie_i;
     end else if (instr_dec.is_csr) begin
+      lsu_req_dec.mie        = csr_mstatus_mie_i;
       lsu_req_dec.is_csr     = 1'b1;
       lsu_req_dec.rf_we      = instr_dec.rf_we;
       lsu_req_dec.insn       = instr_dec.insn;
@@ -206,11 +207,12 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
       lsu_req_dec.early_load = 1'b1;  // we are doing CSR access on the response side already
       // wdata is derived from cs1_fcap for csr accesses
     end else begin
-      lsu_req_dec.is_load    = is_load || is_lr;
+      lsu_req_dec.mie        = csr_mstatus_mie_i;
+      lsu_req_dec.is_load    = load_insn || lr_insn;
       lsu_req_dec.is_cap     = is_cap;
-      // lsu_req_dec.rf_we      = is_load || is_lr || is_sc;
+      // lsu_req_dec.rf_we      = is_load || lr_insn || sc_insn;
       lsu_req_dec.rf_we      = instr_dec.rf_we;
-      lsu_req_dec.amo_flag   = {2'b00, is_sc, is_lr};
+      lsu_req_dec.amo_flag   = {2'b00, sc_insn, lr_insn};
       lsu_req_dec.data_type  = data_type;
       lsu_req_dec.wdata      = (cheri_pmode & is_cap) ? op2memcap(full_data2.d1[OpW-1:0]) : 
                                                         full_data2.d1[MemW-1:0];   
@@ -222,8 +224,8 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
       lsu_req_dec.rd         = instr_dec.rd;
 
       // don't do early load or caching for lr/sc
-      lsu_req_dec.early_load = EarlyLoad & is_load & ~is_lr && decode_early_load_addr(lsu_req_dec.addr);
-      lsu_req_dec.cache_ok   = decode_dcache_addr(lsu_req_dec.addr) && ~is_lr && ~is_sc;
+      lsu_req_dec.early_load = EarlyLoad & load_insn & ~lr_insn && decode_early_load_addr(lsu_req_dec.addr);
+      lsu_req_dec.cache_ok   = decode_dcache_addr(lsu_req_dec.addr) && ~lr_insn && ~sc_insn;
       lsu_req_dec.cs1_fcap   = cs1_fcap;
       lsu_req_dec.cs2_valid  = cs2_fcap.valid;
       lsu_req_dec.cs2_perms  = cs2_fcap.perms;
@@ -278,7 +280,7 @@ module ls_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; 
   // 
   assign data_pmp_err = 1'b0;
 
-  load_store_unit #(.CHERIoTEn(CHERIoTEn)) load_store_unit_i (
+  load_store_unit #(.CHERIoTEn(CHERIoTEn), .RV32A(RV32A)) load_store_unit_i (
     .clk_i                 (clk_i             ),
     .rst_ni                (rst_ni            ),
     .cheri_pmode_i         (cheri_pmode_i     ),

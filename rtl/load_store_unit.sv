@@ -16,7 +16,8 @@
  */
 
 module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg ::*; #(
-  parameter bit          CHERIoTEn = 1'b0      
+  parameter bit          CHERIoTEn = 1'b0,      
+  parameter bit          RV32A     = 1'b0     
 )(
   input  logic             clk_i,
   input  logic             rst_ni,
@@ -652,6 +653,20 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     assign lsu_rdata = rdata_sc_muxed;
   end
 
+  // save the rdata from AMO read phase, apply it later to update the dest register in the write phase 
+  logic [31:0] amo_rdata_q;
+  
+  if (RV32A) begin
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+      if (!rst_ni) 
+        amo_rdata_q <= 32'h0;
+      else  if (lsu_resp_valid & lsu_req_info_q.is_load &  lsu_req_info_q.amo_flag[2])
+        amo_rdata_q <= lsu_rdata;
+    end
+  end else begin
+    assign amo_rdata_q = 32'h0;  
+  end
+
   /////////////
   // Outputs //
   /////////////
@@ -673,7 +688,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign lsu_resp_info.waddr  = lsu_req_info_q.rd;
   assign lsu_resp_info.pc     = lsu_req_info_q.pc;
   assign lsu_resp_info.mie    = lsu_req_info_q.mie;
-  assign lsu_resp_info.wdata  = csr_go_q ? csr_rdata : lsu_rdata;
+  assign lsu_resp_info.wdata  = csr_go_q ? csr_rdata : 
+                                (RV32A & lsu_req_info_q.amo_flag[3]) ? amo_rdata_q : lsu_rdata;
   assign lsu_resp_info.err    = lsu_resp_err;
   assign lsu_resp_info.mcause = lsu_err_mcause;
   assign lsu_resp_info.mtval  = lsu_err_mtval;
