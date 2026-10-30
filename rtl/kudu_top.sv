@@ -362,6 +362,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .irqs_i                    (irqs                    ),
     .priv_mode_i               (priv_mode               ),
     .csr_mstatus_mie_i         (csr_mstatus_mie         ),
+    .csr_mstatus_tw_i          (csr_mstatus_tw          ),
     .csr_mtvec_i               (csr_mtvec               ),
     .csr_mepc_i                (csr_mepc                ),
     .csr_mtvec_init_o          (csr_mtvec_init          ),

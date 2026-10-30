@@ -68,6 +68,7 @@ module branch_unit import super_pkg::*; import cheri_pkg::*; #(
 
     imm_i_type = { {20{ir_dec.insn[31]}}, ir_dec.insn[31:20] };
     result = full_data2.d0[31:0] + imm_i_type;
+    result = {result[31:1], 1'b0};
    
     return result;
   endfunction 

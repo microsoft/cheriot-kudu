@@ -93,6 +93,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   input  logic             irq_pending_i,
   input  irqs_t            irqs_i,
   input  logic             csr_mstatus_mie_i,
+  input  logic             csr_mstatus_tw_i,
   input  logic [31:0]      csr_mtvec_i,
   input  logic [31:0]      csr_mepc_i,
   output logic             csr_mtvec_init_o,
@@ -726,7 +727,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ir_cmplx[0]   = ir0_dec.is_cmplx;
   assign ir_cmplx[1]   = ir1_dec.is_cmplx;
 
-  assign handle_irq     = irq_pending_i  & csr_mstatus_mie_i & ~debug_mode_q;
+  assign handle_irq     = irq_pending_i  & (csr_mstatus_mie_i | (priv_mode_i != PRIV_LVL_M)) & ~debug_mode_q;
   assign handle_debug   = ~debug_mode_q & (debug_req_i | (ir_valid_i[0] & (ir0_dec.is_brkpt | single_step_trap_q)));
   assign handle_cmplx   = RV32A & ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.is_cmplx;
   assign handle_sysctl  = ir_valid_i[0] & ~ir_any_err[0] & ir_sysctl[0];
@@ -775,6 +776,11 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic ebreak_enter_debug;
   assign ebreak_enter_debug = ~debug_mode_q &  ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.sysctl.ebrk & 
                               debug_ebreak;
+
+  logic ir0_mode_err;
+  assign ir0_mode_err = (ir0_dec.sysctl.dret & ~debug_mode_q) |
+                        (ir0_dec.sysctl.mret & (priv_mode_i != PRIV_LVL_M)) |
+                        (ir0_dec.sysctl.wfi & csr_mstatus_tw_i & (priv_mode_i != PRIV_LVL_M));
   
 
   always_comb begin
@@ -782,7 +788,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       special_case_comb = EXEC;     // exception (cmt_flush)
     else if (handle_debug | ebreak_enter_debug)
       special_case_comb = DEBUG;    // entering debug mode
-    else if (ir_valid_i[0] & (ir_any_err[0]  | (ir0_dec.sysctl.dret & ~debug_mode_q)) )  
+    else if (ir_valid_i[0] & (ir_any_err[0] | ir0_mode_err)) 
       special_case_comb = EXEC;     // exception (issue-time errors)
     else if (handle_irq)
       special_case_comb = IRQ;      // Interrupt handling
@@ -972,8 +978,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       end else if (ir0_dec.errs.fetch_err) begin 
         csr_exc_info_o.mcause = EXC_CAUSE_INSTR_ACCESS_FAULT;
         csr_exc_info_o.mtval  = ir0_dec.ferr2w ? ir0_dec.pc + 2 : ir0_dec.pc;
-      end else if (ir0_dec.errs.illegal_insn | ir0_dec.errs.illegal_c_insn |
-                   (~debug_mode_q & ir0_dec.sysctl.dret)) begin
+      end else if (ir0_dec.errs.illegal_insn | ir0_dec.errs.illegal_c_insn | ir0_mode_err) begin
         csr_exc_info_o.mcause = EXC_CAUSE_ILLEGAL_INSN;
         csr_exc_info_o.mtval  = cheri_pmode ? 32'h0 :
                                 (ir0_dec.is_comp ? {16'b0, ir0_dec.c_insn} : ir0_dec.insn);
