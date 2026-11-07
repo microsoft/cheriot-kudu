@@ -108,7 +108,6 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   logic            ls_go;
   logic            csr_go, csr_go_q;
   logic            csr_err;
-  logic            addr_incr_req;
   logic            cheri_pmode;
 
   lsu_req_info_t   lsu_req_info_q;
@@ -123,7 +122,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
 
   assign cheri_pmode = CHERIoTEn & cheri_pmode_i;
 
-  assign data_addr   = handle_misaligned_q ? (lsu_req_info_q.addr + {addr_incr_req, 2'b00}) : lsu_req_info_i.addr; 
+  assign data_addr   = handle_misaligned_q ? (lsu_req_info_q.addr + {3'b100}) : lsu_req_info_i.addr; 
   assign data_offset = (cheri_pmode & lsu_req_info_i.is_cap) ? 2'b00 : data_addr[1:0];
 
 
@@ -216,7 +215,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   // RData alignment //
   /////////////////////
 
-  // register for unaligned rdata
+  // register for 1st half of unaligned rdata
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       rdata_q <= '0;
@@ -225,7 +224,7 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     end
   end
 
-  // registers for transaction control (response side)
+  // registers for misaligned address offset
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       rdata_offset_q  <= 2'h0;
@@ -234,25 +233,11 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     end
   end
 
-  // registers for transaction control
-  // Store last address for mtval + AGU for misaligned transactions.  Do not update in case of
-  // errors, mtval needs the (first) failing address.  Where an aligned access or the first half of
-  // a misaligned access sees an error provide the calculated access address. For the second half of
-  // a misaligned access provide the word aligned address of the second half.
-  assign addr_last_d = addr_incr_req ? data_addr_w_aligned : data_addr;
-
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      addr_last_q <= '0;
-    end else if (addr_update) begin
-      addr_last_q <= addr_last_d;
-    end
-  end
 
   // take care of misaligned words
   always_comb begin
     unique case (rdata_offset_q)
-      2'b00:   rdata_w_ext =  data_rdata_i[31:0];
+      2'b00:   rdata_w_ext = data_rdata_i[31:0];
       2'b01:   rdata_w_ext = {1'b0, data_rdata_i[ 7:0], rdata_q[31:8]};
       2'b10:   rdata_w_ext = {1'b0, data_rdata_i[15:0], rdata_q[31:16]};
       2'b11:   rdata_w_ext = {1'b0, data_rdata_i[23:0], rdata_q[31:24]};
@@ -366,7 +351,6 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
     ls_fsm_ns       = ls_fsm_cs;
 
     data_req_o          = 1'b0;
-    addr_incr_req       = 1'b0;
     handle_misaligned_d = handle_misaligned_q;
     pmp_err_d           = pmp_err_q;
     bus_err_d           = bus_err_q;
@@ -426,38 +410,27 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
       end
 
       WAIT_RVALID_MIS: begin
-        // push out second request
-        data_req_o = 1'b1;
-        // tell ID/EX stage to update the address
-        addr_incr_req = 1'b1;
-
         // first part rvalid is received, or gets a PMP error
         if (data_rvalid_i || pmp_err_q) begin
+          // push out second request
+          data_req_o = 1'b1;
           // Update the PMP error for the second part
           pmp_err_d = data_pmp_err_i;
           // Record the error status of the first part
           bus_err_d = data_err_i | pmp_err_q;
           // Capture the first rdata for loads
           rdata_update = lsu_req_info_q.is_load;
-          // If already granted, wait for second rvalid
-          ls_fsm_ns = data_gnt_i ? IDLE : WAIT_GNT;
+
           // Update the address for the second part, if no error
           addr_update = data_gnt_i & ~(data_err_i | pmp_err_q);
-          // clear handle_misaligned if second request is granted
           handle_misaligned_d = ~data_gnt_i;
-        end else begin
-          // first part rvalid is NOT received
-          if (data_gnt_i) begin
-            // second grant is received
-            ls_fsm_ns = WAIT_RVALID_MIS_GNTS_DONE;
-            handle_misaligned_d = 1'b0;
-          end
+
+          // If already granted, wait for second rvalid
+          ls_fsm_ns = data_gnt_i ? IDLE : WAIT_GNT;
         end
       end
 
       WAIT_GNT: begin
-        // tell ID/EX stage to update the address
-        addr_incr_req = handle_misaligned_q;
         data_req_o      = 1'b1;
         if (data_gnt_i || pmp_err_q) begin
           ctrl_update         = 1'b1;
@@ -465,25 +438,6 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
           addr_update         = ~bus_err_q;
           ls_fsm_ns           = IDLE;
           handle_misaligned_d = 1'b0;
-        end
-      end
-
-      WAIT_RVALID_MIS_GNTS_DONE: begin
-        // tell ID/EX stage to update the address (to make sure the
-        // second address can be captured correctly for mtval and PMP checking)
-        addr_incr_req = 1'b1;
-        // Wait for the first rvalid, second request is already granted
-        if (data_rvalid_i) begin
-          // Update the pmp error for the second part
-          pmp_err_d = data_pmp_err_i ;
-          // The first part cannot see a PMP error in this state
-          bus_err_d = data_err_i;
-          // Now we can update the address for the second part if no error
-          addr_update = ~data_err_i;
-          // Capture the first rdata for loads
-          rdata_update = lsu_req_info_q.is_load;
-          // Wait for second rvalid
-          ls_fsm_ns = IDLE;
         end
       end
 
@@ -531,6 +485,21 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
 
       csr_go_q <= csr_go;
 
+    end
+  end
+
+  // Store last address for mtval or misaligned transactions. 
+  // Do not update in case of  errors, mtval needs the (first) failing address.  
+  // Where an aligned access or the first half of a misaligned access sees 
+  // an error provide the calculated access address. For the second half of
+  // a misaligned access provide the word aligned address of the second half.
+  assign addr_last_d = handle_misaligned_q ? data_addr_w_aligned : data_addr;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      addr_last_q <= '0;
+    end else if (addr_update) begin
+      addr_last_q <= addr_last_d;
     end
   end
 
@@ -679,8 +648,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
   assign lsu_resp_valid     = all_resp & outstanding_resp_q && (ls_fsm_cs == IDLE) ;
   assign lsu_resp_valid_o   = lsu_resp_valid;
   
-  assign lsu_resp_err_o     =  lsu_resp_err & lsu_resp_valid;
-  assign lsu_resp_info_o    =  lsu_resp_info;
+  assign lsu_resp_err_o     = lsu_resp_err & lsu_resp_valid;
+  assign lsu_resp_info_o    = lsu_resp_info;
 
   // output to register file
   assign lsu_resp_info.we     = lsu_req_info_q.rf_we;

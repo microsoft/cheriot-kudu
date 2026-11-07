@@ -392,8 +392,7 @@ package super_pkg;
   typedef enum logic [2:0] {NULL, EXEC, SYSCTL, CMPLX, IRQ, DEBUG} special_case_e;
 
   typedef enum logic [2:0]  {
-    IDLE, WAIT_GNT_MIS, WAIT_RVALID_MIS, WAIT_GNT,
-    WAIT_RVALID_MIS_GNTS_DONE
+    IDLE, WAIT_GNT_MIS, WAIT_RVALID_MIS, WAIT_GNT
   } ls_fsm_e;
 
   //typedef enum logic [2:0] {CRX_IDLE, CRX_WAIT_RESP} cap_rx_fsm_t;

@@ -143,12 +143,12 @@ module fetch_fifo64 import super_pkg::*; #(
   logic         apply_alt, alloc_alt, flush_alt;
   logic [1:0]   cancel_alt;
 
-  logic [DEPTH-1:0][63:0] alt_rd_rdata;
+  logic [DEPTH-1:0][64:0] alt_rd_rdata;
   logic [DEPTH-1:0]       alt_rd_valid, alt_rd_err;
   logic [31:0]            alt_rd_nxt_addr;
 
   logic [DEPTH-1:0] valid_alt_popped;
-  logic [DEPTH-1:0] [63:0]  rdata_alt_d;
+  logic [DEPTH-1:0] [64:0]  rdata_alt_d;
   logic [DEPTH-1:0]         err_alt_d;
 
   /////////////////
@@ -513,7 +513,7 @@ module fetch_fifo64 import super_pkg::*; #(
 
     typedef struct packed {
       logic [31:0]      nxt_addr;            
-      logic [2:0][63:0] rdata;
+      logic [2:0][64:0] rdata;
       logic [2:0]       err;
       logic [2:0]       valid;
      } alt_entry_t;

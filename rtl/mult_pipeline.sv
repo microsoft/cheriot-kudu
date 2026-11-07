@@ -274,6 +274,10 @@ module mult_pipeline import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
         newlen      = cs1_fcap.addr;
         req_exact_d = 1'b0;
         ex1_tfcap_d = NULL_FULL_CAP;
+      end else begin
+        newlen      = 32'h0;
+        req_exact_d = 1'b0;
+        ex1_tfcap_d = NULL_FULL_CAP;
       end
 
       // csetbounds operation (1st stage)
