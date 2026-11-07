@@ -304,7 +304,7 @@ package tracer_pkg;
 
   // MISC-MEM
   parameter logic [31:0] INSN_FENCE   = { 17'h?,             3'b000, 5'h?, {OPCODE_MISC_MEM} };
-  parameter logic [31:0] INSN_FENCEI  = { 17'h0,             3'b001, 5'h0, {OPCODE_MISC_MEM} };
+  parameter logic [31:0] INSN_FENCEI  = { 17'h?,             3'b001, 5'h?, {OPCODE_MISC_MEM} };
 
   // Compressed Instructions
   // C0
@@ -1137,7 +1137,7 @@ package tracer_pkg;
   function automatic string decode_compressed_load_insn(input string mnemonic, input rvfi_t rvfi_data, input logic cheri_pmode);
     logic [9:0] data_accessed;
     string decode_str;
-    logic [7:0] imm;
+    logic [8:0] imm;   // cheriot uses rv64 c.ldsp  encoding for c.clcsp, which uses 9-bit imm
 
     if ((rvfi_data.insn[15:13] == 3'b011) && (rvfi_data.insn[1:0] == OPCODE_C0))  begin
       // CHERI: c.clc, use RV64 c.ld encoding
@@ -1172,7 +1172,7 @@ package tracer_pkg;
   function automatic string decode_compressed_store_insn(input string mnemonic, input rvfi_t rvfi_data, input logic cheri_pmode);
     logic [9:0] data_accessed;
     string decode_str;
-    logic [7:0] imm;
+    logic [8:0] imm;
 
 
     if ((rvfi_data.insn[15:13] == 3'b111) && (rvfi_data.insn[1:0] == OPCODE_C0)) begin
@@ -1232,6 +1232,7 @@ package tracer_pkg;
       is_cap = 1'b1;
     end else begin
       decode_str = "INVALID";
+      decode_str = build_disp_str(decode_str, rvfi_data, 9'h0);
       return decode_str;
     end
 

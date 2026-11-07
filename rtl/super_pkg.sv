@@ -132,7 +132,7 @@ package super_pkg;
     logic [31:0]     btarget;
     logic [31:0]     pc_nxt;
     sysctl_t         sysctl;
-    logic            is_cheri;
+    logic            rs_cheri;
     cheri_op_t       cheri_op;
     logic            is_cmplx;
     logic            is_brkpt;

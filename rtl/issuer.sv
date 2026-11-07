@@ -472,9 +472,9 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
     assign ir0_cheri_trsv_st  = {16'h0, reg_cheri_trsv_q, 1'b0} & (~trvk_fwd_mask);
     assign ir1_cheri_trsv_st  = ir0_cheri_trsv_st | ir0_reg_wr_req; 
 
-    assign ir_cheri_hazard[0] = cheri_pmode & ir0_dec.is_cheri & 
+    assign ir_cheri_hazard[0] = cheri_pmode & ir0_dec.rs_cheri & 
                                (|((ir0_reg_rd_req | ir0_reg_wr_req) & ir0_cheri_trsv_st));
-    assign ir_cheri_hazard[1] = cheri_pmode & ir1_dec.is_cheri & 
+    assign ir_cheri_hazard[1] = cheri_pmode & ir1_dec.rs_cheri & 
                                (|((ir1_reg_rd_req | ir1_reg_wr_req) & ir1_cheri_trsv_st));
 
     for (genvar i = 1; i < 16; i++) begin : gen_trsv_regs
@@ -727,12 +727,22 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ir_cmplx[0]   = ir0_dec.is_cmplx;
   assign ir_cmplx[1]   = ir1_dec.is_cmplx;
 
+  // ebreak_enter_debug and mode_err are only needed for ir0 since those are all sysctl-related, and covered 
+  // in normal_ex_enable[1] already.
+  logic       ebreak_enter_debug, ir0_mode_err;
+
+  assign ebreak_enter_debug = ~debug_mode_q &  ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.sysctl.ebrk & debug_ebreak;
+
+  assign ir0_mode_err = (ir0_dec.sysctl.dret & ~debug_mode_q) |
+                        (ir0_dec.sysctl.mret & (priv_mode_i != PRIV_LVL_M)) |
+                        (ir0_dec.sysctl.wfi & csr_mstatus_tw_i & (priv_mode_i != PRIV_LVL_M));
+
   assign handle_irq     = irq_pending_i  & (csr_mstatus_mie_i | (priv_mode_i != PRIV_LVL_M)) & ~debug_mode_q;
-  assign handle_debug   = ~debug_mode_q & (debug_req_i | (ir_valid_i[0] & (ir0_dec.is_brkpt | single_step_trap_q)));
+  assign handle_debug   = ~debug_mode_q & (debug_req_i | ebreak_enter_debug | (ir_valid_i[0] & ir0_dec.is_brkpt));
   assign handle_cmplx   = RV32A & ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.is_cmplx;
   assign handle_sysctl  = ir_valid_i[0] & ~ir_any_err[0] & ir_sysctl[0];
-  assign handle_err     = ir_valid_i[0] & ir_any_err[0]; 
-  assign handle_special = handle_err | handle_sysctl | handle_cmplx | handle_irq | handle_debug;
+  assign handle_err     = ir_valid_i[0] & (ir_any_err[0] | ir0_mode_err); 
+  assign handle_special = handle_err | handle_sysctl | handle_cmplx | handle_irq | handle_debug | debug_single_step_i;
 
   // "normal" case issue enable
   // instruction can't be issued for IRQ or exception case
@@ -773,22 +783,13 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   assign ir0_sysctl_setpc = (ir0_dec.sysctl.ebrk | ir0_dec.sysctl.ecall | ir0_dec.sysctl.mret | 
                              ir0_dec.sysctl.dret | ir0_dec.sysctl.fencei);
 
-  logic ebreak_enter_debug;
-  assign ebreak_enter_debug = ~debug_mode_q &  ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.sysctl.ebrk & 
-                              debug_ebreak;
-
-  logic ir0_mode_err;
-  assign ir0_mode_err = (ir0_dec.sysctl.dret & ~debug_mode_q) |
-                        (ir0_dec.sysctl.mret & (priv_mode_i != PRIV_LVL_M)) |
-                        (ir0_dec.sysctl.wfi & csr_mstatus_tw_i & (priv_mode_i != PRIV_LVL_M));
-  
 
   always_comb begin
     if (cmt_err_i) 
       special_case_comb = EXEC;     // exception (cmt_flush)
     else if (handle_debug | ebreak_enter_debug)
       special_case_comb = DEBUG;    // entering debug mode
-    else if (ir_valid_i[0] & (ir_any_err[0] | ir0_mode_err)) 
+    else if (handle_err) 
       special_case_comb = EXEC;     // exception (issue-time errors)
     else if (handle_irq)
       special_case_comb = IRQ;      // Interrupt handling
