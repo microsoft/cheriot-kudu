@@ -1045,8 +1045,8 @@ package cheri_pkg;
     end else if (cheri_pmode & ~debug_mode) begin  // RV32 accesses, pmode = 1
       result.tag    = ~cs1_fcap.valid;
       result.seal   = (cs1_fcap.otype != OTYPE_UNSEALED);
-      result.ld     = is_load & ~cs1_fcap.perms[PERM_LD];
-      result.sd     = ~is_load && ~cs1_fcap.perms[PERM_SD];
+      result.ld     = (is_load | amo_flag[2]) & ~cs1_fcap.perms[PERM_LD];
+      result.sd     = (~is_load | amo_flag[2]) && ~cs1_fcap.perms[PERM_SD];
       result.align  = (mem_addr[1:0] != 2'b00) && (|amo_flag);
     end else begin  // AMO/LR/SC alignment checks are performed in all cases
       result.align  = (mem_addr[1:0] != 2'b00) && (|amo_flag);
