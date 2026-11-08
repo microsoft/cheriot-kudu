@@ -225,12 +225,12 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
       if (amo_state == 0) begin     // AMO is rv32 only, no cap load/store
         result.rvfi.mem_addr   = mem_addr;
         result.rvfi.trap       = instr_in.rvfi.trap | `TOP_PATH.lspl_output.err;
-        result.rvfi.rd_addr    = rf_we ? `TOP_PATH.lspl_output.waddr : 0;
         result.rvfi.mem_rmask  = 4'b1111;
         result.rvfi.mem_rdata  = reg_wdata;
-        result.rvfi.rd_wdata   = reg_wdata;
       end else if (amo_state == 1) begin
         result.rvfi.trap       = instr_in.rvfi.trap | `TOP_PATH.lspl_output.err;
+        result.rvfi.rd_addr    = rf_we ? `TOP_PATH.lspl_output.waddr : 0;
+        result.rvfi.rd_wdata   = reg_wdata;
         result.rvfi.mem_wdata  = mem_wdata;    // accumulate from amo_state_0
         result.rvfi.mem_wmask  = 4'b1111;
       end  
@@ -296,7 +296,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     $fdisplay(rvfi_file_handle,"pc_wdata  : 0x%08h",               rvfi.pc_wdata);
     $fdisplay(rvfi_file_handle,"insn      : 0x%08h",               rvfi.insn);
     $fdisplay(rvfi_file_handle,"rs1       : x%02d  rdata=0x%017h", rvfi.rs1_addr, rvfi.rs1_rdata);
-    $fdisplay(rvfi_file_handle,"rs1       : x%02d  rdata=0x%017h", rvfi.rs2_addr, rvfi.rs2_rdata);
+    $fdisplay(rvfi_file_handle,"rs2       : x%02d  rdata=0x%017h", rvfi.rs2_addr, rvfi.rs2_rdata);
     $fdisplay(rvfi_file_handle,"rd        : x%02d  wdata=0x%017h", rvfi.rd_addr,  rvfi.rd_wdata);
     $fdisplay(rvfi_file_handle,"mem_addr  : 0x%08h",               rvfi.mem_addr);
     $fdisplay(rvfi_file_handle,"mem_rmask : 0b%08b (%0d byte(s))", mem_rmask, rbyte_count);

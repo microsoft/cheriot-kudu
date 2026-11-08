@@ -1843,6 +1843,7 @@ package tracer_pkg;
         INSN_AMOADD:     decode_str = decode_amo_insn("amoadd.w", rvfi_data);
         INSN_AMOXOR:     decode_str = decode_amo_insn("amoxor.w", rvfi_data);
         INSN_AMOOR:      decode_str = decode_amo_insn("amoor.w", rvfi_data);
+        INSN_AMOAND:     decode_str = decode_amo_insn("amoand.w", rvfi_data);
         INSN_AMOMIN:     decode_str = decode_amo_insn("amomin.w", rvfi_data);
         INSN_AMOMAX:     decode_str = decode_amo_insn("amomax.w", rvfi_data);
         INSN_AMOMINU:    decode_str = decode_amo_insn("amominu.w", rvfi_data);

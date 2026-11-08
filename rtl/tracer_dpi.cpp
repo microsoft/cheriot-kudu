@@ -1178,6 +1178,7 @@ static std::string decode_rvfi_instr_cpp(const RvfiData& d) {
     if (match(d.insn, INSN_AMOADD)) return decode_amo_insn("amoadd.w", d);
     if (match(d.insn, INSN_AMOXOR)) return decode_amo_insn("amoxor.w", d);
     if (match(d.insn, INSN_AMOOR)) return decode_amo_insn("amoor.w", d);
+    if (match(d.insn, INSN_AMOAND)) return decode_amo_insn("amoand.w", d);
     if (match(d.insn, INSN_AMOMIN)) return decode_amo_insn("amomin.w", d);
     if (match(d.insn, INSN_AMOMAX)) return decode_amo_insn("amomax.w", d);
     if (match(d.insn, INSN_AMOMINU)) return decode_amo_insn("amominu.w", d);
