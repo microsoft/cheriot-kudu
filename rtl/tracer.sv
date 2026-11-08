@@ -226,11 +226,11 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         result.rvfi.mem_addr   = mem_addr;
         result.rvfi.trap       = instr_in.rvfi.trap | `TOP_PATH.lspl_output.err;
         result.rvfi.mem_rmask  = 4'b1111;
-        result.rvfi.mem_rdata  = reg_wdata;
       end else if (amo_state == 1) begin
         result.rvfi.trap       = instr_in.rvfi.trap | `TOP_PATH.lspl_output.err;
         result.rvfi.rd_addr    = rf_we ? `TOP_PATH.lspl_output.waddr : 0;
         result.rvfi.rd_wdata   = reg_wdata;
+        result.rvfi.mem_rdata  = reg_wdata;
         result.rvfi.mem_wdata  = mem_wdata;    // accumulate from amo_state_0
         result.rvfi.mem_wmask  = 4'b1111;
       end  
@@ -470,7 +470,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
         for (int i = final_rd_ptr; i != final_wr_ptr; i = (i+1) %64) begin
           if (!final_stop_cond) begin
             instr_tmp2  = final_fifo[i];  
-            is_good_clc = instr_tmp2.ir_dec.cheri_op.clc & ~instr_tmp2.rvfi.trap;
+            is_good_clc = instr_tmp2.ir_dec.cheri_op.clc & ~instr_tmp2.rvfi.trap & ~instr_tmp2.rvfi.intr;
 
             if (is_good_clc && (~trvk_en || trvk_consumed)) begin
               final_stop_cond = 1'b1;
@@ -518,6 +518,15 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
       rvfi_pkt_cnt <= nxt_rvfi_pkt_cnt;
       final_wr_ptr <= final_wr_ptr_nxt;
       final_rd_ptr <= final_rd_ptr_nxt;
+
+      // FIFO overflow assertions (should never happen)
+      if (6'(wr_ptr - rd_ptr) > 6'd48)
+        $error("[%0t] tracer: instr_trace_fifo occupancy %0d > 48 (head pc=%08h)",
+               $time, 6'(wr_ptr - rd_ptr), instr_trace_fifo[rd_ptr].rvfi.pc_rdata);
+
+      if (6'(final_wr_ptr - final_rd_ptr) > 6'd48)
+        $error("[%0t] tracer: final_fifo occupancy %0d > 48 (head pc=%08h)",
+               $time, 6'(final_wr_ptr - final_rd_ptr), final_fifo[final_rd_ptr].rvfi.pc_rdata);
     end
   end
 

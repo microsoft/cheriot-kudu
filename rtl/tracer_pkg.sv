@@ -1505,7 +1505,7 @@ package tracer_pkg;
       if (rvfi_data.insn[15:13] == INSN_CMV[15:13] && rvfi_data.insn[1:0] == OPCODE_C2) begin
         if (rvfi_data.insn[12] == INSN_CADD[12]) begin
           if (rvfi_data.insn[11:2] == INSN_CEBREAK[11:2]) begin
-            decode_str = "c.ebreak";
+            decode_str = decode_mnemonic("c.ebreak", rvfi_data);
           end else if (rvfi_data.insn[6:2] == INSN_CJALR[6:2]) begin
             decode_str = decode_cr_insn("c.jalr", rvfi_data, cheri_pmode);
           end else begin
