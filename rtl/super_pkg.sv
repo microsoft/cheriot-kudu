@@ -389,7 +389,7 @@ package super_pkg;
     CSM_SLEEP          = 4'hb
   } ctrl_fsm_e;     
 
-  typedef enum logic [2:0] {NULL, EXEC, SYSCTL, CMPLX, IRQ, DEBUG} special_case_e;
+  typedef enum logic [2:0] {NULL, EXEC, SYSCTL, CMPLX, IRQ, DEBUG, STEP} special_case_e;
 
   typedef enum logic [2:0]  {
     IDLE, WAIT_GNT_MIS, WAIT_RVALID_MIS, WAIT_GNT

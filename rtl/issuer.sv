@@ -106,7 +106,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   // Debug signals
   input  logic             debug_req_i,
   input  logic [31:0]      csr_depc_i,
-  input  logic             debug_single_step_i,
+  input  logic             debug_step_i,
   input  logic             debug_ebreakm_i,
   input  logic             debug_ebreaku_i,
   output logic             debug_mode_o,
@@ -265,7 +265,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   logic [1:0]  mispredict;
   logic        cheri_pmode;
 
-  logic        debug_mode_q, single_step_trap_q;
+  logic        debug_mode_q, step_req_q;
   logic        debug_ebreak;
 
   //
@@ -597,7 +597,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
       ctrl_fsm_cs[CSM_SLEEP]: begin
         // don't look at MIE in sleep state
-        if (irq_pending_i | debug_req_i | debug_mode_q | debug_single_step_i)  
+        if (irq_pending_i | debug_req_i | debug_mode_q | debug_step_i)  
           ctrl_fsm_ns = 1 << CSM_DECODE;   // QQQ should we clear IF after exiting sleep? don't really see why..
       end
       
@@ -628,6 +628,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
                             (mispredict[0] && ir0_issued) || (mispredict[1] && ir1_issued);
 
   assign ir_flush_o = pc_set_o;   // always flush IR/fetch stage for explicit pc_set
+  assign ir_hold_o  = 1'b0;       // no longer used
 
   always_comb begin
 
@@ -636,7 +637,6 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         pc_set_o    = 1'b1;
         // pc_target_o = { boot_addr_i[31:8], 8'h80 };
         pc_target_o = special_pc_q;
-        ir_hold_o   = 1'b0;
       end 
       ctrl_fsm_cs[CSM_DECODE] : begin
         pc_set_o = (mispredict[0] && ir0_issued) || (mispredict[1] && ir1_issued);
@@ -645,28 +645,22 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
           pc_target_o = ir0_target;
         else
           pc_target_o = ir1_target;
-
-        ir_hold_o  = 1'b0;
       end
       ctrl_fsm_cs[CSM_CMT_FLUSH] : begin
         pc_set_o    = 1'b1;
         pc_target_o = special_pc_q;
-        ir_hold_o   = 1'b0;
       end
       ctrl_fsm_cs[CSM_WAIT_CMT0]: begin
         pc_set_o    = 1'b0;
         pc_target_o = special_pc_q;
-        ir_hold_o   = 1'b1;                 // hold stage_fifo while flushing the earlier stages
       end
       ctrl_fsm_cs[CSM_ISSUE_SPECIAL] :  begin
         pc_set_o    = special_setpc_q;      
         pc_target_o = special_pc_q;
-        ir_hold_o   = 1'b1;                 // can't update IR yet since PCC is not yet updated
       end
       default : begin
         pc_set_o    = 1'b0;
         pc_target_o = { boot_addr_i[31:8], 8'h80 };
-        ir_hold_o   = 1'b0;
       end
     endcase
 
@@ -729,7 +723,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   // ebreak_enter_debug and mode_err are only needed for ir0 since those are all sysctl-related, and covered 
   // in normal_ex_enable[1] already.
-  logic       ebreak_enter_debug, ir0_mode_err;
+  logic  ebreak_enter_debug, ir0_mode_err;
+  logic  handle_step;
 
   assign ebreak_enter_debug = ~debug_mode_q &  ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.sysctl.ebrk & debug_ebreak;
 
@@ -737,12 +732,17 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
                         (ir0_dec.sysctl.mret & (priv_mode_i != PRIV_LVL_M)) |
                         (ir0_dec.sysctl.wfi & csr_mstatus_tw_i & (priv_mode_i != PRIV_LVL_M));
 
-  assign handle_irq     = irq_pending_i  & (csr_mstatus_mie_i | (priv_mode_i != PRIV_LVL_M)) & ~debug_mode_q;
-  assign handle_debug   = ~debug_mode_q & (debug_req_i | ebreak_enter_debug | (ir_valid_i[0] & ir0_dec.is_brkpt));
+  assign handle_step  = ir_valid_i[0] & ~debug_mode_q & debug_step_i;
+
+  assign handle_irq     = irq_pending_i & (csr_mstatus_mie_i | (priv_mode_i != PRIV_LVL_M)) &
+                          ~debug_mode_q & ~debug_step_i;
+  assign handle_debug   = ~debug_mode_q & (debug_req_i | ebreak_enter_debug | step_req_q | 
+                                           (ir_valid_i[0] & ir0_dec.is_brkpt));
   assign handle_cmplx   = RV32A & ir_valid_i[0] & ~ir_any_err[0] & ir0_dec.is_cmplx;
   assign handle_sysctl  = ir_valid_i[0] & ~ir_any_err[0] & ir_sysctl[0];
   assign handle_err     = ir_valid_i[0] & (ir_any_err[0] | ir0_mode_err); 
-  assign handle_special = handle_err | handle_sysctl | handle_cmplx | handle_irq | handle_debug | debug_single_step_i;
+  assign handle_special = handle_err | handle_sysctl | handle_cmplx | handle_irq | handle_debug |
+                          handle_step;
 
   // "normal" case issue enable
   // instruction can't be issued for IRQ or exception case
@@ -753,12 +753,13 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   
   assign normal_ex_enable[1] = sbdfifo_wr_rdy_i[1] & ctrl_fsm_cs[CSM_DECODE] & 
                                ir_valid_i[1] & ~ir_hazard[1] & 
-                               ~(handle_special | cmt_err_i | debug_single_step_i) & 
+                               ~(handle_special | cmt_err_i | debug_step_i) & 
                                ~(ir_any_err[1] | ir_sysctl[1] | ir_cmplx[1] | ir1_dec.is_brkpt) & 
                                ~(cheri_pmode & ir0_dec.is_jalr);    // serialize cjalr
 
   assign ir0_special_issued = ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & 
-                              ((special_case_q == SYSCTL) || (special_case_q == CMPLX));
+                              ((special_case_q == SYSCTL) || (special_case_q == CMPLX) || 
+                               (special_case_q == STEP)) ;
 
   assign debug_mode_o = debug_mode_q;
 
@@ -797,6 +798,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       special_case_comb = SYSCTL;   // sysctl instructions (including ebrk/ecall)
     else if (handle_cmplx)
       special_case_comb = CMPLX;    // complex (AMO, etc) instructions
+    else if (handle_step)
+      special_case_comb = STEP;
     else 
       special_case_comb = NULL;
   end
@@ -840,7 +843,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
             sysctl_q        <= ir0_dec.sysctl;
             unique case (1'b1)
               ir0_dec.sysctl.ebrk:   special_pc_q <= debug_mode_q ? DmHaltAddr : {csr_mtvec_i[31:2], 2'b00};
-              ir0_dec.sysctl.ecall:  special_pc_q <= {csr_mtvec_i[31:2], 2'b00};
+              ir0_dec.sysctl.ecall:  special_pc_q <= debug_mode_q ? DmExcAddr : {csr_mtvec_i[31:2], 2'b00};
               ir0_dec.sysctl.mret:   special_pc_q <= csr_mepc_i;
               ir0_dec.sysctl.dret:   special_pc_q <= csr_depc_i;
               ir0_dec.sysctl.fencei: special_pc_q <= ir0_dec.pc_nxt;
@@ -852,6 +855,12 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
             special_setpc_q <= 1'b0;             // AMO only for now
             sysctl_q        <= ir0_dec.sysctl;   // don't care
             special_pc_q    <= {csr_mtvec_i[31:2], 2'b00};
+          end
+          STEP: begin
+            special_case_q  <= STEP; 
+            special_setpc_q <= mispredict[0];
+            sysctl_q        <= ir0_dec.sysctl;
+            special_pc_q    <= ir0_target;
           end
           NULL: begin    
             special_case_q  <= NULL;
@@ -894,8 +903,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (~rst_ni) begin
-      debug_mode_q       <= 1'b0;
-      single_step_trap_q <= 1'b0;
+      debug_mode_q <= 1'b0;
+      step_req_q   <= 1'b0;
     end else begin
       if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == DEBUG))
         debug_mode_q <= 1'b1;
@@ -903,15 +912,16 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
         debug_mode_q <= 1'b0;
 
       // single-step debugging behavior: 
-      // - single-issue 
-      // - execute 1 instruction, trap before next instruction is executed
+      // - always special case (to make sure exceptions are fully resolved before enter debug mode)
+      // - execute 1 instruction, enter before next instruction is executed
 
-		  // set when single_steip_i and executed (implies single_step_go_debug_q == 0) 
-		  // clear when take exception (see below)
-      if (debug_single_step_i & ~debug_mode_q & ir0_issued)
-        single_step_trap_q <= 1'b1;
+		  // set when single_step_i and instruction executed/trapped
+		  // clear when debug_mode
+      if (debug_step_i & ~debug_mode_q & 
+         (ctrl_fsm_ns[CSM_CMT_FLUSH] | ctrl_fsm_ns[CSM_ISSUE_SPECIAL]) & (special_case_q != DEBUG))
+        step_req_q <= 1'b1;
       else if (debug_mode_q)
-        single_step_trap_q <= 1'b0;
+        step_req_q <= 1'b0;
     end
   end
 
@@ -955,14 +965,15 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       csr_save_cause_o  = 1'b1;
       csr_exc_info_o.pc = ir_valid_i[0] ? ir0_dec.pc : ir0_nxt_pc_q;
       debug_csr_save_o  = 1'b1;
-      if (ir_valid_i[0] & ir0_dec.is_brkpt)
+
+      if (ir_valid_i[0] & ir0_dec.is_brkpt)  
         debug_cause_o = DBG_CAUSE_TRIGGER;
-      else if (debug_single_step_i)
-        debug_cause_o = DBG_CAUSE_STEP;
+      else if (ebreak_enter_debug) 
+        debug_cause_o = DBG_CAUSE_EBREAK;
       else if (debug_req_i)
         debug_cause_o = DBG_CAUSE_HALTREQ;
-      else if (ebreak_enter_debug)
-        debug_cause_o = DBG_CAUSE_EBREAK;
+      else if (debug_step_i)
+        debug_cause_o = DBG_CAUSE_STEP;
     end else if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == EXEC)) begin
       csr_save_cause_o      = 1'b1;
       csr_exc_info_o.pc     = ir0_dec.pc;

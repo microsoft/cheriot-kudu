@@ -156,7 +156,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
 
   logic            debug_mode;
   logic [31:0]     csr_depc;
-  logic            debug_single_step;
+  logic            debug_step;
   logic            debug_ebreakm;
   logic            debug_ebreaku;
   dbg_cause_e      debug_cause;
@@ -373,7 +373,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .csr_mispredict_o          (ex1_mispredict          ),
     .debug_req_i               (debug_req_i             ),
     .csr_depc_i                (csr_depc                ),
-    .debug_single_step_i       (debug_single_step       ),
+    .debug_step_i              (debug_step              ),
     .debug_ebreakm_i           (debug_ebreakm           ),
     .debug_ebreaku_i           (debug_ebreaku           ),
     .debug_mode_o              (debug_mode              ),
@@ -644,7 +644,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .debug_mode_entering_i        (1'b0),
     .debug_cause_i                (debug_cause),
     .debug_csr_save_i             (debug_csr_save),
-    .debug_single_step_o          (debug_single_step),
+    .debug_step_o                 (debug_step),
     .debug_ebreakm_o              (debug_ebreakm),
     .debug_ebreaku_o              (debug_ebreaku),
     .tmatch_control_o             (tmatch_control  ),

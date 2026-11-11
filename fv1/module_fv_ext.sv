@@ -137,7 +137,8 @@ module issuer_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg::*
 
   // hold the IR registers while waiting for cmt fifo to clear
   AssertIssueSpecialWait0: assert property (@(posedge clk_i) 
-    (ctrl_fsm_cs[CSM_WAIT_CMT0]  |-> ((issuer_rdy_o == 2'b00) && ir_hold_o) ));
+    (ctrl_fsm_cs[CSM_WAIT_CMT0]  |-> (issuer_rdy_o == 2'b00) ));
+    // (ctrl_fsm_cs[CSM_WAIT_CMT0]  |-> ((issuer_rdy_o == 2'b00) && ir_hold_o) ));
 
   AssertIssueSpecial0: assert property (@(posedge clk_i) 
     (ir0_issued_special  |-> issuer_rdy_o[0]  ));
@@ -469,7 +470,6 @@ endmodule
 module prefetch_fv_ext import super_pkg::*; (
   input  logic          clk_i,
   input  logic          rst_ni,
-  input  logic          cheri_const_fetch_i,  
   input  logic          req_i,
                         
   input  logic          branch_i,
@@ -694,7 +694,7 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   input  logic            data_gnt_i,
   input  logic            data_rvalid_i,
   input  logic            data_err_i,
-  input  logic            data_sc_resp_i,
+  input  logic            data_sc_fail_i,
   input  logic [MemW-1:0] data_rdata_i,
 
   input  logic            cmplx_lsu_req_valid_i,

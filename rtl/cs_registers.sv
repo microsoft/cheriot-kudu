@@ -81,7 +81,7 @@ module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg:
   input  dbg_cause_e           debug_cause_i,
   input  logic                 debug_csr_save_i,
   output logic [31:0]          csr_depc_o,
-  output logic                 debug_single_step_o,
+  output logic                 debug_step_o,
   output logic                 debug_ebreakm_o,
   output logic                 debug_ebreaku_o,
   output logic [BrkptNum-1:0]  tmatch_control_o,
@@ -847,7 +847,7 @@ module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg:
 
   assign csr_mstatus_mie_o   = mstatus_q.mie;
   assign csr_mstatus_tw_o    = mstatus_q.tw;
-  assign debug_single_step_o = dcsr_q.step;
+  assign debug_step_o        = dcsr_q.step;
   assign debug_ebreakm_o     = dcsr_q.ebreakm;
   assign debug_ebreaku_o     = dcsr_q.ebreaku;
 

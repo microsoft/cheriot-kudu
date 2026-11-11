@@ -79,16 +79,15 @@ module tb_kudu_top;
   logic [2:0]  irq_vec, intr_ack;
 
   logic        intr_enable;
-  logic        instr_err_enable, data_err_enable, cap_err_enable;
+  logic        instr_err_enable, data_err_enable;
   logic        cfg_intr_enable;
-  logic        cfg_instr_err_enable, cfg_data_err_enable, cfg_cap_err_enable;
+  logic        cfg_instr_err_enable, cfg_data_err_enable;
 
   int unsigned cfg_instr_err_rate, cfg_data_err_rate;
   int unsigned cfg_instr_gnt_wmax, cfg_data_gnt_wmax;
   int unsigned cfg_instr_resp_wmax, cfg_data_resp_wmax;
   int unsigned cfg_intr_intvl;
   int unsigned cfg_dbg_req_intvl;
-  int unsigned cfg_cap_err_rate;
   int unsigned cfg_cheri_pmode;
 
   logic [2:0] instr_err_rate, data_err_rate;
@@ -96,7 +95,6 @@ module tb_kudu_top;
   logic [3:0] instr_resp_wmax, data_resp_wmax;
   logic [3:0] intr_intvl;
  
-  logic [2:0] cap_err_rate;
   logic [3:0] err_enable_vec;
 
   logic [3:0] dbg_req_intvl;
@@ -115,7 +113,6 @@ module tb_kudu_top;
     data_err_rate  = 0;
 
     intr_intvl    = 0;
-    cap_err_rate  = 0;
     dbg_req_intvl = 0;
 
     stat_mcycle   = 0;
@@ -145,17 +142,14 @@ module tb_kudu_top;
     i = $value$plusargs("DBG_REQ_INTVL=%d", cfg_dbg_req_intvl);
     if (i == 1) dbg_req_intvl = cfg_dbg_req_intvl[3:0];
 
-    i = $value$plusargs("CAP_ERR_RATE=%d", cfg_cap_err_rate);
-    if (i == 1) cap_err_rate = cfg_cap_err_rate[2:0];
-
     i = $value$plusargs("STAT_MCYCLE=%d", cfg_stat_mcycle);
     if (i == 1) stat_mcycle = cfg_stat_mcycle;
 
     $display("TB> MemDataWidth = %2d, CFG.cheri_pmode = %1d", DBusW,  cheri_pmode);
     $display("TB> INSTR_GNTW = %d, INSTR_RESPW = %d, DATA_GNTW = %d, DATA_RESPW = %d", 
              instr_gnt_wmax, instr_resp_wmax, data_gnt_wmax, data_resp_wmax); 
-    $display("TB> INSTR_ERR_RATE = %d, DATA_ERR_RATE = %d, INTR_INTVL = %d, CAP_ERR_RATE = %d", 
-             instr_err_rate,  data_err_rate, intr_intvl, cap_err_rate);
+    $display("TB> INSTR_ERR_RATE = %d, DATA_ERR_RATE = %d, INTR_INTVL = %d", 
+             instr_err_rate,  data_err_rate, intr_intvl);
     $display("TB> DBG_REQ_INTVL = %d, STAT_MCYCLE = %d", dbg_req_intvl, stat_mcycle);
   endtask
 
@@ -483,7 +477,7 @@ module tb_kudu_top;
 
     config_tb();
     print_dut_cfg();
-    {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable, cfg_cap_err_enable} = 4'h0;
+    {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable} = 'h0;
 
     stat_print_req = 1'b0;
     cycle_cnt      = 0;
@@ -514,7 +508,7 @@ module tb_kudu_top;
     repeat(10) @(posedge clk);
     rst_n = 1'b1;
 
-    {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable, cfg_cap_err_enable} = 4'hf;
+    {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable} = 3'h7;
  
     cont_flag    = 1;
     uart_stopped = 0;
@@ -531,7 +525,7 @@ module tb_kudu_top;
       if (uart_stop_sim & !uart_stopped) begin
         uart_stopped = 1;
         $display("TB> Simulation stopped by UART request @ %d cycles", cycle_cnt);
-        {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable, cfg_cap_err_enable} = 4'h0;
+        {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable} = 3'h0;
         @(posedge clk);
         stat_print_req = 1'b1;
         @(posedge clk);
@@ -558,7 +552,6 @@ module tb_kudu_top;
   assign instr_err_enable = cfg_instr_err_enable & err_enable_vec[0];
   assign data_err_enable  = cfg_data_err_enable & err_enable_vec[1];
   assign intr_enable      = cfg_intr_enable & err_enable_vec[2];
-  assign cap_err_enable   = cfg_cap_err_enable & err_enable_vec[3];
 
   //
   // RAMs 
