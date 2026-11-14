@@ -18,14 +18,8 @@ module data_mem_model import kudu_dv_pkg::*; # (
   input  logic              clk,
   input  logic              rst_n,
 
-  input  logic [2:0]        INSTR_ERR_RATE,   
-  input  logic [3:0]        INSTR_GNT_WMAX,
-  input  logic [3:0]        INSTR_RESP_WMAX,
+  input  sys_cfg_t          sys_cfg,
   input  logic              instr_err_enable,
- 
-  input  logic [2:0]        DATA_ERR_RATE,   
-  input  logic [3:0]        DATA_GNT_WMAX,
-  input  logic [3:0]        DATA_RESP_WMAX,
   input  logic              data_err_enable,
 
   input  logic              instr_req,
@@ -55,9 +49,10 @@ module data_mem_model import kudu_dv_pkg::*; # (
   input  logic              tsmap_cs,
   input  logic [15:0]       tsmap_addr,
   output logic [31:0]       tsmap_rdata,
-
-  output logic [3:0]        err_enable_vec, 
-  output logic [2:0]        intr_ack,
+ 
+  input  logic              intr_enable,
+  output logic [17:0]       irq,
+  input  logic              dbg_req_enable,
   output logic              debug_req,
   output logic              uart_stop_sim
 );
@@ -121,6 +116,10 @@ module data_mem_model import kudu_dv_pkg::*; # (
   logic          mem_err;
   logic          mem_sc_fail;
 
+  logic [3:0]    err_enable_vec; 
+  logic [17:0]   intr_ack, intr_mask;
+  logic          debug_req_mmio, debug_ack;
+
   // simple unified memory system model
   logic [DW-1:0]      dram[0:2**DRAM_AW-1];
   logic [DRAM_AW-1:0] dram_addr;
@@ -160,8 +159,8 @@ module data_mem_model import kudu_dv_pkg::*; # (
   ) u_data_if (
     .clk_i          (clk),
     .rst_ni         (rst_n),
-    .GNT_WMAX       (DATA_GNT_WMAX),
-    .RESP_WMAX      (DATA_RESP_WMAX),
+    .GNT_WMAX       (sys_cfg.data_gnt_wmax),
+    .RESP_WMAX      (sys_cfg.data_resp_wmax),
     .data_req       (data_req),
     .data_we        (data_we),
     .data_be        (data_be),
@@ -194,8 +193,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
     assign mem_err     = 1'b0;
     assign mem_sc_fail = 1'b1;
 
-
-    assign debug_req = 1'b0;
+    assign debug_req_mmio = 1'b0;
 
     always @(posedge clk, negedge rst_n) begin
       if (~rst_n) begin
@@ -230,7 +228,6 @@ module data_mem_model import kudu_dv_pkg::*; # (
       end
     end
 
-
   end else begin : g_data_rw
     //
     // memory signals (sampled @posedge clk)
@@ -240,19 +237,31 @@ module data_mem_model import kudu_dv_pkg::*; # (
     logic dbgrom_word_sel;
     logic mem_req_isr;
     logic dram_lr_status_q;
+    logic mem_sel_err, mem_single_err;
 
-    assign mem_req_isr  = mem_flag[0];
+    int unsigned cfg_data_err_addr;
+    logic        cfg_data_err_addr_valid;
+
+    assign mem_req_isr  = mem_cs & ({mem_addr32[29:10], 12'h0} == 32'h8000_0000) ;
 
     assign mem_rdata = dram_sel_q ? dram_rdata : (tsram_p0_sel_q ? {33'h0, tsram_p0_rdata} : 
                                                  (mmreg_sel_q ? {33'h0, mmreg_rdata} : 
                                                  (dbgrom_sel_q ? {1'h0, dbgrom_rdata} : 
                                                  65'h0)));
 
-    assign mem_sc_fail = dram_sel? ~dram_lr_status_q : 1'b0;
+    assign mem_sc_fail = dram_sel ? ~dram_lr_status_q : 1'b0;
 
     // mem_err is in the mem_cs
-    assign mem_err   = (DATA_ERR_RATE == 0) ? (mem_cs & (~dram_sel & ~tsram_p0_sel & ~uart_cs0 & ~uart_cs1 & ~mmreg_sel)) :
-                       (~mem_req_isr & dram_sel ? dram_err_schd : (tsram_p0_sel ? tsram_p0_err_schd : 1'b0));
+    assign mem_err = mem_sel_err || mem_single_err || 
+                     (~mem_req_isr & dram_sel & dram_err_schd) || (tsram_p0_sel & tsram_p0_err_schd);
+
+    assign mem_sel_err = mem_cs & (~dram_sel & ~tsram_p0_sel & ~uart_cs0 & ~uart_cs1 & ~mmreg_sel);
+
+
+    assign cfg_data_err_addr_valid = sys_cfg.data_err_addr[32];
+    assign cfg_data_err_addr       = sys_cfg.data_err_addr[31:0];
+    assign mem_single_err          = cfg_data_err_addr_valid & mem_cs &
+                                     ({mem_addr32, 2'b00} == cfg_data_err_addr);
 
     always @(posedge clk, negedge rst_n) begin
       if (~rst_n) begin
@@ -271,6 +280,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
           dram_lr_status_q <= 1'b1;
         else if (dram_cs & mem_we)
           dram_lr_status_q <= 1'b0;
+
       end
     end
 
@@ -326,10 +336,11 @@ module data_mem_model import kudu_dv_pkg::*; # (
       if (~rst_n) begin
         dram_err_schd    <= 1'b0;
       end else begin
-        if (~data_err_enable)
+        if (~(data_err_enable & err_enable_vec[1]))
           dram_err_schd <= 1'b0;
         else if (dram_sel)
-          dram_err_schd <= (DATA_ERR_RATE == 0) ? 1'b0 : ($urandom()%(2**(8-DATA_ERR_RATE))==0);
+          dram_err_schd <= (sys_cfg.data_err_rate == 0) ? 1'b0 : 
+                           ($urandom()%(2**(8-sys_cfg.data_err_rate))==0);
 
       end
     end 
@@ -378,7 +389,8 @@ module data_mem_model import kudu_dv_pkg::*; # (
         if (~data_err_enable)
           tsram_p0_err_schd <= 1'b0;
         else if (tsram_p0_sel)
-          tsram_p0_err_schd <= (DATA_ERR_RATE == 0) ? 1'b0 : ($urandom()%(2**(8-DATA_ERR_RATE))==0);
+          tsram_p0_err_schd <= (sys_cfg.data_err_rate == 0) ? 1'b0 : 
+                               ($urandom()%(2**(8-sys_cfg.data_err_rate))==0);
       end
     end 
    
@@ -427,8 +439,9 @@ module data_mem_model import kudu_dv_pkg::*; # (
     always @(posedge clk, negedge rst_n) begin
       if (~rst_n) begin
         mmreg_addr32_q    <= 0;
-        intr_ack          <= 3'h0;
-        debug_req         <= 1'b0;
+        intr_ack          <= 18'h0;
+        intr_mask         <= {18{1'b1}};
+        debug_req_mmio    <= 1'b0;
         err_enable_vec    <= 4'h0;
         scratch_reg0      <= 32'h0; 
         scratch_reg1      <= 32'h0;
@@ -455,15 +468,21 @@ module data_mem_model import kudu_dv_pkg::*; # (
           err_enable_vec <= mem_wdata[3:0];
 
         if (mmreg_cs && mem_we && (mmreg_addr32 == 'h41))  // 0x8380_0104
-          intr_ack <= mem_wdata[2:0];
+          intr_ack <= mem_wdata[17:0];
         else
-          intr_ack <= 3'h0;
+          intr_ack <= 18'h0;
+
+        if (mmreg_cs && mem_we && (mmreg_addr32 == 'h42))  // 0x8380_0108
+          intr_mask <= mem_wdata[17:0];
 
         // debug related registers
         if (mmreg_cs && mem_we && (mmreg_addr32 == 'h50))  begin // 0x8380_0140
-          debug_req   <= mem_wdata[0];
-          dbg_req_cnt <= dbg_req_cnt + {7'h0, mem_wdata[0]};
-          dbg_ack_cnt <= dbg_ack_cnt + {7'h0, ~mem_wdata[0]};
+          debug_req_mmio  <= mem_wdata[0];
+          debug_ack       <= 1'b1;
+          dbg_req_cnt     <= dbg_req_cnt + {7'h0, mem_wdata[0]};
+          dbg_ack_cnt     <= dbg_ack_cnt + {7'h0, ~mem_wdata[0]};
+        end else begin
+          debug_ack       <= 1'b0;
         end
 
         if (mmreg_cs && mem_we && (mmreg_addr32 == 'h51))  // 0x8380_0144
@@ -579,8 +598,8 @@ module data_mem_model import kudu_dv_pkg::*; # (
   ) u_instr_if (
     .clk_i          (clk),
     .rst_ni         (rst_n),
-    .GNT_WMAX       (INSTR_GNT_WMAX),
-    .RESP_WMAX      (INSTR_RESP_WMAX),
+    .GNT_WMAX       (sys_cfg.instr_gnt_wmax),
+    .RESP_WMAX      (sys_cfg.instr_resp_wmax),
     .data_req       (instr_req),
     .data_we        (1'b0),
     .data_be        (4'hf),
@@ -631,21 +650,23 @@ module data_mem_model import kudu_dv_pkg::*; # (
     logic [DRAM_AW-1:0]   instr_dram_addr; 
     logic [DBGROM_AW-1:0] instr_dbgrom_addr;
 
+    logic instr_req_isr, instr_err_schd;
+
     assign instr_mem_rdata = instr_dram_sel_q ? instr_dram_rdata : 
                              instr_dbgrom_sel_q ? instr_dbgrom_rdata : 64'h0;
 
-    // +INSTR_ERR_ADDR=<hex>: return a bus error for fetches of that 64-bit word
+    // +sys_cfg.instr_err_addr=<hex>: return a bus error for fetches of that 64-bit word
     int unsigned cfg_instr_err_addr;
     logic        cfg_instr_err_addr_valid;
 
-    initial begin
-      cfg_instr_err_addr_valid = $value$plusargs("INSTR_ERR_ADDR=%h", cfg_instr_err_addr);
-      if (cfg_instr_err_addr_valid)
-        $display("TB> Address-based instruction error at 0x%08x", cfg_instr_err_addr);
-    end
+    assign cfg_instr_err_addr_valid = sys_cfg.instr_err_addr[32];
+    assign cfg_instr_err_addr       = sys_cfg.instr_err_addr[31:0];
+    assign instr_single_err         = cfg_instr_err_addr_valid & instr_mem_cs &
+                                      ({instr_mem_addr32, 2'b00} == cfg_instr_err_addr);
 
-    assign instr_mem_err = cfg_instr_err_addr_valid & instr_mem_cs &
-                           ({instr_mem_addr32, 2'b00} == cfg_instr_err_addr);
+    assign instr_req_isr = instr_mem_cs & ({instr_mem_addr32[29:10], 12'h0} == 32'h8000_0000) ;
+    assign instr_mem_err = instr_mem_cs & ((~instr_dram_sel & ~instr_dbgrom_sel)  | instr_single_err |
+                                           (instr_dram_sel & ~instr_req_isr &instr_err_schd));
 
     assign instr_dram_sel    = instr_mem_cs & instr_mem_addr32[29] & (instr_mem_addr32[28:DRAM_AW32+1] == 0);   
     assign instr_dram_addr   = instr_mem_addr32[DRAM_AW-1:1];
@@ -660,6 +681,7 @@ module data_mem_model import kudu_dv_pkg::*; # (
       end else begin
         instr_dram_sel_q     <= instr_dram_sel;
         instr_dbgrom_sel_q   <= instr_dbgrom_sel;
+
       end
     end 
 
@@ -680,6 +702,105 @@ module data_mem_model import kudu_dv_pkg::*; # (
         
       end
     end
+
+    always @(negedge clk, negedge rst_n) begin
+      if (~rst_n) begin
+        instr_err_schd    <= 1'b0;
+      end else begin
+        if (~(instr_err_enable & err_enable_vec[0]))
+          instr_err_schd <= 1'b0;
+        else if (instr_dram_sel)
+          instr_err_schd <= (sys_cfg.instr_err_rate == 0) ? 1'b0 : 
+                           ($urandom()%(2**(8-sys_cfg.instr_err_rate))==0);
+      end
+    end 
+
+  end   // g_instr_rd
+
+  //
+  // Interrupt generation
+  // 
+
+  logic [17:0] intr_vec;
+  logic        irq_state;
+
+  assign irq = {18{intr_enable}} & intr_vec; 
+
+  initial begin
+    int nwait;
+    logic [31:0] rand1, rand2;
+
+    intr_vec = 18'h0;
+    irq_state = 1'b0;
+
+    @(posedge rst_n);
+    repeat (100) @(posedge clk);
+
+    // irq state machine
+    while (1) begin
+      case (irq_state)
+        0: begin       
+          rand1 = $urandom();
+          rand2 = $urandom();
+          if (intr_enable && (sys_cfg.intr_rate != 0)) begin
+            nwait = ((rand1 % (2** (7- sys_cfg.intr_rate))) + 1) * 10;   // wait at least 10 clk cycles
+            repeat (nwait) @(posedge clk);
+            intr_vec = ~intr_mask & rand2[17:0]; 
+            if (intr_vec != 0) irq_state = 1;
+          end else begin
+            @(posedge clk);
+          end
+        end
+        default: begin    // 
+          intr_vec &= ~intr_ack;
+          @(posedge clk);
+          if (intr_vec == 0) irq_state = 0;
+        end
+      endcase
+    end   
+  end
+
+  //
+  // Debug request generaton
+  //
+  logic debug_req_rand;
+  logic dbg_state;
+
+  assign debug_req = debug_req_mmio | (dbg_req_enable & debug_req_rand);
+
+  initial begin
+    int nwait;
+    logic [31:0] rand1, rand2;
+
+    debug_req_rand = 1'b0;
+    dbg_state = 1'b0;
+    @(posedge rst_n);
+    repeat (100) @(posedge clk);
+
+    // irq state machine
+    while (1) begin
+      case (dbg_state)
+        0: begin       
+          rand1 = $urandom();
+          rand2 = $urandom();
+          if (dbg_req_enable && (sys_cfg.dbg_req_rate != 0)) begin
+            nwait = ((rand1 % (2** (7- sys_cfg.dbg_req_rate))) + 1) * 10;   // wait at least 10 clk cycles
+            repeat (nwait) @(posedge clk);
+            debug_req_rand = rand2[0]; 
+            if (debug_req_rand != 0) dbg_state = 1;
+          end else begin
+            @(posedge clk);
+          end
+        end
+        default: begin    // 
+          if (debug_ack) begin
+            debug_req_rand = 1'b0;
+            dbg_state      = 1'b0;
+          end
+          @(posedge clk);
+        end
+      endcase
+    end   
   end
 
 endmodule

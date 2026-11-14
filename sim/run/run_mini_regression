@@ -51,7 +51,7 @@ for test in "${tests[@]}"; do
   for ((i = 1; i <= len; i++)); do
     echo "-----Current test: $test ${testargs[i]}"
     echo "-----Current log ID: ${testargstrs[i]}"
-    $simexe +TEST=$test ${testargs[i]}
+    $simexe +TEST=$test ${=testargs[i]}
     ../../scripts/clean_trace.pl  trace_kudu_core.log
     mv  trace_kudu_core.log trace.$test.${testargstrs[i]}.log
     mv  trace_kudu_core.clog trace.$test.${testargstrs[i]}.clog
@@ -69,7 +69,7 @@ for test in "${tests[@]}"; do
   for ((i = 1; i <= len; i++)); do
     echo "-----Current test: $test ${testargs[i]}"
     echo "-----Current log ID: ${testargstrs[i]}"
-    $simexe +TEST=$test ${testargs[i]}
+    $simexe +TEST=$test ${=testargs[i]}
     ../../scripts/clean_trace.pl  trace_kudu_core.log
     mv  trace_kudu_core.log trace.$test.${testargstrs[i]}.log
     mv  trace_kudu_core.clog trace.$test.${testargstrs[i]}.clog
@@ -88,9 +88,9 @@ for test in "${tests[@]}"; do
     echo "-----Current test: $test ${testargs[i]}"
     echo "-----Current log ID: ${testargstrs[i]}"
     if [[ "$test" == "isa_test2a" ]]; then
-      $simexe +TEST=$test +INTR_INTVL=3 ${testargs[i]} 
+      $simexe +TEST=$test +INTR_RATE=4 ${=testargs[i]} 
     else
-      $simexe +TEST=$test ${testargs[i]}
+      $simexe +TEST=$test ${=testargs[i]}
     fi
     ../../scripts/clean_trace.pl  trace_kudu_core.log
     mv  trace_kudu_core.log trace.$test.${testargstrs[i]}.log

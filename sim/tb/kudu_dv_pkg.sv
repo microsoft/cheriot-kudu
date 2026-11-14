@@ -21,4 +21,19 @@ package kudu_dv_pkg;
     logic          sc_fail;
   } mem_cmd_t;
 
+  typedef struct packed {
+    logic  [3:0] instr_gnt_wmax;
+    logic  [3:0] instr_resp_wmax;
+    logic  [2:0] instr_err_rate;   
+    logic [32:0] instr_err_addr;  // bit 32 == valid
+ 
+    logic  [3:0] data_gnt_wmax;
+    logic  [3:0] data_resp_wmax;
+    logic  [2:0] data_err_rate;
+    logic [32:0] data_err_addr;
+
+    logic  [2:0] intr_rate;
+    logic  [2:0] dbg_req_rate;
+  } sys_cfg_t;
+
 endpackage

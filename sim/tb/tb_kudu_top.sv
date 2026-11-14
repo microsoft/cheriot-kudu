@@ -65,6 +65,7 @@ module tb_kudu_top;
   logic        irq_external;
   logic        irq_software;
   logic        irq_timer;
+  logic [14:0] irq_fast;
 
   logic        tsmap_cs;
   logic [15:0] tsmap_addr;
@@ -76,81 +77,65 @@ module tb_kudu_top;
   logic        mcycle_rd_event;
   logic        stat_print_req;
 
-  logic [2:0]  irq_vec, intr_ack;
+  logic [17:0] irq_vec;
 
-  logic        intr_enable;
   logic        instr_err_enable, data_err_enable;
-  logic        cfg_intr_enable;
-  logic        cfg_instr_err_enable, cfg_data_err_enable;
+  logic        intr_enable, dbg_req_enable;
 
-  int unsigned cfg_instr_err_rate, cfg_data_err_rate;
-  int unsigned cfg_instr_gnt_wmax, cfg_data_gnt_wmax;
-  int unsigned cfg_instr_resp_wmax, cfg_data_resp_wmax;
-  int unsigned cfg_intr_intvl;
-  int unsigned cfg_dbg_req_intvl;
-  int unsigned cfg_cheri_pmode;
-
-  logic [2:0] instr_err_rate, data_err_rate;
-  logic [3:0] instr_gnt_wmax, data_gnt_wmax;
-  logic [3:0] instr_resp_wmax, data_resp_wmax;
-  logic [3:0] intr_intvl;
- 
-  logic [3:0] err_enable_vec;
-
-  logic [3:0] dbg_req_intvl;
+  sys_cfg_t    sys_cfg;
 
   logic        stat_mcycle, cfg_stat_mcycle;
   logic [31:0] cycle_cnt;
 
   task config_tb ();
     int i;
-    instr_resp_wmax = 0;
-    instr_gnt_wmax  = 0;
-    instr_err_rate  = 0;
+    logic [31:0] tmp32;
 
-    data_resp_wmax = 0;
-    data_gnt_wmax  = 0;
-    data_err_rate  = 0;
-
-    intr_intvl    = 0;
-    dbg_req_intvl = 0;
+    sys_cfg = '0;
 
     stat_mcycle   = 0;
     cheri_pmode   = `CHERIOT_EN;
 
-    i = $value$plusargs("PMODE=%d", cfg_cheri_pmode);
-    if (i == 1) cheri_pmode = cfg_cheri_pmode;
-   
+    i = $value$plusargs("PMODE=%d", tmp32);
+    if (i == 1) cheri_pmode = tmp32[0];
 
-    i = $value$plusargs("INSTR_ERR_RATE=%d", cfg_instr_err_rate);
-    if (i == 1) instr_err_rate = cfg_instr_err_rate[2:0];
-    i = $value$plusargs("INSTR_GNT_WMAX=%d", cfg_instr_gnt_wmax);
-    if (i == 1) instr_gnt_wmax = cfg_instr_gnt_wmax[3:0];
-    i = $value$plusargs("INSTR_RESP_WMAX=%d", cfg_instr_resp_wmax);
-    if (i == 1) instr_resp_wmax = cfg_instr_resp_wmax[3:0];
+    i = $value$plusargs("INSTR_ERR_ADDR=%h", tmp32);
+    if (i == 1) sys_cfg.instr_err_addr = {1'b1, tmp32};
+    i = $value$plusargs("INSTR_ERR_RATE=%d", tmp32);
+    if (i == 1) sys_cfg.instr_err_rate = tmp32[2:0];
 
-    i = $value$plusargs("DATA_ERR_RATE=%d", cfg_data_err_rate);
-    if (i == 1) data_err_rate = cfg_data_err_rate[2:0];
-    i = $value$plusargs("DATA_GNT_WMAX=%d", cfg_data_gnt_wmax);
-    if (i == 1) data_gnt_wmax = cfg_data_gnt_wmax[3:0];
-    i = $value$plusargs("DATA_RESP_WMAX=%d", cfg_data_resp_wmax);
-    if (i == 1) data_resp_wmax = cfg_data_resp_wmax[3:0];
+    i = $value$plusargs("INSTR_GNT_WMAX=%d", tmp32);
+    if (i == 1) sys_cfg.instr_gnt_wmax = tmp32[3:0];
+    i = $value$plusargs("INSTR_RESP_WMAX=%d", tmp32);
+    if (i == 1) sys_cfg.instr_resp_wmax = tmp32[3:0];
 
-    i = $value$plusargs("INTR_INTVL=%d", cfg_intr_intvl);
-    if (i == 1) intr_intvl = cfg_intr_intvl[3:0];
+    i = $value$plusargs("DATA_ERR_ADDR=%h", tmp32);
+    if (i == 1) sys_cfg.data_err_addr = {1'b1, tmp32};
+    i = $value$plusargs("DATA_ERR_RATE=%d", tmp32);
+    if (i == 1) sys_cfg.data_err_rate = tmp32[2:0];
 
-    i = $value$plusargs("DBG_REQ_INTVL=%d", cfg_dbg_req_intvl);
-    if (i == 1) dbg_req_intvl = cfg_dbg_req_intvl[3:0];
+    i = $value$plusargs("DATA_GNT_WMAX=%d", tmp32);
+    if (i == 1) sys_cfg.data_gnt_wmax = tmp32[3:0];
+    i = $value$plusargs("DATA_RESP_WMAX=%d", tmp32);
+    if (i == 1) sys_cfg.data_resp_wmax = tmp32[3:0];
+
+    i = $value$plusargs("INTR_RATE=%d", tmp32);
+    if (i == 1) sys_cfg.intr_rate = tmp32[2:0];
+
+    i = $value$plusargs("DBG_REQ_RATE=%d", tmp32);
+    if (i == 1) sys_cfg.dbg_req_rate = tmp32[2:0];
 
     i = $value$plusargs("STAT_MCYCLE=%d", cfg_stat_mcycle);
     if (i == 1) stat_mcycle = cfg_stat_mcycle;
 
     $display("TB> MemDataWidth = %2d, CFG.cheri_pmode = %1d", DBusW,  cheri_pmode);
     $display("TB> INSTR_GNTW = %d, INSTR_RESPW = %d, DATA_GNTW = %d, DATA_RESPW = %d", 
-             instr_gnt_wmax, instr_resp_wmax, data_gnt_wmax, data_resp_wmax); 
-    $display("TB> INSTR_ERR_RATE = %d, DATA_ERR_RATE = %d, INTR_INTVL = %d", 
-             instr_err_rate,  data_err_rate, intr_intvl);
-    $display("TB> DBG_REQ_INTVL = %d, STAT_MCYCLE = %d", dbg_req_intvl, stat_mcycle);
+             sys_cfg.instr_gnt_wmax, sys_cfg.instr_resp_wmax, 
+             sys_cfg.data_gnt_wmax, sys_cfg.data_resp_wmax); 
+    $display("TB> INSTR_ERR_RATE = %d, DATA_ERR_RATE = %d", 
+             sys_cfg.instr_err_rate,  sys_cfg.data_err_rate);
+    $display("TB> INTR_RATE = %d, DBG_REQ_RATE = %d, STAT_MCYCLE = %d", 
+             sys_cfg.intr_rate, sys_cfg.dbg_req_rate, stat_mcycle);
   endtask
 
   task print_dut_cfg ();
@@ -179,7 +164,7 @@ module tb_kudu_top;
   assign cheri_tsafe_en = 1'b0;
 `endif
 
-  assign {irq_timer, irq_software,  irq_external} = irq_vec; 
+  assign {irq_fast, irq_timer, irq_software,  irq_external} = irq_vec; 
 
 `ifdef DII_SIM
   defparam u_data_mem.UseSparseMem = 1'b1;
@@ -271,7 +256,7 @@ module tb_kudu_top;
     .irq_software_i       (irq_software),
     .irq_timer_i          (irq_timer   ),
     .irq_external_i       (irq_external),
-    .irq_fast_i           (15'h0       )
+    .irq_fast_i           (irq_fast    )
   );
 
   logic stat_start_stop, cycle100;
@@ -363,7 +348,7 @@ module tb_kudu_top;
     .irq_software_i       (irq_software),
     .irq_timer_i          (irq_timer   ),
     .irq_external_i       (irq_external),
-    .irq_fast_i           (15'h0       ),
+    .irq_fast_i           (irq_fast    ),
     .irq_nm_i             (1'b0        ), 
     .scramble_key_valid_i (1'b0        ),
     .scramble_key_i       (128'h0      ),
@@ -477,7 +462,7 @@ module tb_kudu_top;
 
     config_tb();
     print_dut_cfg();
-    {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable} = 'h0;
+    {instr_err_enable, data_err_enable, dbg_req_enable, intr_enable} = 4'h0;
 
     stat_print_req = 1'b0;
     cycle_cnt      = 0;
@@ -508,7 +493,7 @@ module tb_kudu_top;
     repeat(10) @(posedge clk);
     rst_n = 1'b1;
 
-    {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable} = 3'h7;
+    {instr_err_enable, data_err_enable, dbg_req_enable, intr_enable} = 4'hf;
  
     cont_flag    = 1;
     uart_stopped = 0;
@@ -525,7 +510,7 @@ module tb_kudu_top;
       if (uart_stop_sim & !uart_stopped) begin
         uart_stopped = 1;
         $display("TB> Simulation stopped by UART request @ %d cycles", cycle_cnt);
-        {cfg_instr_err_enable, cfg_data_err_enable, cfg_intr_enable} = 3'h0;
+        {instr_err_enable, data_err_enable, dbg_req_enable, intr_enable} = 4'h0;
         @(posedge clk);
         stat_print_req = 1'b1;
         @(posedge clk);
@@ -549,10 +534,6 @@ module tb_kudu_top;
     $finish();
   end
 
-  assign instr_err_enable = cfg_instr_err_enable & err_enable_vec[0];
-  assign data_err_enable  = cfg_data_err_enable & err_enable_vec[1];
-  assign intr_enable      = cfg_intr_enable & err_enable_vec[2];
-
   //
   // RAMs 
   //
@@ -573,19 +554,14 @@ module tb_kudu_top;
   ) u_data_mem (
     .clk             (clk          ), 
     .rst_n           (rst_n        ),
-    .INSTR_ERR_RATE  (instr_err_rate),
-    .INSTR_GNT_WMAX  (instr_gnt_wmax),
-    .INSTR_RESP_WMAX (instr_resp_wmax),
+    .sys_cfg         (sys_cfg       ),
     .instr_err_enable(instr_err_enable),
     .instr_req       (instr_req     ),
     .instr_addr      (instr_addr    ),
     .instr_gnt       (instr_gnt     ),
     .instr_rvalid    (instr_rvalid  ),
     .instr_rdata     (instr_rdata),
-    .instr_err       (instr_err     ),
-    .DATA_ERR_RATE   (data_err_rate),
-    .DATA_GNT_WMAX   (data_gnt_wmax),
-    .DATA_RESP_WMAX  (data_resp_wmax),
+    .instr_err       (instr_err    ),
     .data_err_enable (data_err_enable),
     .data_req        (data_req     ),
     .data_we         (data_we      ),
@@ -604,19 +580,11 @@ module tb_kudu_top;
     .tsmap_cs        (tsmap_cs     ),
     .tsmap_addr      (tsmap_addr   ),
     .tsmap_rdata     (tsmap_rdata  ),
-    .err_enable_vec  (err_enable_vec),
-    .intr_ack        (intr_ack     ),
+    .intr_enable     (intr_enable  ),
+    .irq             (irq_vec      ),
+    .dbg_req_enable  (dbg_req_enable),
     .debug_req       (debug_req    ),
     .uart_stop_sim   (uart_stop_sim)  
-  );
-
-  intr_gen u_intr_gen (
-    .clk             (clk          ), 
-    .rst_n           (rst_n        ),
-    .INTR_INTVL      (intr_intvl   ),
-    .intr_en         (intr_enable  ),
-    .intr_ack        (intr_ack     ),  
-    .irq_o           (irq_vec      )
   );
 
 endmodule

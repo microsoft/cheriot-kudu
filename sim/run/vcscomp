@@ -6,13 +6,10 @@ VlogArg3=""
 VlogArg4=""
 VlogArg5=""
 VlogArg6=""
-FileList="-f kudu.vcs.f"
-CovFileList="-f ../fcov/kudu_fcov.f"
-OutFile="./simv"
-cmDir=""
+FileList="kudu.vcs.f"
+Coverage="false"
+OutputDir=""
 CmHier="./cm_hier.cfg"
-RunDII="false"
-RiscvTest="false"
 
 # Loop over args
 for arg in "$@"; do
@@ -23,21 +20,19 @@ for arg in "$@"; do
     -conf3) VlogArg2="+define+KUDU_PPL_CFG=3" ;;
     -dw)
       VlogArg3="+define+KUDU_DW_MULT=1"
-      FileList="-f kudu_dw.vcs.f" 
+      FileList="kudu_dw.vcs.f"
       ;;
     -dii)
-      #VlogArg5="+define+DII_SIM -LDFLAGS \"-L. -lsparse_mem\""
-      VlogArg5="+define+DII_SIM"
-      RunDII="true"
+      VlogArg4="+define+DII_SIM"
       ;;
-    -trace_dpi) VlogArg3="+define+TraceDPI" ;;
-    -nowave) VlogArg3="+define+NO_FSDB" ;;
+    -trace_dpi) VlogArg5="+define+TraceDPI" ;;
+    -nowave) VlogArg6="+define+NO_FSDB" ;;
     -cov)
      # Code coverage is restricted to the DUT subtree (see ./cm_hier.cfg).
      # Functional coverage (covergroups) is collected regardless.
-     VlogArg6="-cm line+cond+tgl+fsm+branch+assert -cm_hier $CmHier"
-     FileList="$FileList $CovFileList"
+     Coverage="true"
      ;;
+    -outdir=*) OutputDir="${arg#-outdir=}" ;;
     *)
       echo "Warning: Unknown option $arg" >&2
       ;;
@@ -53,10 +48,26 @@ export rtlRoot=../../rtl
 export verifRoot=..
 export dwRoot=../../dw
 
-#if [[ "$RunDII" == "true" ]]; then
-  #echo "Compling CPP models for DII sim"
-  #g++ -std=c++17 -fPIC -shared  ../tb/sparse_mem.cpp -o libsparse_mem.so
-#fi
+# Resolve inputs before changing directory so every generated file stays in the
+# requested output directory, including VCS's implicit logs and coverage files.
+CompileRV32=()
+CompileCHERI=()
+if [[ -n "$OutputDir" ]]; then
+  SourceDir="$(pwd -P)"
+  export rtlRoot="$SourceDir/../../rtl"
+  export verifRoot="$SourceDir/.."
+  export dwRoot="$SourceDir/../../dw"
+  FileList="$SourceDir/$FileList"
+  CmHier="$SourceDir/cm_hier.cfg"
+  mkdir -p "$OutputDir" && cd "$OutputDir" || exit "$?"
+  CompileRV32=(-Mdir=csrc32 -l compile_rv32.log)
+  CompileCHERI=(-Mdir=csrc -l compile_cheriot.log)
+fi
+InputArgs=(-f "$FileList")
+if [[ "$Coverage" == "true" ]]; then
+  InputArgs+=(-f "$verifRoot/fcov/kudu_fcov.f"
+              -cm line+cond+tgl+fsm+branch+assert -cm_hier "$CmHier")
+fi
 
-vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps -debug_acc+all -o ./simv32 $VlogArgsRV32 $FileList || exit "$?"
-vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps -debug_acc+all -o ./simv $VlogArgsCHERI $FileList 
+vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps -debug_acc+all -o ./simv32 "${CompileRV32[@]}" $VlogArgsRV32 "${InputArgs[@]}" || exit "$?"
+vcs -full64 -sverilog -xlrm uniq_prior_final +systemverilogext+sv +lint=TFIPC-L -timescale=1ns/1ps -debug_acc+all -o ./simv "${CompileCHERI[@]}" $VlogArgsCHERI "${InputArgs[@]}"

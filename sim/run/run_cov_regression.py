@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
-"""Run the mini-regression and riscv-tests suites and accumulate their coverage.
+"""Run the mini-regression and riscv-tests suites with fresh coverage.
 
 This is the coverage-collecting counterpart of ./run_mini_regression and
 ./run_riscv_tests: it runs the union of the tests those two scripts run and
-merges coverage separately into cov_kudu_regr_rv32.vdb (CHERIoTEn=0) and
-cov_kudu_regr_cheriot.vdb (CHERIoTEn=1, both runtime modes together).
+merges coverage separately into temp_cov_regression/cov_kudu_regr_rv32.vdb
+(CHERIoTEn=0) and cov_kudu_regr_cheriot.vdb (CHERIoTEn=1, both runtime modes
+together) in the same directory.
 
 Run it from sim/run, on the farm, so that the simulations can reach a licence:
 
     source ../run_dii/load_module_vcs
-    submit -i ./run_cov_regression.py --compile --cov_report
+    submit -i ./run_cov_regression.py --cov_report
 
 By default RV32 tests run on both ./simv32 and ./simv with +PMODE=0; CHERIoT
 and debug tests run on ./simv with +PMODE=1. --build selects all, cheriot or
-rv32. ./vcscomp -cov -nowave builds both simulators in one invocation.
+rv32. Every actual run invokes ./vcscomp -cov -nowave, building both simulators
+in a fresh build_<id>/ under --work_dir (default: temp_cov_regression).
+--list is read-only; --compile remains accepted but is no longer necessary.
 Each hardware build has its own raw and design database. RISC-V tests also
 add +RISCV_TEST_SUITE to select the tohost monitor instead of UART termination.
+The mini suite includes isa_test_csr (PMODE=1) and rv32_test_csr (PMODE=0),
+each with default and delayed memory. Their UART verdict must report
+"CSR test passed"; a failure message or missing verdict fails the run.
 
-The accumulated database is never deleted: every invocation merges into it, so
-scores only ever grow. --cov_dir specifies a basename to which _rv32.vdb
-and _cheriot.vdb are appended (after removing an optional .vdb suffix).
+After compilation and preflight succeed, coverage-enabled runs delete the
+selected hardware output databases before the first simulation. Only this
+invocation's data is merged with its matching design base. --cov_dir specifies
+a basename to which _rv32.vdb and _cheriot.vdb are appended (after removing an
+optional .vdb suffix). Reset targets must be real VCS databases inside sim/,
+not symlinks, design inputs, DII databases or enclosing output directories.
+--list and --no_cov never reset coverage.
 Existing unsuffixed and PMODE-partitioned databases are not used or modified.
 """
 
@@ -30,18 +40,20 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from coverage_builds import BUILDS, build_cov_dir
 
 
+SIM_ROOT = Path(__file__).resolve().parent.parent
 TRACE_LOG = "trace_kudu_core.log"
 TRACE_CLOG = "trace_kudu_core.clog"
 
 # Must match the metrics used at compile time by ./vcscomp -cov.
 COV_METRICS = "line+cond+tgl+fsm+branch+assert"
-# Basename for the two persistent hardware-build coverage databases.
+# Basename for the two current-invocation hardware-build coverage databases.
 DEFAULT_COV_DIR = "cov_kudu_regr.vdb"
 DEFAULT_WORK_DIR = "temp_cov_regression"
 
@@ -86,15 +98,17 @@ RISCV_TESTS = [
     "rv32ua-p-amoxor_w",
 ]
 
-# Tests taken from ./run_mini_regression.
-MINI_RV32_TESTS = ["coremark.rv32o3"]
+# Tests from ./run_mini_regression plus directed CSR coverage tests.
+MINI_RV32_TESTS = ["coremark.rv32o3", "rv32_test_csr"]
 MINI_CHERIOT_TESTS = [
     "isa_test1",
     "isa_test1a",
     "isa_test2",
     "isa_test2a",
+    "isa_test_csr",
     "coremark.cheriot",
 ]
+CSR_TESTS = frozenset(("isa_test_csr", "rv32_test_csr"))
 
 
 class Test(object):
@@ -125,21 +139,23 @@ class Test(object):
 
 
 def build_test_list(suites, riscv_timeout, build="all"):
-    """The union of the tests run by run_mini_regression and run_riscv_tests."""
+    """The mini/RISC-V suites plus the directed self-checking CSR tests."""
     tests = []
 
     if "mini" in suites:
         for name in MINI_RV32_TESTS:
             for variant, args in MINI_VARIANTS:
                 tests.append(
-                    Test("mini", "cheriot", name, variant, ["+PMODE=0"] + list(args))
+                    Test("mini", "cheriot", name, variant, ["+PMODE=0"] + list(args),
+                         self_checking=name in CSR_TESTS)
                 )
         for name in MINI_CHERIOT_TESTS:
             for variant, args in MINI_VARIANTS:
                 # isa_test2a exercises the interrupt path.
-                extra = ["+INTR_INTVL=3"] if name == "isa_test2a" else []
+                extra = ["+INTR_RATE=4"] if name == "isa_test2a" else []
                 tests.append(
-                    Test("mini", "cheriot", name, variant, ["+PMODE=1"] + extra + list(args))
+                    Test("mini", "cheriot", name, variant, ["+PMODE=1"] + extra + list(args),
+                         self_checking=name in CSR_TESTS)
                 )
         tests.append(
             Test("mini", "cheriot", "dbg_test1", "default",
@@ -180,7 +196,7 @@ def sanitize_test_name(name):
 
 
 def make_cov_tag():
-    """Unique-per-invocation tag so accumulated test names never collide."""
+    """Unique-per-invocation tag so retained raw database names never collide."""
     return "regr_{}_{}".format(time.strftime("%Y%m%d_%H%M%S"), os.getpid())
 
 
@@ -215,7 +231,7 @@ def parse_args():
     parser.add_argument(
         "--compile",
         action="store_true",
-        help="rebuild every simulator needed by the selected tests first",
+        help="compatibility flag; actual runs always rebuild both simulators",
     )
     parser.add_argument(
         "--conf",
@@ -231,7 +247,9 @@ def parse_args():
     parser.add_argument(
         "--work_dir",
         default=DEFAULT_WORK_DIR,
-        help="directory the simulations run in (default: {})".format(DEFAULT_WORK_DIR),
+        help=("output base for simulations, fresh builds, raw coverage, reports and "
+              "default coverage results (relative to sim/run; default: {})"
+              .format(DEFAULT_WORK_DIR)),
     )
     parser.add_argument(
         "--no_cov",
@@ -240,11 +258,15 @@ def parse_args():
     )
     parser.add_argument(
         "--cov_dir",
-        default=DEFAULT_COV_DIR,
+        default=None,
         help=(
             "coverage basename; append _rv32.vdb and _cheriot.vdb after "
-            "removing an optional .vdb suffix (default: {}). Existing "
-            "unsuffixed and PMODE-partitioned databases are not merged".format(DEFAULT_COV_DIR)
+            "removing an optional .vdb suffix. Existing "
+            "unsuffixed and PMODE-partitioned databases are not merged. Selected "
+            "outputs are reset after successful compilation/preflight, before "
+            "simulation; only non-symlink VCS databases inside sim/ are allowed. Defaults "
+            "to --work_dir/{}; explicit relative paths resolve from sim/run"
+            .format(DEFAULT_COV_DIR)
         ),
     )
     parser.add_argument(
@@ -254,9 +276,11 @@ def parse_args():
     parser.add_argument(
         "--design_vdb",
         help=(
-            "compile-time database providing the design data the first time "
-            "--cov_dir is created; allowed only with one selected hardware build "
-            "(default: simv.vdb for cheriot, simv32.vdb for rv32)"
+            "compile-time database providing the design data for this invocation; "
+            "allowed only with one selected hardware build "
+            "(default: fresh build's simv.vdb for cheriot, simv32.vdb for rv32). "
+            "Explicit relative paths resolve from sim/run; supply a matching "
+            "design-only database, without historical runtime records"
         ),
     )
     parser.add_argument(
@@ -275,7 +299,7 @@ def parse_args():
     parser.add_argument(
         "--cov_report",
         action="store_true",
-        help="report each selected build in urgReport_cheriot or urgReport_rv32",
+        help="report each selected build in --work_dir/urgReport_<build>",
     )
     parser.add_argument(
         "--keep_traces",
@@ -301,47 +325,66 @@ def run_urg(command, run_dir):
     return True
 
 
-def newest_mtime(directory):
-    """Newest modification time in a directory tree.
-
-    A coverage database is a directory whose contents are rewritten in place,
-    so the timestamp of the directory itself does not track its contents.
-    """
-    newest = directory.stat().st_mtime
-    for path in directory.rglob("*"):
-        newest = max(newest, path.stat().st_mtime)
-    return newest
+def contains_path(parent, child):
+    return parent == child or parent in child.parents
 
 
-def warn_if_design_is_newer(cov_dir, design_vdbs):
-    """Warn when the accumulated database predates the current build.
+def validate_cov_outputs(cov_dirs, design_vdbs, protected_paths):
+    """Validate every reset target before allowing any previous result deletion."""
+    sim_root = SIM_ROOT.resolve()
+    protected = [path.resolve() for path in protected_paths]
+    designs = [path.resolve() for path in design_vdbs.values()]
+    for design in designs:
+        if not design.is_dir():
+            raise RuntimeError("design database does not exist: {}".format(design))
+    resolved = {}
+    for build, path in cov_dirs.items():
+        # Check before resolving: resolving alone hides a symlink's identity.
+        if any(part.is_symlink() for part in (path, *path.parents)):
+            raise RuntimeError("coverage output must not use symlinks: {}".format(path))
+        target = path.resolve()
+        if not contains_path(sim_root, target):
+            raise RuntimeError("coverage output must be inside sim/; refusing automatic "
+                               "deletion outside sim/: {}".format(target))
+        if target.suffix != ".vdb" or not target.name.endswith("_{}.vdb".format(build)):
+            raise RuntimeError("unsafe coverage database name: {}".format(target))
+        if (contains_path(sim_root / "run_dii", target)
+                or target.name in ("cov_kudu_cheriot.vdb", "cov_kudu_rv32.vdb")
+                or any(parent.suffix == ".vdb" for parent in target.parents)):
+            raise RuntimeError("coverage output overlaps a DII or source database: {}"
+                               .format(target))
+        if (any(contains_path(target, path) for path in protected)
+                or any(contains_path(target, design) or contains_path(design, target)
+                       for design in designs)):
+            raise RuntimeError("coverage output overlaps a design or working input: {}"
+                               .format(target))
+        if target.exists():
+            if not target.is_dir() or not (target / "snps/coverage/db").is_dir():
+                raise RuntimeError("refusing to remove a non-VCS coverage database: {}"
+                                   .format(target))
+            if not (target / "snps/coverage/db/testdata").is_dir():
+                raise RuntimeError("refusing to remove a design-only coverage database: {}"
+                                   .format(target))
+            if any(part.is_symlink() for part in target.rglob("*")):
+                raise RuntimeError("coverage database contains symlinks: {}".format(target))
+        resolved[build] = target
+    return resolved
 
-    The accumulated database carries the design data of the build it was first
-    created from. Merging run data from a design that has been recompiled since
-    then makes urg fall back on name matching, which silently drops the objects
-    that no longer line up, so the accumulated scores stop being comparable.
-    """
-    if not cov_dir.is_dir():
-        return
-    cov_mtime = newest_mtime(cov_dir)
-    for design_vdb in design_vdbs:
-        if design_vdb.is_dir() and newest_mtime(design_vdb) > cov_mtime:
-            print(
-                "WARNING: {} is newer than {}; if the design was recompiled "
-                "since the accumulated database was last merged, start a fresh "
-                "--cov_dir instead of merging into stale design data".format(
-                    design_vdb.name, cov_dir
-                ),
-                file=sys.stderr,
-                flush=True,
-            )
+
+def reset_cov_outputs(cov_dirs):
+    """Remove only the selected, preflight-validated hardware result databases."""
+    for path in cov_dirs.values():
+        if path.exists():
+            print("Removing previous regression coverage: {}".format(path), flush=True)
+            shutil.rmtree(path)
 
 
-def compile_builds(conf, run_dir):
+def compile_builds(conf, run_dir, build_dir):
     """./vcscomp builds both hardware configurations in one invocation."""
     command = ["./vcscomp"] + COMPILE_FLAGS
     if conf is not None:
         command.append("-conf{}".format(conf))
+    command.append("-outdir={}".format(build_dir))
     print("+ {}".format(" ".join(command)), flush=True)
     completed = subprocess.run(command, cwd=run_dir)
     if completed.returncode != 0:
@@ -369,23 +412,16 @@ def prepare_work_dir(work_dir, elf_dir):
 
 
 def merge_cov(run_vdbs, cov_dir, design_vdb, run_dir):
-    """Merge the raw databases of this invocation into the persistent one.
-
-    A raw simulation database only holds test data, so the merge base is the
-    accumulated database when it already exists and a compile-time design
-    database the very first time.
-    """
+    """Merge only this invocation's raw data and its matching design database."""
     run_vdbs = [vdb for vdb in run_vdbs if vdb.is_dir()]
     if not run_vdbs:
         print("WARNING: no coverage data was produced", file=sys.stderr)
         return False
 
-    base = cov_dir if cov_dir.is_dir() else design_vdb
+    base = design_vdb
     if not base.is_dir():
         print(
-            "WARNING: neither {} nor {} exists, cannot merge coverage".format(
-                cov_dir, design_vdb
-            ),
+            "WARNING: {} does not exist, cannot merge coverage".format(design_vdb),
             file=sys.stderr,
         )
         return False
@@ -396,9 +432,8 @@ def merge_cov(run_vdbs, cov_dir, design_vdb, run_dir):
         base_name = base_name[: -len(".vdb")]
     temp_dir = cov_dir.parent / "cov_temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir = temp_dir / (base_name + ".merge_tmp.vdb")
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
+    merge_tag = uuid.uuid4().hex
+    tmp_dir = temp_dir / (base_name + "." + merge_tag + ".merge_tmp.vdb")
 
     command = ["urg", "-full64", "-dir", str(base)]
     for run_vdb in run_vdbs:
@@ -410,15 +445,11 @@ def merge_cov(run_vdbs, cov_dir, design_vdb, run_dir):
         print("WARNING: urg did not create {}".format(tmp_dir), file=sys.stderr)
         return False
 
-    # Only drop the previous database once the merged one is complete.
-    backup_dir = temp_dir / (base_name + ".prev.vdb")
-    if backup_dir.exists():
-        shutil.rmtree(backup_dir)
-    if cov_dir.is_dir():
-        cov_dir.rename(backup_dir)
+    if cov_dir.exists() or cov_dir.is_symlink():
+        print("WARNING: coverage output reappeared after reset; refusing to replace {}"
+              .format(cov_dir), file=sys.stderr)
+        return False
     tmp_dir.rename(cov_dir)
-    if backup_dir.exists():
-        shutil.rmtree(backup_dir)
     return True
 
 
@@ -474,9 +505,14 @@ def run_test(test, run_dir, work_dir, cov_args, log_path):
             BUILDS[test.build]["simv"], completed.returncode
         )
     elif test.self_checking:
-        # The tohost model prints the verdict; simv exits 0 either way.
+        # UART and tohost verdicts can report failure despite a zero exit code.
         output = log_path.read_text(errors="replace")
-        if "RISCV Test failed" in output:
+        if test.name in CSR_TESTS:
+            if "CSR test failed" in output:
+                failure = "CSR test reported a failure"
+            elif "CSR test passed" not in output:
+                failure = "no CSR test verdict (timeout?)"
+        elif "RISCV Test failed" in output:
             failure = "tohost reported a failure"
         elif "RISCV Test passed" not in output:
             failure = "no tohost verdict (timeout?)"
@@ -519,67 +555,73 @@ def main():
         print("{} test(s)".format(len(tests)))
         return 0
 
-    if args.compile:
-        if not compile_builds(args.conf, run_dir):
-            return 1
-    else:
-        print(
-            "Reusing the existing simulators ({}); pass --compile to rebuild".format(
-                ", ".join("./" + BUILDS[b]["simv"] for b in builds)
-            ),
-            flush=True,
-        )
-
-    missing = [b for b in builds if not (run_dir / BUILDS[b]["simv"]).is_file()]
-    if missing:
-        for build in missing:
-            print(
-                "ERROR: ./{} not found, build it with ./vcscomp {}".format(
-                    BUILDS[build]["simv"], " ".join(COMPILE_FLAGS)
-                ),
-                file=sys.stderr,
-            )
-        return 1
-
     cov_enabled = not args.no_cov
-    cov_base = Path(args.cov_dir)
+    cov_base = Path(args.cov_dir) if args.cov_dir else work_dir / DEFAULT_COV_DIR
     if not cov_base.is_absolute():
         cov_base = run_dir / cov_base
     cov_dirs = {build: build_cov_dir(cov_base, build) for build in builds}
     cov_tag = sanitize_test_name(args.cov_tag or make_cov_tag())
-    cov_temp = run_dir / "cov_temp"
+    cov_temp = work_dir / "cov_temp"
     # Runtime modes share a database; different hardware elaborations never do.
     run_vdbs = {
         build: cov_temp / "cov_run_{}_{}.vdb".format(cov_tag, build) for build in builds
     }
-    design_vdbs = {build: run_dir / BUILDS[build]["vdb"] for build in builds}
+    if cov_enabled:
+        for run_vdb in run_vdbs.values():
+            if run_vdb.exists() or run_vdb.is_symlink():
+                print(
+                    "ERROR: {} already exists; choose a different --cov_tag "
+                    "to preserve it".format(run_vdb), file=sys.stderr,
+                )
+                return 1
+
+    # Never reuse an elaboration's database: it may contain old design objects
+    # or runtime test records, even when VCS recompiles successfully in place.
+    build_dir = work_dir / ("build_" + uuid.uuid4().hex)
+    build_dir.mkdir(parents=True)
+    if not compile_builds(args.conf, run_dir, build_dir):
+        return 1
+    missing = [b for b in builds if not (build_dir / BUILDS[b]["simv"]).is_file()]
+    if missing:
+        for build in missing:
+            print("ERROR: compilation did not produce {}".format(
+                build_dir / BUILDS[build]["simv"]), file=sys.stderr)
+        return 1
+
+    design_vdbs = {build: build_dir / BUILDS[build]["vdb"] for build in builds}
     if args.design_vdb:
         design_vdb = Path(args.design_vdb)
         if not design_vdb.is_absolute():
             design_vdb = run_dir / design_vdb
         design_vdbs[builds[0]] = design_vdb
 
+    try:
+        prepare_work_dir(work_dir, elf_dir)
+        if cov_enabled:
+            cov_dirs = validate_cov_outputs(
+                cov_dirs, design_vdbs,
+                [run_dir, work_dir, build_dir, elf_dir, cov_temp]
+                + [run_dir / spec["vdb"] for spec in BUILDS.values()]
+                + list(run_vdbs.values()),
+            )
+            cov_temp.mkdir(parents=True, exist_ok=True)
+            for cov_dir in cov_dirs.values():
+                cov_dir.parent.mkdir(parents=True, exist_ok=True)
+            reset_cov_outputs(cov_dirs)
+    except (OSError, RuntimeError) as error:
+        print("ERROR: coverage/run preflight or reset failed: {}".format(error),
+              file=sys.stderr)
+        return 1
+
     if cov_enabled:
-        cov_temp.mkdir(parents=True, exist_ok=True)
-        for run_vdb in run_vdbs.values():
-            if run_vdb.exists():
-                print(
-                    "ERROR: {} already exists; choose a different --cov_tag "
-                    "to preserve it".format(run_vdb), file=sys.stderr,
-                )
-                return 1
         for build, cov_dir in cov_dirs.items():
-            warn_if_design_is_newer(cov_dir, [design_vdbs[build]])
             print(
-                "Coverage {}: recording into {}, merging into {} ({})".format(
-                    build, run_vdbs[build],
-                    cov_dir,
-                    "existing database" if cov_dir.is_dir() else "new database",
+                "Coverage {}: recording into {}, merging fresh results into {}".format(
+                    build, run_vdbs[build], cov_dir,
                 ),
                 flush=True,
             )
 
-    prepare_work_dir(work_dir, elf_dir)
     print(
         "Running {} test(s) from suite(s) {} in {}".format(
             len(tests), "+".join(suites), work_dir
@@ -612,7 +654,7 @@ def main():
         # A failing test must not abort the regression: simv writes the coverage
         # of every test it has already run into the raw database, and that data
         # is only moved into --cov_dir by the merge after the loop.
-        failure, elapsed = run_test(test, run_dir, work_dir, cov_args, log_path)
+        failure, elapsed = run_test(test, build_dir, work_dir, cov_args, log_path)
         print(
             "[{:>3}/{}] {:<28} {:<8} {:>6.1f}s  {}".format(
                 index,
@@ -645,16 +687,16 @@ def main():
     if cov_enabled:
         for build, cov_dir in cov_dirs.items():
             run_vdb = run_vdbs[build]
-            if merge_cov([run_vdb], cov_dir, design_vdbs[build], run_dir):
-                print("Coverage accumulated in {}".format(cov_dir), flush=True)
+            if merge_cov([run_vdb], cov_dir, design_vdbs[build], work_dir):
+                print("Current regression coverage written to {}".format(cov_dir), flush=True)
                 if not args.keep_run_cov and run_vdb.is_dir():
                     shutil.rmtree(run_vdb)
                 if args.cov_report:
-                    generate_cov_report(cov_dir, run_dir, build)
+                    generate_cov_report(cov_dir, work_dir, build)
                 else:
                     print(
                         "Generate a report with: submit -i urg -full64 -dir {} "
-                        "-report urgReport_{}".format(cov_dir, build),
+                        "-report {}".format(cov_dir, work_dir / ("urgReport_" + build)),
                         flush=True,
                     )
             else:
