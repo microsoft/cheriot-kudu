@@ -341,13 +341,13 @@ module branch_predict import super_pkg::*; #(
     else if (pdt_jal_go[0]) 
       predict_target     = jtb_rdata[0].target;
     else if (pdt_jalr_go[0])
-      predict_target     = cur_ra32_i;
+      predict_target     = {cur_ra32_i[31:1], 1'b0};
     else if (pdt_branch_go[1])
       predict_target     = btb_rdata[1].target;
     else if (pdt_jal_go[1])
       predict_target     = jtb_rdata[1].target;
     else
-      predict_target     = cur_ra32_i;
+      predict_target     = {cur_ra32_i[31:1], 1'b0};
 
     if (pdt_branch_go[0]) begin
       pdt_instr0.ptaken  = 1'b1;
@@ -357,7 +357,7 @@ module branch_predict import super_pkg::*; #(
       pdt_instr0.ptarget = jtb_rdata[0].target;
     end else if (pdt_jalr_go[0]) begin
       pdt_instr0.ptaken  = 1'b1;
-      pdt_instr0.ptarget = cur_ra32_i;
+      pdt_instr0.ptarget = {cur_ra32_i[31:1], 1'b0};
     end else if (pdt_branch_go[1]) begin
       pdt_instr1.ptaken  = 1'b1;
       pdt_instr1.ptarget = btb_rdata[1].target;
@@ -366,7 +366,7 @@ module branch_predict import super_pkg::*; #(
       pdt_instr1.ptarget = jtb_rdata[1].target;
     end else if (pdt_jalr_go[1]) begin
       pdt_instr1.ptaken  = 1'b1;
-      pdt_instr1.ptarget = cur_ra32_i;
+      pdt_instr1.ptarget = {cur_ra32_i[31:1], 1'b0};
     end
 
   end

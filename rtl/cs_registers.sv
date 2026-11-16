@@ -1658,7 +1658,7 @@ module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg:
   assign scr_wfcap1  = (rv32_mtvec_wr | rv32_mepc_wr | rv32_depc_wr) ? op2fullcap(reg2opcap(mtvec_xepc_rcap)) : 
                        full_cap_t'(csr_wdata_i);
   assign scr_wfcap2  = legalize_scr((rv32_mtvec_wr | cheri_mtcc_wr), 
-                                    (rv32_mepc_wr | rv32_depc_wr |cheri_mepcc_wr), 
+                                    (rv32_mepc_wr | rv32_depc_wr | cheri_mepcc_wr | cheri_depcc_wr), 
                                     scr_wfcap1, new_addr_tmp);
 
   assign scr_wdata_legalized = scr_wfcap2[RegW-1:0];

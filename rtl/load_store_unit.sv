@@ -372,7 +372,8 @@ module load_store_unit import super_pkg::*; import cheri_pkg::*; import csr_pkg 
         pmp_err_d   = 1'b0;
 
         if (lsu_req_i & ~resp_wait & ds_rdy_i & lsu_req_info_i.is_csr) begin
-          csr_go = 1'b1;
+          csr_go         = 1'b1;
+          bus_err_d      = 1'b0;
         end else if (lsu_req_i & ~resp_wait & ds_rdy_i) begin
           data_req_o     = ~lsu_req_info_i.lschk_err.any_fault;
           pmp_err_d      = data_pmp_err_i;

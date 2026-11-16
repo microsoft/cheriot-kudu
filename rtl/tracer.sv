@@ -83,7 +83,7 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
     result.rvfi.ixl    = 1'b0;
 
     if (ir_sel == 0) begin    // IR0
-      insn32                 = `ISSUER_PATH.ir0_dec.insn;
+      insn32                 = `ISSUER_PATH.ir_valid_i[0] ? `ISSUER_PATH.ir0_dec.insn : 32'h0;
       result.pl              = `ISSUER_PATH.ir0_pl_sel;
       result.ir_dec          = `ISSUER_PATH.ir0_dec;
       result.is_ex           = (| `ISSUER_PATH.ir0_pl_sel[4:1]) || `ISSUER_PATH.ir0_amo_issued;  // AMO defers sbdfifo writes
@@ -97,7 +97,8 @@ module tracer import cheri_pkg::*; import super_pkg::*; import tracer_pkg::*; (
       result.rvfi.rs1_rdata  = reg2mcap(ir0_op_data2_fwd.d0);
       result.rvfi.rs2_rdata  = reg2mcap(ir0_op_data2_fwd.d1);
       result.rvfi.rs3_rdata  = 0;
-      result.rvfi.pc_rdata   = `ISSUER_PATH.ir0_dec.pc;
+      result.rvfi.pc_rdata   = `ISSUER_PATH.ir_valid_i[0] ? `ISSUER_PATH.ir0_dec.pc : 
+                                                            `ISSUER_PATH.ir0_nxt_pc_q;
       result.rvfi.pc_wdata   = get_pc_wdata(0);
       result.rvfi.intr       = `ISSUER_PATH.intr_event;
     end else begin            // IR1

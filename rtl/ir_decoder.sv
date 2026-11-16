@@ -558,17 +558,22 @@ module ir_decoder import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; #
 
   logic [33:0] instr_hdrm;
   logic        hdrm_ge4, hdrm_ge2, hdrm_ok, base_ok;
-  logic        allow_all;
+  logic        allow_all, hdrm_valid;
 
   // allow_all is used to permit the pc wraparound case (pc = 0xffff_fffe, uncompressed instruction)
   // - in this case fetch should be allowed if pcc bounds is specified as the entire 32-bit space. 
   // - If we don't treat this as a specail case the fetch would be erred since headroom < 4
   assign allow_all  = (pcc_cap_i.base32==0) & (pcc_cap_i.top33[32]==1'b1);
 
+  // if fetch error is on the 1st word of an instruction straddles 64-bit word boundary, the lSB
+  // of fetch data (comp_flag) is invalid and thus can't be used to compute head room. in this case
+  // we waive top bound checking and just treat this as a fetch error
+  assign hdrm_valid = ~ir_reg_i.errs.fetch_err | ir_reg_i.ferr2w;
+
   assign instr_hdrm = {1'b0, pcc_cap_i.top33} - {2'b00, ir_reg_i.pc};
   assign hdrm_ge4   = (|instr_hdrm[32:2]) & ~instr_hdrm[33];     // >= 4
   assign hdrm_ge2   = (|instr_hdrm[32:1]) & ~instr_hdrm[33];     // >= 2
-  assign hdrm_ok    = allow_all || (ir_reg_i.is_comp ? hdrm_ge2 : hdrm_ge4);
+  assign hdrm_ok    = allow_all || ((~hdrm_valid || ir_reg_i.is_comp) ? hdrm_ge2 : hdrm_ge4);
   assign base_ok    = ~(ir_reg_i.pc < pcc_cap_i.base32);
 
   // only issue cheri_acc_vio on valid fetches

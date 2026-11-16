@@ -918,7 +918,7 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
 		  // set when single_step_i and instruction executed/trapped
 		  // clear when debug_mode
       if (debug_step_i & ~debug_mode_q & 
-         (ctrl_fsm_ns[CSM_CMT_FLUSH] | ctrl_fsm_ns[CSM_ISSUE_SPECIAL]) & (special_case_q != DEBUG))
+         (ctrl_fsm_cs[CSM_CMT_FLUSH] | ctrl_fsm_cs[CSM_ISSUE_SPECIAL]) & (special_case_q != DEBUG))
         step_req_q <= 1'b1;
       else if (debug_mode_q)
         step_req_q <= 1'b0;
@@ -966,13 +966,14 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       csr_exc_info_o.pc = ir_valid_i[0] ? ir0_dec.pc : ir0_nxt_pc_q;
       debug_csr_save_o  = 1'b1;
 
-      if (ir_valid_i[0] & ir0_dec.is_brkpt)  
+      // risc-v debug spec says if trigger or ebreak is executed, then it takes priority
+      if (~step_req_q & ir_valid_i[0] & ir0_dec.is_brkpt)  
         debug_cause_o = DBG_CAUSE_TRIGGER;
-      else if (ebreak_enter_debug) 
+      else if (~step_req_q & ebreak_enter_debug) 
         debug_cause_o = DBG_CAUSE_EBREAK;
       else if (debug_req_i)
         debug_cause_o = DBG_CAUSE_HALTREQ;
-      else if (debug_step_i)
+      else if (step_req_q)
         debug_cause_o = DBG_CAUSE_STEP;
     end else if (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == EXEC)) begin
       csr_save_cause_o      = 1'b1;
