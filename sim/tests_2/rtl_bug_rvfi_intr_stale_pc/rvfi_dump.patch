@@ -1,0 +1,16 @@
+# Copyright Microsoft Corporation
+# Licensed under the Apache License, Version 2.0, see LICENSE for details.
+# SPDX-License-Identifier: Apache-2.0
+# Shadow TB for rtl_bug_rvfi_intr_stale_pc: enable the RVFI dump (rvfi_kudu_core.log)
+# in non-DII builds.
+--- a/sim/tb/tb_kudu_top.sv	2026-11-14 05:17:22.105178000 -0800
++++ b/sim/tb/tb_kudu_top.sv	2026-11-14 05:17:22.330399000 -0800
+@@ -174,7 +174,7 @@
+ `else
+   defparam u_data_mem.UseSparseMem = 1'b0;
+   `ifndef IBEX
+-  defparam dut.RvfiDumpEn          = 1'b0;
++  defparam dut.RvfiDumpEn          = 1'b1;   // rtl_bug_rvfi_intr_stale_pc: write rvfi_kudu_core.log
+   `endif
+ `endif  //DII_SIM
+   

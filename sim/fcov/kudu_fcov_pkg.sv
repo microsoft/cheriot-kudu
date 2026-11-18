@@ -75,7 +75,7 @@ package kudu_fcov_pkg;
 
     // CHERI. cscrrw is checked first: it is an SCR access, not a capability
     // manipulation, and it is the only CHERI op with system side effects.
-    // is_cheri is an issuer dependency flag, also set for ordinary jumps and
+    // rs_cheri is an issuer dependency flag, also set for ordinary jumps and
     // integer loads/stores. Only the operation vector identifies CHERI ops.
     if (|d.cheri_op) begin
       if (d.cheri_op.clc | d.cheri_op.csc)       return IC_LS_CAP;
@@ -237,5 +237,12 @@ package kudu_fcov_pkg;
     SUP_NONE, SUP_IR0_NOT_ISSUED, SUP_HAZARD, SUP_ANY_ERR, SUP_SYSCTL,
     SUP_CMPLX, SUP_BRKPT, SUP_SINGLE_STEP, SUP_CJALR_SERIALISE, SUP_MISPREDICT0
   } fcov_suppress_e;
+
+  // X-tolerant check for SVAs that compare datapath values: true when e holds
+  // or is unknown. Simulation fetches unloaded debug-ROM words and returns
+  // bus-error load data as X; formal has no X, so this is just e there.
+  function automatic logic sva_xok(logic e);
+    return $isunknown(e) || e;
+  endfunction
 
 endpackage

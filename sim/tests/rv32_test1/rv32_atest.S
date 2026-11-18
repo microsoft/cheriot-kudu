@@ -224,8 +224,8 @@ test_intr:
     li x15, 3     # exception case 0
   
     li x8, 0x83800100
-    li x9, 0x4
-    sw x9, (x8)   # enable interrupts in testbench
+    li x9, 0x3fffe
+    sw x9, 8(x8)  # unmask the external interrupt in testbench (intr_mask)
 
     li x13, 0x40
 intr_wait1:
@@ -238,8 +238,8 @@ intr_wait1:
     addi x13, x13, -1
     bne x13, x0, intr_wait1
     
-    li x9, 0x0
-    sw x9, 256(x5)   # disable interrupts in testbench
+    li x9, 0x3ffff
+    sw x9, 264(x5)   # mask all interrupts in testbench (intr_mask)
 
     li x13, 0x10
 intr_wait2:

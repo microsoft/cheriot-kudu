@@ -416,3 +416,13 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Local scratch-backed verification workspace.
+/sim/temp
+/sim/verilator/obj_dir*
+/sim/verilator/results
+/sim/run_dii/cm_hier.cfg
+/sim/run_dii/bin
+/sim/run_dii/results/
+/sim/run/bin
+/sim/run/

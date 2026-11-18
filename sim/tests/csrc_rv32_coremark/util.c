@@ -14,9 +14,11 @@ void send_char(unsigned char dts) {
 unsigned int get_tmrval(void) {
   volatile unsigned int mcycle;
 
+#ifdef USE_MCYCLE_TICK
   __asm__ __volatile__("csrr %0, mcycle": "=r" (mcycle));
-  //mcycle += 100000;
+#else
   mcycle=0;
+#endif
 
   return (mcycle);
 }

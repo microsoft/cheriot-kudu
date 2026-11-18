@@ -1,0 +1,7 @@
+export LM_PROJECT=braga_r
+
+#module load tools/synopsys/vcs/2022.06-SP2
+module load tools/synopsys/vcs/Y-2026.03-SP1
+module load tools/python/python3/3.9.2 
+module load tools/gnu/gcc/13.2.0
+module load lsf

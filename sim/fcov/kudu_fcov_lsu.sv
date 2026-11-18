@@ -36,9 +36,9 @@ module kudu_fcov_lsu
   input pl_out_t       lspl_output_o,
   input logic          lsu_err_active,
   input logic          resp_err_latched,
-  input logic          is_lr,
-  input logic          is_sc,
-  input logic          data_sc_resp_i,
+  input logic          lr_insn,
+  input logic          sc_insn,
+  input logic          data_sc_fail_i,
 
   // --- data bus (as seen at the pipeline boundary) ---------------------------
   input logic          data_req_o,
@@ -55,7 +55,6 @@ module kudu_fcov_lsu
   input ls_fsm_e       ls_fsm_cs,
   input logic          split_misaligned_access,
   input logic          handle_misaligned_q,
-  input logic          addr_incr_req,
   input logic          lsu_busy,
 
   // --- revocation, as seen at the pipeline boundary --------------------------
@@ -79,6 +78,22 @@ module kudu_fcov_lsu
   cheri_pkg::reg_cap_t resp_reg_cap;
   logic resp_cap_sample;
   logic split_first_err_q, split_active_q;
+  // check_ls_err results. The request side carries lschk_err in lsu_req_info
+  // (set by lsu_if only on CHERI hardware); the response side merges it with
+  // the LSU's own recheck. vio_cause_enc returns {align_only, cause[4:0]}.
+  logic [5:0] req_err_cause;
+  cheri_pkg::lschk_err_t resp_lschk_err;
+  logic [5:0] resp_err_cause;
+  logic resp_atomic_align_err;
+
+  assign req_err_cause  = cheri_pkg::vio_cause_enc(lsu_req_info.lschk_err);
+  assign resp_lschk_err = ls_pipeline.load_store_unit_i.lschk_err_final;
+  assign resp_err_cause = ls_pipeline.load_store_unit_i.ls_err_cause;
+  // Misaligned LR/SC/AMO fault in every mode, including RV32-only hardware
+  // where only the response-side check sees them.
+  assign resp_atomic_align_err = lsu_resp_valid && resp_lschk_err.any_fault &&
+      resp_lschk_err.align && resp_err_cause[5] &&
+      (|ls_pipeline.load_store_unit_i.lsu_req_info_q.amo_flag);
 
   assign resp_mem_cap =
       cheri_pkg::mem_cap_t'(ls_pipeline.load_store_unit_i.data_rdata_i);
@@ -137,10 +152,72 @@ module kudu_fcov_lsu
       if (ls_fsm_cs == WAIT_RVALID_MIS &&
           (data_rvalid_i || ls_pipeline.load_store_unit_i.pmp_err_q))
         split_first_err_q <= data_err_i | ls_pipeline.load_store_unit_i.pmp_err_q;
-      else if (ls_fsm_cs == WAIT_RVALID_MIS_GNTS_DONE && data_rvalid_i)
-        split_first_err_q <= data_err_i;
     end
   end
+
+  // --- bug-driven response classes (sim/testplan/fcov_bug_crosscheck.md) ----
+  logic [3:0]  resp_amo_flag;
+  logic [5:0]  resp_mcause;
+  logic [31:0] resp_mtval, split_addr, split_addr2;
+  logic        amo_bus_err, amo_cheri_err, split_bus_err, clrperm_sample;
+  logic        csr_noasr_sample, mshwm_upd;
+
+  assign resp_amo_flag = ls_pipeline.load_store_unit_i.lsu_req_info_q.amo_flag;
+  assign resp_mcause   = ls_pipeline.load_store_unit_i.lsu_resp_info.mcause;
+  assign resp_mtval    = ls_pipeline.load_store_unit_i.lsu_resp_info.mtval;
+
+  // KUDU-008: bus error on LR/SC/AMO. Only LR reports a load fault.
+  assign amo_bus_err = lsu_resp_valid && (|resp_amo_flag) &&
+      (resp_mcause == EXC_CAUSE_LOAD_ACCESS_FAULT ||
+       resp_mcause == EXC_CAUSE_STORE_ACCESS_FAULT);
+  // KUDU-032/061: CHERI fault on the AMO read phase (SD checked there too).
+  assign amo_cheri_err = cheri_active && resp_cheri_mode && lsu_resp_valid &&
+      resp_lschk_err.any_fault && !resp_err_cause[5] && (resp_amo_flag == 4'b0100);
+
+  // KUDU-052: mtval of a split access with a bus error. The first half
+  // reports the access address, the second half its word-aligned address.
+  typedef enum logic [1:0] {SMT_FIRST_ADDR, SMT_SECOND_WORD, SMT_OTHER} fcov_split_mtval_e;
+  fcov_split_mtval_e split_mtval_cls;
+  assign split_addr  = ls_pipeline.load_store_unit_i.lsu_req_info_q.addr;
+  assign split_addr2 = {split_addr[31:2] + 30'd1, 2'b00};
+  assign split_bus_err = lsu_resp_valid && split_active_q &&
+      (resp_mcause == EXC_CAUSE_LOAD_ACCESS_FAULT ||
+       resp_mcause == EXC_CAUSE_STORE_ACCESS_FAULT);
+  assign split_mtval_cls = (resp_mtval == split_addr)  ? SMT_FIRST_ADDR :
+                           (resp_mtval == split_addr2) ? SMT_SECOND_WORD : SMT_OTHER;
+
+  // KUDU-024: CLC permission stripping, including in debug mode.
+  assign clrperm_sample = cheri_active && resp_cheri_mode && lsu_resp_valid &&
+      ls_pipeline.load_store_unit_i.lsu_resp_info.is_cap;
+
+  // KUDU-017/018: CSR/SCR access in CHERI mode without PCC.ASR, classed by
+  // what the access should report.
+  typedef enum logic [2:0] {
+    CA_ILLEGAL, CA_CNT_WR, CA_ALWAYS_OK, CA_SCR, CA_OTHER
+  } fcov_csr_asr_e;
+  typedef enum logic [1:0] {CO_OK, CO_ILL, CO_ASR, CO_OTHER} fcov_csr_out_e;
+  fcov_csr_asr_e csr_asr_cls;
+  fcov_csr_out_e csr_out_cls;
+  logic [11:0]   lsu_csr_addr;
+  assign lsu_csr_addr = ls_pipeline.load_store_unit_i.csr_addr;
+  assign csr_noasr_sample = cheri_active && resp_cheri_mode && lsu_resp_valid &&
+      ls_pipeline.load_store_unit_i.csr_go_q && !debug_mode_i &&
+      !ls_pipeline.load_store_unit_i.pcc_asr_bit;
+  always_comb begin
+    if (ls_pipeline.load_store_unit_i.illegal_csr_insn_i)    csr_asr_cls = CA_ILLEGAL;
+    else if (ls_pipeline.load_store_unit_i.csr_cheri)        csr_asr_cls = CA_SCR;
+    else if (ls_pipeline.load_store_unit_i.csr_cheri_always_ok) csr_asr_cls = CA_ALWAYS_OK;
+    else if (lsu_csr_addr inside {12'hb00, 12'hb02, 12'hb80, 12'hb82})
+                                                             csr_asr_cls = CA_CNT_WR;
+    else                                                     csr_asr_cls = CA_OTHER;
+    if (!lsu_resp_err)                                       csr_out_cls = CO_OK;
+    else if (resp_mcause == EXC_CAUSE_ILLEGAL_INSN)          csr_out_cls = CO_ILL;
+    else if (resp_mcause == EXC_CAUSE_CHERI_FAULT)           csr_out_cls = CO_ASR;
+    else                                                     csr_out_cls = CO_OTHER;
+  end
+
+  // KUDU-037: source of an MSHWM update request (store, successful SC, AMO).
+  assign mshwm_upd = ls_pipeline.load_store_unit_i.csr_lsu_wr_req_o;
 
   // ==========================================================================
   // FC_MA_LSU - load/store pipeline
@@ -192,7 +269,7 @@ module kudu_fcov_lsu
     }
 
     // The external bus is word aligned. Use the original effective address
-    // before addr_incr_req selects a split request's second bus word.
+    // before handle_misaligned_q selects a split request's second bus word.
     cp_addr_align: coverpoint lsu_req_info.addr[1:0]
         iff (lsu_req && !lsu_req_info.is_csr && ls_fsm_cs == IDLE) {
       bins b0 = {2'd0};
@@ -220,12 +297,12 @@ module kudu_fcov_lsu
 
     // CHERI faults are detected before the bus request is made, so they must
     // be covered on the request-info side, not on the response.
-    cp_cheri_req_err: coverpoint lsu_req_info.cheri_err
+    cp_cheri_req_err: coverpoint lsu_req_info.lschk_err.any_fault
         iff (cheri_active && req_cheri_mode && lsu_req) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
     }
-    cp_cheri_req_cause: coverpoint lsu_req_info.cheri_cause
-        iff (cheri_active && req_cheri_mode && lsu_req && lsu_req_info.cheri_err) {
+    cp_cheri_req_cause: coverpoint req_err_cause[4:0]
+        iff (cheri_active && req_cheri_mode && lsu_req && lsu_req_info.lschk_err.any_fault) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
       bins c_align = {5'h00};
       bins c_bound = {5'h01};
@@ -236,14 +313,15 @@ module kudu_fcov_lsu
       bins c_sc    = {5'h15};
       illegal_bins other = default;
     }
-    // This is cheri_ls_check's alignment-only result, not RV32 split alignment.
-    cp_align_err_only: coverpoint lsu_req_info.align_err_only
+    // This is check_ls_err's alignment-only result (vio_cause_enc bit 5),
+    // not RV32 split alignment.
+    cp_align_err_only: coverpoint req_err_cause[5]
         iff (cheri_active && req_cheri_mode && lsu_req) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
     }
 
-    cp_lr: coverpoint is_lr iff (us_valid_i) { bins hit = {1'b1}; }
-    cp_sc: coverpoint is_sc iff (us_valid_i) { bins hit = {1'b1}; }
+    cp_lr: coverpoint lr_insn iff (us_valid_i) { bins hit = {1'b1}; }
+    cp_sc: coverpoint sc_insn iff (us_valid_i) { bins hit = {1'b1}; }
     // SC response polarity and request association are covered by FC_MA_TOP.
 
     cp_flush:      coverpoint flush_i { bins hit = {1'b1}; }
@@ -311,7 +389,7 @@ module kudu_fcov_lsu
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
     }
     x_ls_type_2 : cross cp_is_cap, cp_cache_ok, cp_cheri_req_cause
-        iff (cheri_active && req_cheri_mode && lsu_req && lsu_req_info.cheri_err) {
+        iff (cheri_active && req_cheri_mode && lsu_req && lsu_req_info.lschk_err.any_fault) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
     }
 
@@ -335,25 +413,20 @@ module kudu_fcov_lsu
       bins split_fast_gnt = (IDLE => WAIT_RVALID_MIS);
       bins mis_gnt       = (WAIT_GNT_MIS => WAIT_RVALID_MIS);
       bins mis_second    = (WAIT_RVALID_MIS => WAIT_GNT);
-      bins mis_gnts_done = (WAIT_RVALID_MIS => WAIT_RVALID_MIS_GNTS_DONE);
       bins done          = (WAIT_GNT => IDLE);
       bins mis_done = (WAIT_RVALID_MIS => IDLE);
-      bins mis_resps_pending = (WAIT_RVALID_MIS_GNTS_DONE => IDLE);
       bins hold[] = (IDLE => IDLE), (WAIT_GNT => WAIT_GNT),
                     (WAIT_GNT_MIS => WAIT_GNT_MIS),
-                    (WAIT_RVALID_MIS => WAIT_RVALID_MIS),
-                    (WAIT_RVALID_MIS_GNTS_DONE => WAIT_RVALID_MIS_GNTS_DONE);
+                    (WAIT_RVALID_MIS => WAIT_RVALID_MIS);
     }
 
     cp_data_err_state: coverpoint ls_fsm_cs iff (data_err_i && data_rvalid_i) {
       bins wait_rvalid_mis = {WAIT_RVALID_MIS};
-      bins wait_rvalid_mis_gnts_done = {WAIT_RVALID_MIS_GNTS_DONE};
       bins idle = {IDLE};
     }
 
     cp_split:      coverpoint split_misaligned_access { bins hit = {1'b1}; }
     cp_mis_q:      coverpoint handle_misaligned_q     { bins hit = {1'b1}; }
-    cp_addr_incr:  coverpoint addr_incr_req           { bins hit = {1'b1}; }
     cp_busy:       coverpoint lsu_busy;
 
     // load_store_unit.sv gates ls_go/csr_go with these independent blockers.
@@ -392,6 +465,70 @@ module kudu_fcov_lsu
     x_split_err_phase: cross cp_split_resp_is_load, cp_split_err_phase
         iff (lsu_resp_valid && split_active_q);
 
+    // KUDU-052: mtval of a split access with a bus error, by failing half.
+    cp_split_bus_err_phase: coverpoint {
+        split_first_err_q,
+        (data_err_i | ls_pipeline.load_store_unit_i.pmp_err_q)}
+        iff (split_bus_err) {
+      bins second = {2'b01};
+      bins first  = {2'b10, 2'b11};
+    }
+    cp_split_bus_err_mtval: coverpoint split_mtval_cls iff (split_bus_err) {
+      bins first_addr  = {SMT_FIRST_ADDR};
+      bins second_word = {SMT_SECOND_WORD};
+      illegal_bins other = {SMT_OTHER};
+    }
+    x_split_err_mtval: cross cp_split_bus_err_phase, cp_split_bus_err_mtval
+        iff (split_bus_err) {
+      illegal_bins first_wrong  = binsof(cp_split_bus_err_phase.first) &&
+                                  binsof(cp_split_bus_err_mtval.second_word);
+      illegal_bins second_wrong = binsof(cp_split_bus_err_phase.second) &&
+                                  binsof(cp_split_bus_err_mtval.first_addr);
+    }
+
+    // KUDU-017/018: CSR access without PCC.ASR. Expected outcomes: illegal
+    // CSR -> illegal instruction; counter write -> CHERI fault; read-only
+    // counter read -> no fault.
+    cp_csr_noasr_cls: coverpoint csr_asr_cls iff (csr_noasr_sample) {
+      option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      bins illegal   = {CA_ILLEGAL};
+      bins cnt_wr    = {CA_CNT_WR};
+      bins always_ok = {CA_ALWAYS_OK};
+      bins scr       = {CA_SCR};
+      bins other     = {CA_OTHER};
+    }
+    cp_csr_noasr_out: coverpoint csr_out_cls iff (csr_noasr_sample) {
+      option.weight = 0;
+      bins ok  = {CO_OK};
+      bins ill = {CO_ILL};
+      bins asr = {CO_ASR};
+      illegal_bins other = {CO_OTHER};
+    }
+    x_csr_asr: cross cp_csr_noasr_cls, cp_csr_noasr_out iff (csr_noasr_sample) {
+      option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      illegal_bins illegal_not_ill = binsof(cp_csr_noasr_cls.illegal) &&
+                                     !binsof(cp_csr_noasr_out.ill);
+      illegal_bins cnt_wr_ok       = binsof(cp_csr_noasr_cls.cnt_wr) &&
+                                     binsof(cp_csr_noasr_out.ok);
+      illegal_bins always_ok_asr   = binsof(cp_csr_noasr_cls.always_ok) &&
+                                     binsof(cp_csr_noasr_out.asr);
+      // Without ASR, anything legal that is not always_ok faults with ASR.
+      ignore_bins not_reachable = (binsof(cp_csr_noasr_cls.cnt_wr) ||
+                                   binsof(cp_csr_noasr_cls.scr) ||
+                                   binsof(cp_csr_noasr_cls.other)) &&
+                                  !binsof(cp_csr_noasr_out.asr);
+      ignore_bins always_ok_ill  = binsof(cp_csr_noasr_cls.always_ok) &&
+                                   binsof(cp_csr_noasr_out.ill);
+    }
+
+    // KUDU-037: a successful SC.W must update MSHWM like a store.
+    cp_mshwm_upd_src: coverpoint resp_amo_flag iff (mshwm_upd) {
+      option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      bins store = {4'b0000};
+      bins sc    = {4'b0010};
+      bins amo_w = {4'b1000};
+    }
+
     cp_csr_cheri_asr_err: coverpoint ls_pipeline.load_store_unit_i.csr_cheri_asr_err
         iff (cheri_active && resp_cheri_mode && lsu_resp_valid &&
              ls_pipeline.load_store_unit_i.csr_go_q) {
@@ -399,25 +536,25 @@ module kudu_fcov_lsu
       bins clear = {1'b0};
       bins error = {1'b1};
     }
-    cp_cheri_ls_err: coverpoint ls_pipeline.load_store_unit_i.cheri_ls_err
+    cp_cheri_ls_err: coverpoint resp_lschk_err.any_fault
         iff (cheri_active && resp_cheri_mode && lsu_resp_valid &&
              !ls_pipeline.load_store_unit_i.lsu_req_info_q.is_csr) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
       bins clear = {1'b0};
       bins error = {1'b1};
     }
-    cp_ls_align_err_only: coverpoint ls_pipeline.load_store_unit_i.ls_align_err_only
+    cp_ls_align_err_only: coverpoint resp_err_cause[5]
         iff (cheri_active && resp_cheri_mode && lsu_resp_valid &&
              !ls_pipeline.load_store_unit_i.lsu_req_info_q.is_csr &&
-             ls_pipeline.load_store_unit_i.cheri_ls_err) {
+             resp_lschk_err.any_fault) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
       bins other_cheri_fault = {1'b0};
       bins alignment_only = {1'b1};
     }
-    cp_resp_early_cheri_cause: coverpoint ls_pipeline.load_store_unit_i.cheri_err_cause
+    cp_resp_early_cheri_cause: coverpoint resp_err_cause[4:0]
         iff (cheri_active && resp_cheri_mode && lsu_resp_valid &&
-             ls_pipeline.load_store_unit_i.cheri_ls_err &&
-             !ls_pipeline.load_store_unit_i.lsu_req_info_q.cheri_err) {
+             resp_lschk_err.any_fault &&
+             !ls_pipeline.load_store_unit_i.lsu_req_info_q.lschk_err.any_fault) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
       bins c_align = {5'h00};
       bins c_bound = {5'h01};
@@ -427,6 +564,25 @@ module kudu_fcov_lsu
       bins c_sd    = {5'h13};
       bins c_sc    = {5'h15};
       illegal_bins other = default;
+    }
+
+    // check_ls_err flags misaligned LR/SC/AMO in every mode; the LSU reports
+    // LR as a load and SC/AMO as a store address-misaligned fault. A faulting
+    // AMO read phase never issues its write phase, so amo_w is not a goal.
+    cp_atomic_align_fault_rv32: coverpoint
+        ls_pipeline.load_store_unit_i.lsu_req_info_q.amo_flag
+        iff (resp_atomic_align_err && !(cheri_active && resp_cheri_mode)) {
+      bins lr    = {4'b0001};
+      bins sc    = {4'b0010};
+      bins amo_r = {4'b0100};
+    }
+    cp_atomic_align_fault_cheri: coverpoint
+        ls_pipeline.load_store_unit_i.lsu_req_info_q.amo_flag
+        iff (resp_atomic_align_err && cheri_active && resp_cheri_mode) {
+      option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      bins lr    = {4'b0001};
+      bins sc    = {4'b0010};
+      bins amo_r = {4'b0100};
     }
 
     // clrperm and is_load are retained in the response's saved request, not pl_out_t.
@@ -559,6 +715,47 @@ module kudu_fcov_lsu
         iff (resp_cap_sample && resp_mem_cap.valid) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
     }
+
+    // KUDU-024: CLC permission stripping must also apply in debug mode.
+    cp_resp_clrperm_any: coverpoint (|ls_pipeline.load_store_unit_i.lsu_req_info_q.clrperm)
+        iff (clrperm_sample) {
+      option.weight = 0;
+      bins none = {1'b0};
+      bins some = {1'b1};
+    }
+    x_clrperm_dm: cross cp_resp_clrperm_any, cp_debug_mode iff (clrperm_sample) {
+      option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+    }
+
+    // KUDU-008: LR/SC/AMO bus errors. LR reports a load fault, the others a
+    // store/AMO fault, in both AMO phases.
+    cp_amo_bus_err_phase: coverpoint resp_amo_flag iff (amo_bus_err) {
+      bins lr    = {4'b0001};
+      bins sc    = {4'b0010};
+      bins amo_r = {4'b0100};
+      bins amo_w = {4'b1000};
+    }
+    cp_amo_bus_err_cause: coverpoint resp_mcause iff (amo_bus_err) {
+      option.weight = 0;
+      bins load_fault  = {EXC_CAUSE_LOAD_ACCESS_FAULT};
+      bins store_fault = {EXC_CAUSE_STORE_ACCESS_FAULT};
+    }
+    x_amo_bus_err_cause: cross cp_amo_bus_err_phase, cp_amo_bus_err_cause
+        iff (amo_bus_err) {
+      illegal_bins lr_store = binsof(cp_amo_bus_err_phase.lr) &&
+                              binsof(cp_amo_bus_err_cause.store_fault);
+      illegal_bins rmw_load = !binsof(cp_amo_bus_err_phase.lr) &&
+                              binsof(cp_amo_bus_err_cause.load_fault);
+    }
+    // KUDU-032/061: the AMO read phase must check SD as well as LD.
+    cp_amo_cheri_cause: coverpoint resp_err_cause[4:0] iff (amo_cheri_err) {
+      option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      bins c_bound = {5'h01};
+      bins c_tag   = {5'h02};
+      bins c_seal  = {5'h03};
+      bins c_ld    = {5'h12};
+      bins c_sd    = {5'h13};
+    }
     
 
     // ======================================================================
@@ -574,19 +771,19 @@ module kudu_fcov_lsu
 
   AssertCheriReqCauseReachable: assert property (
     @(posedge clk_i) disable iff (!rst_ni)
-    (cheri_active && req_cheri_mode && lsu_req && lsu_req_info.cheri_err) |->
-    (lsu_req_info.cheri_cause inside
+    (cheri_active && req_cheri_mode && lsu_req && lsu_req_info.lschk_err.any_fault) |->
+    (req_err_cause[4:0] inside
      {5'h00, 5'h01, 5'h02, 5'h03, 5'h12, 5'h13, 5'h15}))
-    else $error("FCOV: LSU CHERI request cause outside cheri_ls_check encoding");
+    else $error("FCOV: LSU CHERI request cause outside check_ls_err encoding");
 
   AssertRespEarlyCheriCauseReachable: assert property (
     @(posedge clk_i) disable iff (!rst_ni)
     (cheri_active && resp_cheri_mode && lsu_resp_valid &&
-     ls_pipeline.load_store_unit_i.cheri_ls_err &&
-     !ls_pipeline.load_store_unit_i.lsu_req_info_q.cheri_err) |->
-    (ls_pipeline.load_store_unit_i.cheri_err_cause inside
+     resp_lschk_err.any_fault &&
+     !ls_pipeline.load_store_unit_i.lsu_req_info_q.lschk_err.any_fault) |->
+    (resp_err_cause[4:0] inside
      {5'h00, 5'h01, 5'h02, 5'h03, 5'h12, 5'h13, 5'h15}))
-    else $error("FCOV: LSU response CHERI cause outside cheri_ls_check encoding");
+    else $error("FCOV: LSU response CHERI cause outside check_ls_err encoding");
 
   AssertRespCapTagMatchesClrperm: assert property (
     @(posedge clk_i) disable iff (!rst_ni)
@@ -594,6 +791,29 @@ module kudu_fcov_lsu
                          (resp_mem_cap.valid &
                           ~ls_pipeline.load_store_unit_i.lsu_req_info_q.clrperm[3])))
     else $error("FCOV: capability load tag result does not match clrperm[3]");
+
+  AssertAmoBusErrCause: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    amo_bus_err |-> ((resp_mcause == EXC_CAUSE_LOAD_ACCESS_FAULT) ==
+                     (resp_amo_flag == 4'b0001)))
+    else $error("FCOV: LR/SC/AMO bus error reported with the wrong cause (KUDU-008)");
+
+  AssertSplitErrMtval: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    split_bus_err |-> (split_first_err_q ? (split_mtval_cls == SMT_FIRST_ADDR)
+                                         : (split_mtval_cls == SMT_SECOND_WORD)))
+    else $error("FCOV: split access bus error mtval 0x%08x for addr 0x%08x (KUDU-052)",
+                resp_mtval, split_addr);
+
+  AssertCsrNoAsrOutcome: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    csr_noasr_sample |->
+      (csr_out_cls != CO_OTHER) &&
+      ((csr_asr_cls == CA_ILLEGAL)   -> (csr_out_cls == CO_ILL)) &&
+      ((csr_asr_cls == CA_CNT_WR)    -> (csr_out_cls != CO_OK)) &&
+      ((csr_asr_cls == CA_ALWAYS_OK) -> (csr_out_cls != CO_ASR)))
+    else $error("FCOV: CSR access without ASR: class %s outcome %s (KUDU-017/018)",
+                csr_asr_cls.name(), csr_out_cls.name());
 
 `endif  // KUDU_FCOV_OFF
 
@@ -631,10 +851,48 @@ module kudu_fcov_dcache
   input logic       resp_full_word,
   input logic       resp_partial_word,
   input logic       resp_invalidate,
-  input logic       waw_act_match
+  input logic       waw_act_match,
+  input logic       lsu_req_done_i,
+  input logic       lsu_req_q,
+  input lsu_req_info_t lsu_req_info_i,
+  input lsu_req_info_t lsu_req_info_q
 );
 
 `ifndef KUDU_FCOV_OFF
+
+  // KUDU-014/033/050: a cacheable load issued while an earlier request is
+  // still in flight (lsu_req_q), classed by that request and by the word the
+  // load reads relative to it. A capability, misaligned or SC request in
+  // flight must block forwarding (dcache.sv rd_data_good).
+`ifdef CHERIoT
+  localparam bit CapEn = 1'b1;
+`else
+  localparam bit CapEn = 1'b0;
+`endif
+  typedef enum logic [2:0] {
+    IF_WORD_ST, IF_PART_ST, IF_LOAD, IF_UNAL, IF_CAP, IF_SC, IF_OTHER
+  } fcov_inflight_e;
+  typedef enum logic [1:0] {REL_SAME, REL_NEXT, REL_OTHER} fcov_inflight_rel_e;
+  fcov_inflight_e     inflight_cls;
+  fcov_inflight_rel_e inflight_rel;
+  logic               ld_fwd_sample;
+
+  always_comb begin
+    if (lsu_req_info_q.is_csr || (|lsu_req_info_q.amo_flag[3:2])) inflight_cls = IF_OTHER;
+    else if (lsu_req_info_q.amo_flag[1])                         inflight_cls = IF_SC;
+    else if (lsu_req_info_q.is_cap)                              inflight_cls = IF_CAP;
+    else if (unaligned_access_q)                                 inflight_cls = IF_UNAL;
+    else if (lsu_req_info_q.is_load)                             inflight_cls = IF_LOAD;
+    else if (lsu_req_info_q.data_type == 2'b00)                  inflight_cls = IF_WORD_ST;
+    else                                                         inflight_cls = IF_PART_ST;
+    if (lsu_req_info_i.addr[31:2] == lsu_req_info_q.addr[31:2])  inflight_rel = REL_SAME;
+    else if (lsu_req_info_i.addr[31:2] == lsu_req_info_q.addr[31:2] + 30'd1)
+                                                                 inflight_rel = REL_NEXT;
+    else                                                         inflight_rel = REL_OTHER;
+  end
+  assign ld_fwd_sample = cache_enable_i && lsu_req_i && lsu_req_done_i && lsu_req_q &&
+      lsu_req_info_i.is_load && lsu_req_info_i.cache_ok && !lsu_req_info_i.is_cap &&
+      !unaligned_access && (lsu_req_info_i.amo_flag == 4'b0000);
 
   // ==========================================================================
   // 12.4 Forwarding cache
@@ -710,9 +968,53 @@ module kudu_fcov_dcache
       bins stored = {1'b0};
       bins write_through = {1'b1};
     }
+
+    cp_inflight_cls: coverpoint inflight_cls iff (ld_fwd_sample) {
+      option.weight = 0;
+      bins word_st = {IF_WORD_ST};
+      bins part_st = {IF_PART_ST};
+      bins load    = {IF_LOAD};
+      bins unal    = {IF_UNAL};
+      bins cap     = {IF_CAP};
+      bins sc      = {IF_SC};
+    }
+    cp_inflight_rel: coverpoint inflight_rel iff (ld_fwd_sample) {
+      option.weight = 0;
+      bins same  = {REL_SAME};
+      bins next  = {REL_NEXT};
+      bins other = {REL_OTHER};
+    }
+    cp_inflight_hit: coverpoint cache_rd_hit iff (ld_fwd_sample) {
+      option.weight = 0;
+      bins miss = {1'b0};
+      bins hit  = {1'b1};
+    }
+    x_inflight_fwd: cross cp_inflight_cls, cp_inflight_rel, cp_inflight_hit
+        iff (ld_fwd_sample && inflight_cls != IF_CAP) {
+      illegal_bins risky_fwd = (binsof(cp_inflight_cls.unal) ||
+                                binsof(cp_inflight_cls.sc)) &&
+                               binsof(cp_inflight_hit.hit);
+      // Same-word bypass forwards only a full-word store's data.
+      ignore_bins same_no_byp = (binsof(cp_inflight_cls.part_st) ||
+                                 binsof(cp_inflight_cls.load)) &&
+                                binsof(cp_inflight_rel.same) && binsof(cp_inflight_hit.hit);
+      ignore_bins cap = binsof(cp_inflight_cls.cap);
+    }
+    // A capability store/load spans two words: same word and the next.
+    x_inflight_cap: cross cp_inflight_rel, cp_inflight_hit
+        iff (ld_fwd_sample && inflight_cls == IF_CAP) {
+      option.weight = CapEn;
+      illegal_bins cap_fwd = binsof(cp_inflight_hit.hit);
+    }
   endgroup
 
   cg_ma_dcache u_cg_lsu_cache = new();
+
+  AssertNoFwdBehindRiskyReq: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (ld_fwd_sample && (inflight_cls inside {IF_UNAL, IF_CAP, IF_SC})) |-> !cache_rd_hit)
+    else $error("FCOV: load forwarded while a %s request is in flight (KUDU-014/033/050)",
+                inflight_cls.name());
 
   AssertRdTagOneHot: assert property (
     @(posedge clk_i) disable iff (!rst_ni) $onehot0(rd_tag_match))
@@ -860,6 +1162,663 @@ module kudu_fcov_trvk
   endgroup
 
   cg_ma_trvk u_cg_lsu_trvk = new();
+
+`endif  // KUDU_FCOV_OFF
+
+endmodule
+`endif  // CHERIoT
+
+
+// ===========================================================================
+// SVA design properties for the load/store pipeline (not coverage).
+// Bound to ls_pipeline as u_fcov_sva_lsu; reaches load_store_unit_i, lsu_if_i
+// and the WB/WAW FIFOs through explicit bind connections.
+// Checks: data bus handshake stability and beat accounting, byte enables /
+// address / store lanes against a reference model of the access, load data
+// alignment and extension, faulting requests never reach the bus, capability
+// tag on stores, error cause/mtval legality, AMO sequencing, lsu_if hold
+// protocol, flush/error quiescence, FIFO no-overrun and bounded busy time.
+// ===========================================================================
+module kudu_sva_lsu
+  import super_pkg::*;
+  import cheri_pkg::*;
+  import csr_pkg::*;
+#(
+  parameter bit CHERIoTEn = 1'b1
+) (
+  input logic            clk_i,
+  input logic            rst_ni,
+
+  input logic            cheri_pmode,
+  input logic            debug_mode_i,
+  input logic            flush_i,
+  input logic            lsu_err_active,
+  input logic            resp_err_latched,
+  input logic            csr_op_en_o,
+
+  // --- data bus ---------------------------------------------------------------
+  input logic            data_req_o,
+  input logic            data_we_o,
+  input logic [3:0]      data_be_o,
+  input logic            data_is_cap_o,
+  input logic [3:0]      data_amo_flag_o,
+  input logic [31:0]     data_addr_o,
+  input logic [MemW-1:0] data_wdata_o,
+  input logic            data_gnt_i,
+  input logic            data_rvalid_i,
+  input logic            data_err_i,
+  input logic [MemW-1:0] data_rdata_i,
+
+  // --- lsu_if -> LSU request, LSU response ------------------------------------
+  input logic            lsu_req,
+  input lsu_req_info_t   lsu_req_info,
+  input logic            lsu_req_done,
+  input logic            lsu_resp_valid,
+  input logic            lsu_resp_err,
+  input pl_out_t         lsu_resp_info,
+
+  // --- internals (hierarchical, see bind) -------------------------------------
+  input ls_fsm_e         ls_fsm_cs,
+  input logic            handle_misaligned_q,
+  input logic            outstanding_resp_q,
+  input logic            req_err_q,
+  input logic            csr_go_q,
+  input logic            ls_go,
+  input logic            csr_go,
+  input lsu_req_info_t   lsu_req_info_q,
+  input logic [2:0]      lsif_fsm_q,
+  input logic            req_dly_valid,
+  input logic            wb_fifo_wr_rdy,
+  input logic            waw_fifo_wvalid,
+  input logic            waw_fifo_wr_rdy
+);
+
+`ifndef KUDU_FCOV_OFF
+
+  // lsu_if.sv:28 DLY1 encoding (lsif_fsm_e is local to lsu_if)
+  localparam logic [2:0] LsifDly1 = 3'h2;
+  // bits above the 32-bit integer data (capability metadata/tag); 0 for RV32
+  localparam logic [MemW-1:0] MemHiMask = ~MemW'(33'h0_ffff_ffff);
+  localparam logic [RegW-1:0] RegHiMask = ~RegW'(33'h0_ffff_ffff);
+
+  // ---------------------------------------------------------------------------
+  // Reference model of the accepted access (captured at ls_go)
+  // ---------------------------------------------------------------------------
+  function automatic logic [2:0] acc_size (logic [1:0] dtype);
+    return (dtype == 2'b00) ? 3'd4 : (dtype == 2'b01) ? 3'd2 : 3'd1;
+  endfunction
+
+  logic [2:0]  cur_size;
+  logic [7:0]  cur_mask8;
+  logic [3:0]  ref_be;
+  logic [31:0] ref_addr;
+  logic        cur_split;
+
+  always_comb begin
+    cur_size  = acc_size(lsu_req_info.data_type);
+    cur_mask8 = 8'((8'h1 << cur_size) - 8'h1) << lsu_req_info.addr[1:0];
+    cur_split = !lsu_req_info.is_cap && (({1'b0, lsu_req_info.addr[1:0]} + cur_size) > 3'd4);
+    if (cheri_pmode && lsu_req_info.is_cap)
+      ref_be = 4'b1111;
+    else
+      ref_be = handle_misaligned_q ? cur_mask8[7:4] : cur_mask8[3:0];
+    ref_addr = {lsu_req_info.addr[31:2], 2'b00} + (handle_misaligned_q ? 32'h4 : 32'h0);
+  end
+
+  logic        m_active, m_split, m_is_cap, m_is_load, m_sign, m_bus_err, m_err_seen;
+  logic [1:0]  m_dtype, m_exp_beats, m_gnt_cnt, m_rv_cnt;
+  logic [3:0]  m_amo;
+  logic [31:0] m_addr, m_lo;
+  logic        m_amo_rd_ok;
+  logic [31:0] m_amo_rd_addr, m_amo_rd_data;
+  logic        bus_gnt;
+
+  assign bus_gnt = data_req_o & data_gnt_i;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      m_active      <= 1'b0;
+      m_split       <= 1'b0;
+      m_is_cap      <= 1'b0;
+      m_is_load     <= 1'b0;
+      m_sign        <= 1'b0;
+      m_bus_err     <= 1'b0;
+      m_dtype       <= 2'b00;
+      m_exp_beats   <= 2'd0;
+      m_gnt_cnt     <= 2'd0;
+      m_rv_cnt      <= 2'd0;
+      m_amo         <= 4'h0;
+      m_addr        <= 32'h0;
+      m_lo          <= 32'h0;
+      m_err_seen    <= 1'b0;
+      m_amo_rd_ok   <= 1'b0;
+      m_amo_rd_addr <= 32'h0;
+      m_amo_rd_data <= 32'h0;
+    end else begin
+      if (ls_go || csr_go) begin
+        m_active    <= 1'b1;
+        m_split     <= ls_go && cur_split;
+        m_is_cap    <= lsu_req_info.is_cap;
+        m_is_load   <= lsu_req_info.is_load;
+        m_sign      <= lsu_req_info.sign_ext;
+        m_dtype     <= lsu_req_info.data_type;
+        m_amo       <= lsu_req_info.amo_flag;
+        m_addr      <= lsu_req_info.addr;
+        m_exp_beats <= (csr_go || lsu_req_info.lschk_err.any_fault) ? 2'd0 :
+                       cur_split ? 2'd2 : 2'd1;
+        m_gnt_cnt   <= {1'b0, bus_gnt};
+        m_rv_cnt    <= 2'd0;
+        m_bus_err   <= 1'b0;
+      end else begin
+        if (lsu_resp_valid)
+          m_active <= 1'b0;
+        if (bus_gnt && (m_gnt_cnt != 2'd3))
+          m_gnt_cnt <= m_gnt_cnt + 2'd1;
+        if (data_rvalid_i) begin
+          if (m_rv_cnt != 2'd3)
+            m_rv_cnt <= m_rv_cnt + 2'd1;
+          if (m_rv_cnt == 2'd0)
+            m_lo <= data_rdata_i[31:0];
+          if (data_err_i)
+            m_bus_err <= 1'b1;
+        end
+      end
+
+      // error response seen and not yet flushed
+      if (flush_i)
+        m_err_seen <= 1'b0;
+      else if (lsu_resp_valid && lsu_resp_err)
+        m_err_seen <= 1'b1;
+
+      // last LSU operation was an error-free AMO read phase
+      if (flush_i || ls_go || csr_go)
+        m_amo_rd_ok <= 1'b0;
+      if (lsu_resp_valid && !lsu_resp_err && !csr_go_q && m_is_load && m_amo[2]) begin
+        m_amo_rd_ok   <= !(flush_i || ls_go || csr_go);
+        m_amo_rd_addr <= m_addr;
+        m_amo_rd_data <= lsu_resp_info.wdata[31:0];
+      end
+    end
+  end
+
+  // Expected load result from the bus words seen by the model.
+  logic [63:0] ld_words, ld_shift;
+  logic [31:0] ld_ref;
+  always_comb begin
+    ld_words = m_split ? {data_rdata_i[31:0], m_lo} : {32'h0, data_rdata_i[31:0]};
+    ld_shift = ld_words >> {m_addr[1:0], 3'b000};
+    case (m_dtype)
+      2'b00:   ld_ref = ld_shift[31:0];
+      2'b01:   ld_ref = {{16{m_sign & ld_shift[15]}}, ld_shift[15:0]};
+      default: ld_ref = {{24{m_sign & ld_shift[7]}},  ld_shift[7:0]};
+    endcase
+  end
+
+  // CHERI check of the request currently driven to the bus and of the request
+  // being answered (same function the RTL uses at lsu_if.sv:53 and :511).
+  lschk_err_t bus_chk, resp_chk;
+  always_comb begin
+    bus_chk  = check_ls_err(cheri_pmode, debug_mode_i, lsu_req_info.cs1_fcap,
+                            lsu_req_info.cs2_valid, lsu_req_info.cs2_perms,
+                            lsu_req_info.addr, lsu_req_info.is_load,
+                            lsu_req_info.is_cap, lsu_req_info.data_type,
+                            lsu_req_info.amo_flag);
+    resp_chk = check_ls_err(cheri_pmode, debug_mode_i, lsu_req_info_q.cs1_fcap,
+                            lsu_req_info_q.cs2_valid, lsu_req_info_q.cs2_perms,
+                            lsu_req_info_q.addr, lsu_req_info_q.is_load,
+                            lsu_req_info_q.is_cap, lsu_req_info_q.data_type,
+                            lsu_req_info_q.amo_flag);
+  end
+
+  logic resp_ls;     // response to a load/store (not CSR)
+  logic resp_ld_cls; // reported with load causes (load-only; not AMO)
+  assign resp_ls     = lsu_resp_valid && !csr_go_q;
+  assign resp_ld_cls = lsu_req_info_q.is_load && (lsu_req_info_q.amo_flag[3:2] == 2'b00);
+
+  // busy-time counter for the liveness bound
+  logic [7:0] busy_cnt;
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni)
+      busy_cnt <= 8'h0;
+    else if (((ls_fsm_cs != IDLE) || (outstanding_resp_q && !lsu_resp_valid)) &&
+             (busy_cnt != 8'hff))
+      busy_cnt <= busy_cnt + 8'h1;
+    else if (!((ls_fsm_cs != IDLE) || (outstanding_resp_q && !lsu_resp_valid)))
+      busy_cnt <= 8'h0;
+  end
+
+  // ---------------------------------------------------------------------------
+  // Data bus protocol
+  // ---------------------------------------------------------------------------
+
+  // load_store_unit.sv:394-445 a request waiting for grant is never withdrawn
+  AssertBusReqHeld: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (data_req_o && !data_gnt_i) |=> data_req_o)
+    else $error("SVA: data_req_o withdrawn before data_gnt_i");
+
+  // load_store_unit.sv:125,671-678 address/attributes/store data stable while waiting for grant
+  AssertBusAttrStable: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (data_req_o && !data_gnt_i) |=>
+      ($stable(data_addr_o) && $stable(data_we_o) && $stable(data_be_o) &&
+       $stable(data_is_cap_o) && $stable(data_amo_flag_o) &&
+       (!data_we_o || $stable(data_wdata_o))))
+    else $error("SVA: data bus attributes changed while waiting for grant");
+
+  // load_store_unit.sv:412,648 rvalid only arrives when the LSU expects a response
+  AssertRvalidExpected: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    data_rvalid_i |->
+      ((ls_fsm_cs == WAIT_RVALID_MIS) ||
+       ((ls_fsm_cs == IDLE) && outstanding_resp_q && !req_err_q && !csr_go_q)))
+    else $error("SVA: data_rvalid_i while the LSU is not waiting for a response");
+
+  // load_store_unit.sv:376-393 every granted bus beat belongs to an accepted access
+  // and never exceeds its expected beat count (1, or 2 for a split access)
+  AssertNoExtraBusBeat: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (bus_gnt && !ls_go) |-> (m_active && (m_gnt_cnt < m_exp_beats)))
+    else $error("SVA: unexpected data bus beat");
+
+  // load_store_unit.sv:376-445,648 a load/store response comes after exactly the
+  // expected beats: 0 for a request-side fault, 2 for a split access, else 1
+  AssertAccessBeatCount: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    resp_ls |-> (m_active && (m_gnt_cnt == m_exp_beats) &&
+                 ((m_rv_cnt + {1'b0, data_rvalid_i}) == m_exp_beats)))
+    else $error("SVA: LSU response with %0d grants / %0d rvalids, expected %0d",
+                m_gnt_cnt, m_rv_cnt, m_exp_beats);
+
+  // load_store_unit.sv:133-189 byte enables match access size and offset
+  // (first or second word of a split access; capabilities use all four lanes)
+  AssertBusBeMatchesAccess: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    data_req_o |-> (data_be_o == ref_be))
+    else $error("SVA: data_be_o %b, expected %b", data_be_o, ref_be);
+
+  // load_store_unit.sv:125,668-671 bus address is the access word (second part: next word)
+  AssertBusAddrMatchesAccess: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    data_req_o |-> (data_addr_o == ref_addr))
+    else $error("SVA: data_addr_o 0x%08x, expected 0x%08x", data_addr_o, ref_addr);
+
+  // load_store_unit.sv:196-212 each enabled lane of an integer store carries the
+  // matching register byte (rotation by the byte offset)
+  for (genvar b = 0; b < 4; b++) begin : gen_st_lane
+    AssertStoreDataLanes: assert property (@(posedge clk_i) disable iff (!rst_ni)
+      (data_req_o && data_we_o && !lsu_req_info.is_cap && data_be_o[b]) |->
+        kudu_fcov_pkg::sva_xok(data_wdata_o[8*b +: 8] ==
+                               lsu_req_info.wdata[8*((b - lsu_req_info.addr[1:0]) & 3) +: 8]))
+      else $error("SVA: store lane %0d carries the wrong byte", b);
+  end
+
+  // load_store_unit.sv:209 integer stores never write a capability tag/metadata
+  AssertIntStoreNoTag: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (data_req_o && data_we_o && !data_is_cap_o) |-> ((data_wdata_o & MemHiMask) == '0))
+    else $error("SVA: integer store drives non-zero upper (capability) bits");
+
+  // load_store_unit.sv:377 + lsu_if.sv:53-71 a checked (non-early) access that
+  // reaches the bus passes the CHERI/alignment check evaluated on the bus request
+  AssertNoFaultingReqOnBus: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (data_req_o && !lsu_req_info.early_load) |-> !bus_chk.any_fault)
+    else $error("SVA: faulting request driven on the data bus");
+
+  // cheri_pkg.sv:1037,1043 checked capability accesses on the bus are 8-byte aligned
+  // (debug mode is exempt: check_ls_err disables all CHERI checks there by design)
+  AssertCapAccess8Aligned: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (data_req_o && cheri_pmode && !debug_mode_i && data_is_cap_o &&
+     !lsu_req_info.early_load) |->
+      (lsu_req_info.addr[2:0] == 3'b000))
+    else $error("SVA: capability bus access at a non 8-byte aligned address");
+
+  // cheri_pkg.sv:1047,1052 + cmplx_unit.sv:166 LR/SC/AMO bus accesses are aligned full words
+  AssertAmoBusWordAligned: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (data_req_o && (data_amo_flag_o != 4'h0)) |->
+      ((lsu_req_info.addr[1:0] == 2'b00) && (data_be_o == 4'b1111) &&
+       !handle_misaligned_q))
+    else $error("SVA: misaligned or partial LR/SC/AMO bus access");
+
+`ifndef KUDU_CUSTOM_ADDR_DECODE
+  // ls_pipeline.sv:227 early (response-checked) loads only reach side-effect-free RAM
+  AssertEarlyLoadSideEffectFree: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (data_req_o && lsu_req_info.early_load && !handle_misaligned_q) |->
+      (!data_we_o && (data_amo_flag_o == 4'h0) && (data_addr_o[31:24] == 8'h80)))
+    else $error("SVA: unchecked early load outside the early-load region");
+
+  // ls_pipeline.sv:93-96,227 + load_store_unit.sv:125 the second beat of a split
+  // early load also stays in the early-load region (decode looks at the base only).
+  // Waived (INT-3, sim/testplan/integration_issues.md); an expected CEX in fv_kudu_fcov.tcl.
+  AssertEarlyLoadSplitInRegion: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (data_req_o && lsu_req_info.early_load && handle_misaligned_q) |->
+      (data_addr_o[31:24] == 8'h80))
+    else $error("SVA: second beat of an unchecked early load leaves the early-load region");
+`endif
+
+  if (CHERIoTEn) begin : gen_cap_tag
+    // ls_pipeline.sv:217 + lsu_if.sv:70 capability store tag = source tag & ~SLC violation
+    AssertCapStoreTag: assert property (@(posedge clk_i) disable iff (!rst_ni)
+      (data_req_o && data_we_o && data_is_cap_o && cheri_pmode) |->
+        (data_wdata_o[MemW-1] == (lsu_req_info.cs2_valid && !bus_chk.slc)))
+      else $error("SVA: capability store tag does not match cs2 tag/SLC check");
+  end
+
+  // ---------------------------------------------------------------------------
+  // Load data
+  // ---------------------------------------------------------------------------
+
+  // load_store_unit.sv:228-340,617-622 integer load data is the addressed bytes,
+  // re-assembled across a split access and sign/zero extended
+  AssertLoadDataExt: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (resp_ls && !lsu_resp_err && m_is_load && !m_is_cap && !m_amo[1] && !m_amo[3]) |->
+      kudu_fcov_pkg::sva_xok(((lsu_resp_info.wdata[31:0] == ld_ref) && ((lsu_resp_info.wdata & RegHiMask) == '0))))
+    else $error("SVA: load data 0x%08x, expected 0x%08x",
+                lsu_resp_info.wdata[31:0], ld_ref);
+
+  // ---------------------------------------------------------------------------
+  // Errors
+  // ---------------------------------------------------------------------------
+
+  // load_store_unit.sv:644-646 a load/store reports an error iff a bus beat erred
+  // or the CHERI/alignment check (request or response side) failed
+  AssertLsErrIffCause: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    resp_ls |-> (lsu_resp_err ==
+                 (m_bus_err || (data_rvalid_i && data_err_i) ||
+                  (!lsu_req_info_q.is_csr &&
+                   (resp_chk.any_fault || lsu_req_info_q.lschk_err.any_fault)))))
+    else $error("SVA: LSU error flag does not match bus/check errors");
+
+  // load_store_unit.sv:588-612 error mcause of a load/store is legal for the
+  // access class (CSR responses are left to AssertCsrNoAsrOutcome, KUDU-076)
+  AssertRespErrCauseLegal: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (lsu_resp_valid && lsu_resp_err && !csr_go_q) |->
+      (resp_ld_cls ? (lsu_resp_info.mcause inside {6'(EXC_CAUSE_LOAD_ADDR_MISALIGN),
+                                                    6'(EXC_CAUSE_LOAD_ACCESS_FAULT),
+                                                    6'(EXC_CAUSE_CHERI_FAULT)}) :
+                     (lsu_resp_info.mcause inside {6'(EXC_CAUSE_STORE_ADDR_MISALIGN),
+                                                    6'(EXC_CAUSE_STORE_ACCESS_FAULT),
+                                                    6'(EXC_CAUSE_CHERI_FAULT)})))
+    else $error("SVA: illegal LSU error mcause 0x%0x", lsu_resp_info.mcause);
+
+  // load_store_unit.sv:592-596 misaligned trap only for a truly misaligned
+  // capability or LR/SC/AMO access; mtval is the full access address
+  AssertMisalignTrapInfo: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (resp_ls && lsu_resp_err &&
+     (lsu_resp_info.mcause inside {6'(EXC_CAUSE_LOAD_ADDR_MISALIGN),
+                                    6'(EXC_CAUSE_STORE_ADDR_MISALIGN)})) |->
+      ((lsu_resp_info.mtval == lsu_req_info_q.addr) &&
+       (lsu_req_info_q.is_cap ? (lsu_req_info_q.addr[2:0] != 3'b000) :
+        ((lsu_req_info_q.amo_flag != 4'h0) && (lsu_req_info_q.addr[1:0] != 2'b00)))))
+    else $error("SVA: misaligned trap for an aligned/non-AMO access or bad mtval");
+
+  // load_store_unit.sv:601-604 non-split access fault: mtval is the access address
+  AssertAccessFaultMtval: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (resp_ls && lsu_resp_err && !m_split &&
+     (lsu_resp_info.mcause inside {6'(EXC_CAUSE_LOAD_ACCESS_FAULT),
+                                    6'(EXC_CAUSE_STORE_ACCESS_FAULT)})) |->
+      (lsu_resp_info.mtval == lsu_req_info_q.addr))
+    else $error("SVA: access fault mtval 0x%08x, expected 0x%08x",
+                lsu_resp_info.mtval, lsu_req_info_q.addr);
+
+  // ---------------------------------------------------------------------------
+  // AMO sequencing (cmplx_unit.sv:160-170)
+  // ---------------------------------------------------------------------------
+
+  // an AMO write phase only follows an error-free AMO read of the same address
+  AssertAmoWriteFollowsGoodRead: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (ls_go && lsu_req_info.amo_flag[3]) |->
+      (m_amo_rd_ok && (lsu_req_info.addr == m_amo_rd_addr)))
+    else $error("SVA: AMO write phase without a matching good AMO read");
+
+  // load_store_unit.sv:627-634,660 the AMO write phase returns the AMO read data
+  AssertAmoWriteReturnsReadData: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (resp_ls && !lsu_resp_err && m_amo[3]) |->
+      (lsu_resp_info.wdata[31:0] == m_amo_rd_data))
+    else $error("SVA: AMO result is not the value read by the AMO read phase");
+
+  // ---------------------------------------------------------------------------
+  // lsu_if -> LSU request protocol
+  // ---------------------------------------------------------------------------
+
+  // lsu_if.sv:96-133 a pending request is held stable until lsu_req_done (or flush)
+  AssertLsifReqHeld: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (lsu_req && !lsu_req_done && !flush_i) |=> (lsu_req && $stable(lsu_req_info)))
+    else $error("SVA: lsu_if changed/dropped a request before lsu_req_done");
+
+  // load_store_unit.sv:125,135,198,672-678 while the LSU FSM is busy, its input
+  // request is still presented and equals the captured copy
+  AssertLsuReqHeldWhileBusy: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (ls_fsm_cs != IDLE) |-> (lsu_req && kudu_fcov_pkg::sva_xok(lsu_req_info == lsu_req_info_q)))
+    else $error("SVA: LSU busy but lsu_if no longer presents the same request");
+
+  // lsu_if.sv:109-118 the DLY1 state always holds a valid delayed request
+  // (otherwise a stale req_dly_q could be moved to the hold register and issued)
+  AssertLsifDly1Valid: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (lsif_fsm_q == LsifDly1) |-> req_dly_valid)
+    else $error("SVA: lsu_if in DLY1 without a valid delayed request");
+
+  // ---------------------------------------------------------------------------
+  // Error / flush quiescence
+  // ---------------------------------------------------------------------------
+
+  // ls_pipeline.sv:238-249 a pipeline flush is only caused by a load/store/CSR error
+  AssertFlushOnlyOnLsErr: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    flush_i |-> lsu_err_active)
+    else $error("SVA: flush without a pending LS pipeline error");
+
+  // load_store_unit.sv:368-460 flush never hits an in-flight LSU access
+  // (the LSU and lsu_if do not cancel bus transactions on flush)
+  AssertLsuIdleAtFlush: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    flush_i |-> ((ls_fsm_cs == IDLE) && !ls_go && !csr_go &&
+                 !(outstanding_resp_q && !lsu_resp_valid)))
+    else $error("SVA: flush while the LSU has an access in flight");
+
+  // ls_pipeline.sv:247-249 after an error response no memory or CSR side effect
+  // happens until the flush
+  AssertNoSideEffectAfterErr: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    m_err_seen |-> (!data_req_o && !csr_op_en_o))
+    else $error("SVA: memory/CSR access issued after an LSU error, before flush");
+
+  // ---------------------------------------------------------------------------
+  // FIFOs and liveness
+  // ---------------------------------------------------------------------------
+
+  // ls_pipeline.sv:325-343 wr_rdy2 backpressure prevents a WB FIFO overrun
+  AssertWbFifoNoOverrun: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    lsu_resp_valid |-> wb_fifo_wr_rdy)
+    else $error("SVA: LSU response written to a full WB FIFO");
+
+  // ls_pipeline.sv:345-353 the WAW tracking FIFO never overruns
+  AssertWawFifoNoOverrun: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    waw_fifo_wvalid |-> waw_fifo_wr_rdy)
+    else $error("SVA: WAW tracking FIFO written while full");
+
+  // load_store_unit.sv:368-448 an accepted access completes in bounded time
+  // (bus waits are bounded by the environment / memory model)
+  AssertLsuNeverStuck: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    busy_cnt < 8'd100)
+    else $error("SVA: LSU busy for 100 cycles");
+
+`endif  // KUDU_FCOV_OFF
+
+endmodule
+
+
+// ===========================================================================
+// SVA for the forwarding cache.  Bound to dcache by module name (it sits in
+// an unnamed generate block, ls_pipeline.sv:373).
+// Checks: only cacheable addresses are cached, and after a store/fill
+// response every still-valid line for that word holds the new data.
+// ===========================================================================
+module kudu_sva_dcache
+  import super_pkg::*;
+#(
+  parameter int unsigned TagHi = 31
+) (
+  input logic             clk_i,
+  input logic             rst_ni,
+
+  input logic             lsu_resp_valid_i,
+  input logic             lsu_resp_err_i,
+  input logic [MemW-1:0]  data_rdata_i,
+  input lsu_req_info_t    lsu_req_info_q,
+  input logic             rd_hit_q,
+  input logic             unaligned_access_q,
+  input logic [3:0]       line_valid,
+  input logic [TagHi-2:0] tags [4],
+  input logic [31:0]      cache_mem [4]
+);
+
+`ifndef KUDU_FCOV_OFF
+
+  // Snapshot of a completed, error-free, word-aligned integer access.
+  logic        s_chk, s_cap;
+  logic [31:0] s_addr, s_data;
+  logic [3:0]  s_be;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      s_chk  <= 1'b0;
+      s_cap  <= 1'b0;
+      s_addr <= 32'h0;
+      s_data <= 32'h0;
+      s_be   <= 4'h0;
+    end else begin
+      s_chk  <= lsu_resp_valid_i && !lsu_resp_err_i && !lsu_req_info_q.is_csr &&
+                !unaligned_access_q &&
+                (lsu_req_info_q.is_cap ||
+                 (lsu_req_info_q.is_load ? !rd_hit_q : (lsu_req_info_q.amo_flag[1] == 1'b0)));
+      s_cap  <= lsu_req_info_q.is_cap;
+      s_addr <= lsu_req_info_q.addr;
+      s_data <= lsu_req_info_q.is_load ? data_rdata_i[31:0] :
+                (lsu_req_info_q.wdata[31:0] << {lsu_req_info_q.addr[1:0], 3'b000});
+      s_be   <= lsu_req_info_q.is_load ? 4'b1111 :
+                (lsu_req_info_q.data_type == 2'b00) ? 4'b1111 :
+                (lsu_req_info_q.data_type == 2'b01) ? (4'b0011 << lsu_req_info_q.addr[1:0]) :
+                                                      (4'b0001 << lsu_req_info_q.addr[1:0]);
+    end
+  end
+
+  for (genvar i = 0; i < 4; i++) begin : gen_line
+`ifndef KUDU_CUSTOM_ADDR_DECODE
+    // dcache.sv:304 + ls_pipeline.sv:228 only cacheable (0x80xx_xxxx) words are cached
+    AssertCacheLineCacheable: assert property (@(posedge clk_i) disable iff (!rst_ni)
+      line_valid[i] |-> (tags[i][TagHi-2 -: 8] == 8'h80))
+      else $error("SVA: dcache line %0d holds a non-cacheable address", i);
+`endif
+
+    // dcache.sv:262-310 after a good integer store/fill, a valid line tagged with
+    // that word holds the stored bytes / the fill data; after a capability
+    // access no line of that 8-byte granule stays valid ('===': in simulation a
+    // sub-word load fills the line with the X lanes the memory model returns)
+    AssertCacheCoherentAfterResp: assert property (@(posedge clk_i) disable iff (!rst_ni)
+      (s_chk && line_valid[i] &&
+       (s_cap ? (tags[i][TagHi-2:1] == s_addr[TagHi:3]) : (tags[i] == s_addr[TagHi:2]))) |->
+        (!s_cap &&
+         (!s_be[0] || (cache_mem[i][ 7: 0] === s_data[ 7: 0])) &&
+         (!s_be[1] || (cache_mem[i][15: 8] === s_data[15: 8])) &&
+         (!s_be[2] || (cache_mem[i][23:16] === s_data[23:16])) &&
+         (!s_be[3] || (cache_mem[i][31:24] === s_data[31:24]))))
+      else $error("SVA: dcache line %0d stale after a completed access (cap %0b addr 0x%08x data 0x%08x be %b; line tag 0x%0x data 0x%08x)",
+                  i, s_cap, s_addr, s_data, s_be, tags[i], cache_mem[i]);
+  end
+
+`endif  // KUDU_FCOV_OFF
+
+endmodule
+
+
+// ===========================================================================
+// SVA for the capability revocation (load filter) stage.  Bound to
+// cheri_trvk_stage by module name (inside gen_trvk, ls_pipeline.sv:383).
+// Checks: each revocation slot matches the CLC that retired three cycles
+// earlier, the tag-map read address is that of the loaded capability's base,
+// and a tag is cleared only for a tagged, error-free load whose base is in
+// the heap and whose revocation bit was set.
+// ===========================================================================
+`ifdef CHERIoT
+module kudu_sva_trvk
+  import cheri_pkg::*;
+#(
+  parameter int unsigned HeapBase  = 32'h2001_0000,
+  parameter int unsigned TSMapSize = 1024
+) (
+  input logic        clk_i,
+  input logic        rst_ni,
+
+  input logic        clc_valid_i,
+  input logic [4:0]  clc_rd_i,
+  input logic        clc_err_i,
+  input reg_cap_t    clc_rcap_i,
+  input logic [4:0]  trvk_addr_o,
+  input logic        trvk_en_o,
+  input logic        trvk_clrtag_o,
+  input logic        tsmap_cs_o,
+  input logic [15:0] tsmap_addr_o,
+  input logic [31:0] tsmap_rdata_i
+);
+
+`ifndef KUDU_FCOV_OFF
+
+  function automatic logic [31:0] cap_base (reg_cap_t cap);
+    op_cap_t ocap;
+    ocap = reg2opcap(cap);
+    return 32'(get_bound33(ocap.base9, {2{ocap.base_cor}}, ocap.exp, ocap.addr));
+  endfunction
+
+  logic [2:0]  v_q, good_q;
+  logic [4:0]  rd_q [3];
+  reg_cap_t    cap_q;
+  logic [31:0] base1;
+  logic        heap2, heap2_q;
+  logic [4:0]  bit2;
+  logic        rev3;
+
+  // byte offset of the base from the heap base; bits [7:3] select the bit
+  // (8-byte granule) and [23:8] the 32-bit tag-map word
+  logic [31:0] off1;
+  logic        in_heap1;
+  assign base1    = cap_base(cap_q);
+  assign off1     = base1 - HeapBase;
+  // base in [HeapBase, HeapBase + TSMapSize*32*8)
+  assign in_heap1 = (base1 >= HeapBase) && ((off1 >> 8) < TSMapSize);
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      v_q    <= '0;
+      good_q <= '0;
+      rd_q[0] <= '0;
+      rd_q[1] <= '0;
+      rd_q[2] <= '0;
+      cap_q  <= NULL_REG_CAP;
+      heap2  <= 1'b0;
+      heap2_q <= 1'b0;
+      bit2   <= '0;
+      rev3   <= 1'b0;
+    end else begin
+      v_q    <= {v_q[1:0], clc_valid_i};
+      good_q <= {good_q[1:0], clc_valid_i && !clc_err_i && clc_rcap_i.valid};
+      rd_q[0] <= clc_rd_i;
+      rd_q[1] <= rd_q[0];
+      rd_q[2] <= rd_q[1];
+      if (clc_valid_i && !clc_err_i)
+        cap_q <= clc_rcap_i;
+      heap2  <= in_heap1;
+      heap2_q <= heap2;
+      bit2   <= off1[7:3];
+      rev3   <= tsmap_rdata_i[bit2];
+    end
+  end
+
+  // cheri_trvk_stage.sv:53-56,74-85 revocation slot matches the CLC retired 3 cycles ago
+  AssertTrvkMatchesClc: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (trvk_en_o == v_q[2]) && (!trvk_en_o || (trvk_addr_o == rd_q[2])))
+    else $error("SVA: trvk slot does not match the retired CLC");
+
+  // cheri_trvk_stage.sv:44-52 tag-map read is for the good CLC one cycle ago, at
+  // the word that holds the revocation bit of its base
+  AssertTsmapAddrMatchesBase: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    tsmap_cs_o |-> (good_q[0] && (tsmap_addr_o == off1[23:8])))
+    else $error("SVA: tag-map read address does not match the loaded cap base");
+
+  // cheri_trvk_stage.sv:55 a tag is cleared only for a tagged, error-free CLC
+  // whose base lies in the revocable heap and whose revocation bit is set
+  AssertTrvkClrtagJustified: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    trvk_clrtag_o |-> (trvk_en_o && good_q[2] && heap2_q && rev3))
+    else $error("SVA: capability tag cleared without a set revocation bit");
 
 `endif  // KUDU_FCOV_OFF
 

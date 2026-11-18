@@ -8,7 +8,8 @@ Runs three suites against one fresh build of the current rtl/:
 
   mini   the ./run_mini_regression tests plus the directed CSR tests
   riscv  the riscv-tests suite (self-checking through tohost)
-  bug    the KUDU-0xx reproducers in sim/tests/rtl_bug_*/
+  bug    the KUDU-0xx reproducers in sim/tests_2/ that run on the stock
+         testbench (see sim/testplan/direct_tests.md), plus sim/tests/step_exec
 
 The mini and riscv lists come from run_cov_regression.py so both scripts stay in
 sync. The simulations are packed into --lsf_jobs batches (default 10) of
@@ -16,8 +17,8 @@ similar estimated run time, and each batch is one `submit -i` job that runs its
 simulations back to back; all batches are submitted at once. This avoids paying
 the LSF dispatch overhead (about a minute) for every simulation. Compilation
 also goes through `submit -i`; test programs are
-built locally in private mirrors, so sim/run/bin and sim/tests/work are never
-written. Run it locally from any directory with the VCS modules loaded:
+built locally into the work directory (sim/tests_2/common/build_prog.sh), so
+sim/run/bin and sim/tests/work are never written. Run it locally from any directory with the VCS modules loaded:
 
     source ../run_dii/load_module_vcs
     ./run_full_regression.py                 # everything, 10 LSF jobs
@@ -31,7 +32,8 @@ Verdicts:
   DEFER  every failing check belongs to a bug that is Deferred or Waived
   FAIL   anything else: wrong result, timeout, crash, trace mismatch, or a
          failing check of a bug that the bug logs list as Fixed
-Bug status comes from the summary tables of bug_logs.md and bug_logs_2.md.
+Bug status comes from the summary tables of bug_logs_1.md, bug_logs_2.md and
+bug_logs_3.md.
 A note is printed when a check for an Open or Deferred bug passes, which usually
 means the bug has been fixed and the bug log needs updating. The script exits 1
 if any test FAILs.
@@ -55,10 +57,14 @@ from pathlib import Path
 RUN_DIR = Path(__file__).resolve().parent
 SIM_ROOT = RUN_DIR.parent
 sys.dont_write_bytecode = True  # keep __pycache__ out of sim/run
+TESTS2 = SIM_ROOT / "tests_2"
 sys.path.insert(0, str(RUN_DIR))
+sys.path.insert(0, str(TESTS2 / "common"))
 import run_cov_regression as cov_regr  # noqa: E402  (shared mini/riscv lists)
+import kudu_test  # noqa: E402  (sim/tests_2 test descriptions)
 
-BUG_LOGS = [SIM_ROOT / "testplan" / name for name in ("bug_logs.md", "bug_logs_2.md")]
+BUG_LOGS = [SIM_ROOT / "testplan" / name
+            for name in ("bug_logs_1.md", "bug_logs_2.md", "bug_logs_3.md")]
 DEFERRED = ("Deferred", "Waived")
 VERDICTS = ("PASS", "XFAIL", "DEFER", "FAIL")
 IBEX_DIR = SIM_ROOT / "run_ibex"
@@ -87,167 +93,44 @@ EST_DEFAULT = 2
 EST_PER_SIM = 2  # simulator start-up and licence checkout
 CPU_TIME = re.compile(r"CPU Time:\s*([0-9.]+)")
 
-DLY_DATA = ["+DATA_GNT_WMAX=3", "+DATA_RESP_WMAX=5"]
-DLY_ALL3 = [f"+{k}_{p}_WMAX=3" for k in ("INSTR", "DATA") for p in ("GNT", "RESP")]
-DLY_DBG = ["+INSTR_GNT_WMAX=2", "+INSTR_RESP_WMAX=2", "+DATA_GNT_WMAX=3", "+DATA_RESP_WMAX=3"]
-DLY_SLOT1 = ["+INSTR_GNT_WMAX=3", "+INSTR_RESP_WMAX=5"] + DLY_DATA
-
-BUILD_SCRIPTS = {"rv32": "build_test_rv32.sh", "cheri": "build_test.sh", "dbg": "build_dbg_test.sh"}
+BUILD_PROG = TESTS2 / "common" / "build_prog.sh"
 
 
 class BugTest(object):
-    """A self-checking directed test in sim/tests: an rtl_bug_* reproducer (mirroring
-    the settings of its run.py/README) or a test with no bug mapping (checks empty).
+    """A self-checking directed test: a sim/tests_2 reproducer (described by its
+    run.py) or a test with no bug mapping (checks empty).
 
     runs:   (variant, simulator, program flavour, plusargs)
     passed: regex whose presence means every check passed
     checks: (regex, KUDU id) mapping each failing check line to its bug
+    src:    directory holding the program sources
     """
 
-    def __init__(self, name, runs, passed, checks):
+    def __init__(self, name, runs, passed, checks, src):
         self.name = name
         self.runs = runs
-        self.passed = re.compile(passed)
+        self.passed = re.compile(passed, re.M)
         self.checks = [(re.compile(rx), bug) for rx, bug in checks]
+        self.src = src
 
 
-def _rv32_both(args):
-    return [("rv32", "simv32", "rv32", ["+PMODE=0"] + args),
-            ("cheriot", "simv", "rv32", ["+PMODE=0"] + args)]
+def _tests2_bug_tests():
+    """The sim/tests_2 tests that need only the stock testbench and a test program
+    (kudu_test.Test.regression); shadow-testbench, script and post-processed
+    tests run with sim/tests_2/common/run_all.py instead."""
+    return [BugTest(t.name, [(r.variant, r.simv, r.flavour, r.plusargs) for r in t.runs],
+                    t.passed_rx, t.check_rx, t.src)
+            for t in kudu_test.load_tests(TESTS2) if t.regression]
 
 
-def _cheri_dly(args):
-    return [("default", "simv", "cheri", ["+PMODE=1"] + args),
-            ("delayed", "simv", "cheri", ["+PMODE=1"] + args + DLY_DATA)]
-
-
-T1M = ["+TIMEOUT=1000000"]
-
-BUG_TESTS = [
-    BugTest("rtl_bug_csr_rmw",
-            [(hw + "_" + v, sim, "rv32", ["+PMODE=0"] + T1M + d)
-             for hw, sim in (("rv32", "simv32"), ("cheriot", "simv"))
-             for v, d in (("default", []), ("delayed", DLY_ALL3))],
-            r"CSR RMW PASS failures=0x0+ cases=0x0000001b", [(r"", "KUDU-001")]),
-    BugTest("rtl_bug_trap_csr_values",
-            [("rv32", "simv32", "rv32", ["+PMODE=0"] + T1M)],
-            r"TRAP CSR VALUES PASS failures=0x0+ cases=0x00000006",
-            [(r"\bdret_", "KUDU-004"), (r"\becall_mtval\b", "KUDU-005")]),
-    BugTest("rtl_bug_rtype_rev8_reserved",
-            [("rv32", "simv32", "rv32", ["+PMODE=0"] + T1M)],
-            r"RTYPE REV8 RESERVED .* PASS", [(r"", "KUDU-006")]),
-    BugTest("rtl_bug_misaligned_amo", _rv32_both(T1M),
-            r"MISALIGNED AMO PASS failures=0x0+ cases=0x00000002", [(r"", "KUDU-007")]),
-    BugTest("rtl_bug_amo_access_fault", _rv32_both(T1M),
-            r"AMO ACCESS FAULT PASS failures=0x0+ cases=0x00000001", [(r"", "KUDU-008")]),
-    BugTest("rtl_bug_trvk_boundary",
-            [("cheriot", "simv", "cheri", ["+PMODE=1"] + T1M)],
-            r"TRVK_BOUNDARY PASS failures=0x0+ cases=0x00000002", [(r"", "KUDU-009")]),
-    BugTest("rtl_bug_mret_asr_mtval",
-            [("cheriot", "simv", "cheri", ["+PMODE=1"] + T1M)],
-            r"MRET_ASR_MTVAL PASS failures=0x0+ cases=0x00000001", [(r"", "KUDU-010")]),
-    BugTest("rtl_bug_jal_pdt_off",
-            [("rv32", "simv32", "rv32", ["+PMODE=0"] + T1M)],
-            r"JAL PDT OFF .* PASS", [(r"", "KUDU-011")]),
-    BugTest("rtl_bug_debug_irq_not_ignored",
-            [("cheriot", "simv", "dbg",
-              ["+PMODE=1", "+DBGROM=debug_rom", "+INTR_RATE=6", "+TIMEOUT=300000"])],
-            r"DEBUG IRQ PASS cases=0x00000001", [(r"", "KUDU-012")]),
-    BugTest("rtl_bug_sc_forwarding",
-            _rv32_both(T1M) + [("cheriot_delayed", "simv", "rv32", ["+PMODE=0"] + T1M + DLY_DATA)],
-            r"SC FORWARDING PASS failures=0x0+ cases=0x00000002", [(r"", "KUDU-014")]),
-    BugTest("rtl_bug_cap_misaligned_mtval", _cheri_dly(T1M),
-            r"CAP ALIGN MTVAL PASS failures=0x0+ cases=0x00000002", [(r"", "KUDU-015")]),
-    BugTest("rtl_bug_mshwm_csr_store_order", _cheri_dly(T1M),
-            r"MSHWM ORDER PASS failures=0 cases=6",
-            [(r"^FAIL store-csrw-", "KUDU-016")]),
-    BugTest("rtl_bug_csr_asr_allowlist", _cheri_dly(T1M),
-            r"CSR ASR PASS failures=0 cases=8",
-            [(r"^FAIL csrw 0x0b[08][02]\b", "KUDU-017"), (r"^FAIL csr[rw] 0x0323\b", "KUDU-018")]),
-    BugTest("rtl_bug_minstret_write_order", _cheri_dly(T1M),
-            r"MINSTRET INCREMENT PASS failures=0 cases=1", [(r"", "KUDU-019")]),
-    BugTest("rtl_bug_misa_value",
-            [("rv32", "simv32", "rv32", T1M),
-             ("pmode0", "simv", "rv32", ["+PMODE=0"] + T1M),
-             ("pmode1", "simv", "cheri", ["+PMODE=1"] + T1M)],
-            r"MISA VALUE .* PASS", [(r"", "KUDU-020")]),
-    BugTest("rtl_bug_debug_mode",
-            [(v, "simv", "dbg", ["+PMODE=1", "+DBGROM=debug_rom", "+TIMEOUT=400000"] + d)
-             for v, d in (("default", []), ("delayed", DLY_DBG))],
-            r"DEBUG MODE SUMMARY PASS",
-            [(r"DEBUG MODE D1[ab] ", "KUDU-021"), (r"DEBUG MODE D2 ", "KUDU-022"),
-             (r"DEBUG MODE D3 ", "KUDU-023"), (r"DEBUG MODE D4 ", "KUDU-024"),
-             (r"DEBUG MODE P1 ", "KUDU-025")]),
-    BugTest("rtl_bug_issuer_debug",
-            [(v, "simv", "dbg", ["+PMODE=1", "+DBGROM=debug_rom", "+INTR_RATE=6",
-                                 "+TIMEOUT=400000"] + d)
-             for v, d in (("default", []), ("delayed", DLY_DBG))],
-            r"ISSUER DBG SUMMARY PASS",
-            [(r"ISSUER DBG I1 ", "KUDU-026"), (r"ISSUER DBG I2 ", "KUDU-028"),
-             (r"ISSUER DBG I3 ", "KUDU-029"), (r"ISSUER DBG I4 ", "KUDU-030"),
-             (r"ISSUER DBG I5 ", "KUDU-003"), (r"ISSUER DBG I6 ", "KUDU-027")]),
-    BugTest("rtl_bug_umode_priv",
-            [(hw + "_" + v, sim, "rv32", ["+PMODE=0", "+INTR_RATE=3"] + T1M + d)
-             for hw, sim in (("rv32", "simv32"), ("cheriot", "simv"))
-             for v, d in (("default", []), ("delayed", DLY_ALL3))],
-            r"UPRIV PASS failures=0 cases=4",
-            [(r"UPRIV [AB] ", "KUDU-034"), (r"UPRIV C ", "KUDU-038")]),
-    BugTest("rtl_bug_debug_ecall",
-            [(v, "simv", "dbg", ["+PMODE=1", "+DBGROM=debug_rom", "+TIMEOUT=400000"] + d)
-             for v, d in (("default", []), ("delayed", DLY_DBG))],
-            r"DEBUG ECALL PASS failures=0 cases=2", [(r"DEBUG ECALL E1 ", "KUDU-035")]),
-    BugTest("rtl_bug_jalr_odd_epc",
-            [(hw + "_" + v, sim, "rv32", ["+PMODE=0", "+INTR_RATE=4"] + T1M + d)
-             for hw, sim in (("rv32", "simv32"), ("cheriot", "simv"))
-             for v, d in (("default", []), ("delayed", DLY_ALL3))],
-            r"JALR ODD EPC PASS failures=0 cases=3", [(r"JALR ODD EPC J1 ", "KUDU-039")]),
-    BugTest("rtl_bug_halt_step_cause",
-            [(v, "simv", "dbg", ["+PMODE=1", "+DBGROM=debug_rom", "+TIMEOUT=400000"] + d)
-             for v, d in (("default", []), ("delayed", DLY_DBG))],
-            r"HALT STEP CAUSE PASS failures=0 cases=3", [(r"HALT STEP CAUSE H1 ", "KUDU-040")]),
+BUG_TESTS = _tests2_bug_tests() + [
     # dcsr.step over mixed workloads; results must match unstepped reference runs
     BugTest("step_exec",
             [(v, "simv", "dbg", ["+PMODE=1", "+DBGROM=debug_rom", "+TIMEOUT=10000000"] + d)
-             for v, d in (("default", []), ("delayed", DLY_ALL3))],
-            r"STEP EXEC PASS failures=0x0+\b", []),
-    BugTest("rtl_bug_fetch_slot1_err",
-            [(hw + "_" + v, sim, "rv32",
-              ["+PMODE=0", "+INSTR_ERR_ADDR=80010060", "+TIMEOUT=300000"] + d)
-             for hw, sim in (("rv32", "simv32"), ("cheriot", "simv"))
-             for v, d in (("default", []), ("delayed", DLY_SLOT1))],
-            r"FSLOT1 PASS failures=", [(r"^FSLOT1_KUDU013_SLOT1_ERR ", "KUDU-013")]),
-    BugTest("rtl_bug_alt_err",
-            [(hw + "_" + v, sim, "rv32",
-              ["+PMODE=0", "+INSTR_ERR_ADDR=80010100", "+TIMEOUT=3000000"] + d)
-             for hw, sim in (("rv32", "simv32"), ("cheriot", "simv"))
-             for v, d in (("default", []), ("delayed", DLY_SLOT1))],
-            r"ALTERR PASS failures=0x0+\b", [(r"^ALTERR FAIL KUDU013 ", "KUDU-013")]),
-    BugTest("rtl_bug_misaligned_sc_rv32",
-            [(hw + "_" + v, sim, "rv32", ["+PMODE=0"] + T1M + d)
-             for hw, sim in (("rv32", "simv32"), ("cheriot", "simv"))
-             for v, d in (("default", []), ("delayed", DLY_DATA))],
-            r"MISALIGNED SC RV32 PASS failures=0 cases=7", [(r"^FAIL misaligned-sc ", "KUDU-031")]),
-    BugTest("rtl_bug_amo_cheri_fault", _cheri_dly(T1M),
-            r"AMO CHERI FAULT PASS failures=0 cases=8",
-            [(r"^FAIL amo-rd ", "KUDU-032"), (r"^FAIL amo-mpie ", "KUDU-036")]),
-    BugTest("rtl_bug_dcache_split_store",
-            [(hw + "_" + v, sim, flavour, [pm] + T1M + d)
-             for hw, sim, flavour, pm in (("rv32", "simv32", "rv32", "+PMODE=0"),
-                                          ("pmode0", "simv", "rv32", "+PMODE=0"),
-                                          ("pmode1", "simv", "cheri", "+PMODE=1"))
-             for v, d in (("default", []), ("delayed", DLY_DATA))],
-            r"DCACHE SPLIT STORE PASS failures=0 cases=[34]", [(r"^FAIL split-store ", "KUDU-033")]),
-    BugTest("rtl_bug_sc_mshwm", _cheri_dly(T1M),
-            r"SC MSHWM PASS failures=0 cases=4", [(r"^FAIL sc-mshwm ", "KUDU-037")]),
-    BugTest("rtl_bug_csr_mtval_mstatush",
-            [("rv32", "simv32", "rv32", ["+PMODE=0"] + T1M)]
-            + [(pm + "_" + v, "simv", flavour, ["+PMODE=" + pm[-1]] + T1M + d)
-               for pm, flavour in (("pmode0", "rv32"), ("pmode1", "cheri"))
-               for v, d in (("default", []), ("delayed", DLY_DATA))],
-            r"CSR MTVAL MSTATUSH PMODE=\S+ PASS failures=0 cases=16",
-            [(r"^FAIL MTVAL ", "KUDU-041"), (r"^FAIL MSTATUSH ", "KUDU-042"),
-             (r"^FAIL CDBG ", "KUDU-043")]),
+             for v, d in (("default", []), ("delayed", kudu_test.DLY_ALL3))],
+            r"STEP EXEC PASS failures=0x0+\b", [], SIM_ROOT / "tests" / "step_exec"),
 ]
+BUG_SRC = {bug.name: bug.src for bug in BUG_TESTS}
 
 FAIL_LINE = re.compile(r"\bFAIL\b")
 SUMMARY_LINE = re.compile(r"SUMMARY FAIL|FAIL failures=")
@@ -345,21 +228,14 @@ def compile_simv(args, build_dir):
 
 
 def build_program(name, flavour, prog_root, env):
-    """Build one test program in a private mirror of sim/tests and sim/scripts."""
-    mirror = prog_root / "{}.{}".format(name, flavour)
-    (mirror / "tests").mkdir(parents=True)
-    (mirror / "run" / "bin").mkdir(parents=True)
-    (mirror / "scripts").symlink_to(SIM_ROOT / "scripts", target_is_directory=True)
-    tests = SIM_ROOT / "tests"
-    for item in ("csrc_cheri", "csrc_rv32", "link_test.ld", "link_test_rv32.ld",
-                 "link_dbgrom.ld", name):
-        (mirror / "tests" / item).symlink_to(tests / item)
-    log = mirror / "build.log"
-    code = run_logged(["bash", "../scripts/" + BUILD_SCRIPTS[flavour], name],
-                      mirror / "tests", log, env)
-    if code or not (mirror / "run" / "bin" / (name + ".vhx")).is_file():
+    """Build one test program into prog_root/<name>.<flavour> with build_prog.sh."""
+    out = prog_root / "{}.{}".format(name, re.sub(r"[^\w.=-]", "_", flavour))
+    out.mkdir(parents=True)
+    log = out / "build.log"
+    code = run_logged(["bash", BUILD_PROG, flavour, BUG_SRC[name], out], out, log, env)
+    if code or not (out / (name + ".vhx")).is_file():
         raise RuntimeError("program build failed for {} ({}); see {}".format(name, flavour, log))
-    return mirror / "run" / "bin"
+    return out
 
 
 def classify_bug(job, text, status):

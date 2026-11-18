@@ -14,7 +14,6 @@ _start:
 
     # read relevant CSR registers (to show in trace)
     csrr x5, dcsr
-    csrr x6, mepc       # mepc points to depc when in debug mode
     cspecialr c6, 24    # depcc
 
     #copy setup value from testbench registers

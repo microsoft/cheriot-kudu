@@ -78,8 +78,10 @@ test_init:
 
     li x11, 0x83800100        # write to this location to tell TB end of init
     csetaddr c8, c6, x11 
-    li x11, 0xf
+    li x11, 0x3               # enable TB instruction/data error injection
     csw x11, (c8)
+    li x11, 0x3fffe           # unmask the TB external interrupt (0x83800108 intr_mask)
+    csw x11, 8(c8)
 
     li x9, 0x800              # enable machine-mode ext/tmr/sw interrupts
     csrs mie, x9

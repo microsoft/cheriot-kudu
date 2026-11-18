@@ -1,0 +1,236 @@
+--- a/sim/tb/data_mem_model.sv
++++ b/sim/tb/data_mem_model.sv
+@@ -119,6 +119,7 @@
+   logic [3:0]    err_enable_vec; 
+   logic [17:0]   intr_ack, intr_mask;
+   logic          debug_req_mmio, debug_ack;
++  logic [31:0]   colmb[0:15];      // review5/collide shadow mailbox
+ 
+   // simple unified memory system model
+   logic [DW-1:0]      dram[0:2**DRAM_AW-1];
+@@ -432,6 +433,8 @@
+         8'h54: mmreg_rdata = {29'h0, tmatch_ctrl1, 2'b00};
+         8'h55: mmreg_rdata = tmatch_val0;
+         8'h56: mmreg_rdata = tmatch_val1;
++        8'h5c, 8'h5d, 8'h5e, 8'h5f, 8'h60, 8'h61, 8'h62, 8'h63, 8'h64, 8'h65, 8'h66, 8'h67, 8'h68, 8'h69, 8'h6a, 8'h6b:
++               mmreg_rdata = colmb[mmreg_addr32_q - 8'h5c];
+         default: mmreg_rdata = 32'hdead_beef; 
+       endcase
+     end
+@@ -718,13 +721,101 @@
+   end   // g_instr_rd
+ 
+   //
++  // review5/collide shadow: deterministic event scheduler + scratch mailbox
++  //   0x8380_0164 (W)   : IRQ vector used by the next armed IRQ event
++  //   0x8380_0160 (W)   : arm. [11:0] delay in cycles after the bus write (0 = next cycle),
++  //                       [23:12] hold (0 = hold until acked: irq by intr_ack bits, dbg by a
++  //                       write to 0x8380_0140; n = withdraw after n cycles without ack),
++  //                       [24] arm IRQ, [25] arm debug_req
++  //   0x8380_0170..0x1ac: 16 RW scratch words (test <-> debug ROM mailbox)
++  //
++  logic [17:0] sched_vec_q, sched_irq_vec;
++  logic        sched_dbg;
++  logic [11:0] sched_irq_dly, sched_dbg_dly, sched_irq_hold, sched_dbg_hold;
++  logic [11:0] sched_irq_hcnt, sched_dbg_hcnt;
++  logic        sched_irq_armed, sched_dbg_armed;
++  logic [7:0]  sched_addr_q;
++  logic        sched_rd_q;
++  int unsigned sched_irq_fires, sched_dbg_fires;
++
++  wire sched_wr = mmreg_cs & mem_we;
++
++  always @(posedge clk, negedge rst_n) begin
++    if (~rst_n) begin
++      sched_vec_q     <= '0;
++      sched_irq_vec   <= '0;
++      sched_dbg       <= 1'b0;
++      sched_irq_armed <= 1'b0;
++      sched_dbg_armed <= 1'b0;
++      sched_irq_dly   <= '0;
++      sched_dbg_dly   <= '0;
++      sched_irq_hold  <= '0;
++      sched_dbg_hold  <= '0;
++      sched_irq_hcnt  <= '0;
++      sched_dbg_hcnt  <= '0;
++      for (int k = 0; k < 16; k++) colmb[k] <= '0;
++      sched_irq_fires <= 0;
++      sched_dbg_fires <= 0;
++    end else begin
++      if (sched_wr && (mmreg_addr32 == 'h59)) sched_vec_q <= mem_wdata[17:0];
++      if (sched_wr && (mmreg_addr32 >= 'h5c) && (mmreg_addr32 <= 'h6b))
++        colmb[mmreg_addr32 - 'h5c] <= mem_wdata[31:0];
++
++      // irq
++      if (sched_wr && (mmreg_addr32 == 'h58) && mem_wdata[24]) begin
++        sched_irq_armed <= 1'b1;
++        sched_irq_dly   <= mem_wdata[11:0];
++        sched_irq_hold  <= mem_wdata[23:12];
++      end else if (sched_irq_armed) begin
++        if (sched_irq_dly == 0) begin
++          sched_irq_armed <= 1'b0;
++          sched_irq_vec   <= sched_irq_vec | sched_vec_q;
++          sched_irq_hcnt  <= sched_irq_hold;
++          sched_irq_fires <= sched_irq_fires + 1;
++        end else
++          sched_irq_dly <= sched_irq_dly - 1;
++      end else begin
++        if (sched_irq_hcnt == 1) sched_irq_vec <= '0;
++        else sched_irq_vec <= sched_irq_vec & ~intr_ack;
++        if (sched_irq_hcnt != 0) sched_irq_hcnt <= sched_irq_hcnt - 1;
++      end
++
++      // debug request
++      if (sched_wr && (mmreg_addr32 == 'h58) && mem_wdata[25]) begin
++        sched_dbg_armed <= 1'b1;
++        sched_dbg_dly   <= mem_wdata[11:0];
++        sched_dbg_hold  <= mem_wdata[23:12];
++      end else if (sched_dbg_armed) begin
++        if (sched_dbg_dly == 0) begin
++          sched_dbg_armed <= 1'b0;
++          sched_dbg       <= 1'b1;
++          sched_dbg_hcnt  <= sched_dbg_hold;
++          sched_dbg_fires <= sched_dbg_fires + 1;
++        end else
++          sched_dbg_dly <= sched_dbg_dly - 1;
++      end else begin
++        if ((sched_dbg_hcnt == 1) || debug_ack) sched_dbg <= 1'b0;
++        if (sched_dbg_hcnt != 0) sched_dbg_hcnt <= sched_dbg_hcnt - 1;
++      end
++    end
++  end
++
++  //
+   // Interrupt generation
+   // 
+ 
+   logic [17:0] intr_vec;
+   logic        irq_state;
+ 
+-  assign irq = {18{intr_enable}} & intr_vec; 
++  assign irq = {18{intr_enable}} & (intr_vec | sched_irq_vec); 
++
++  int unsigned intr_selfclr, dbg_selfclr;
++  initial begin
++    intr_selfclr = 0;
++    dbg_selfclr  = 0;
++    void'($value$plusargs("INTR_SELFCLR=%d", intr_selfclr));
++    void'($value$plusargs("DBG_SELFCLR=%d", dbg_selfclr));
++  end
+ 
+   initial begin
+     int nwait;
+@@ -753,6 +844,9 @@
+         end
+         default: begin    // 
+           intr_vec &= ~intr_ack;
++          // shadow: +INTR_SELFCLR=n withdraws the raised lines without an ack with
++          // probability 1/n per cycle (level source withdrawn by its device)
++          if ((intr_selfclr != 0) && ($urandom() % intr_selfclr == 0)) intr_vec = 0;
+           @(posedge clk);
+           if (intr_vec == 0) irq_state = 0;
+         end
+@@ -766,7 +860,7 @@
+   logic debug_req_rand;
+   logic dbg_state;
+ 
+-  assign debug_req = debug_req_mmio | (dbg_req_enable & debug_req_rand);
++  assign debug_req = debug_req_mmio | (dbg_req_enable & (debug_req_rand | sched_dbg));
+ 
+   initial begin
+     int nwait;
+@@ -796,6 +890,11 @@
+           if (debug_ack) begin
+             debug_req_rand = 1'b0;
+             dbg_state      = 1'b0;
++          end else if ((dbg_selfclr != 0) && ($urandom() % dbg_selfclr == 0)) begin
++            // shadow: +DBG_SELFCLR=n withdraws haltreq without an ack (debugger
++            // de-asserting haltreq before the hart halted) with probability 1/n per cycle
++            debug_req_rand = 1'b0;
++            dbg_state      = 1'b0;
+           end
+           @(posedge clk);
+         end
+--- a/sim/tb/tb_kudu_top.sv
++++ b/sim/tb/tb_kudu_top.sv
+@@ -587,5 +587,79 @@
+     .uart_stop_sim   (uart_stop_sim)  
+   );
+ 
+-endmodule
++`ifndef IBEX
++`ifndef DII_SIM
++  // review5/collide shadow monitor (COLMON): checks every debug / IRQ special
++  // action in the cycle it is written (ISSUE_SPECIAL).
++  int unsigned colmon_dbg, colmon_irq, colmon_err, colmon_dbga, colmon_log;
++  initial begin colmon_dbg = 0; colmon_irq = 0; colmon_err = 0; colmon_dbga = 0; colmon_log = 0; end
++  always @(posedge clk) begin
++    if (rst_n && dut.issuer_i.ctrl_fsm_cs[CSM_ISSUE_SPECIAL]) begin
++      if (dut.issuer_i.special_case_q == DEBUG) begin
++        colmon_dbg++;
++        if (colmon_log < 3000) begin
++          colmon_log++;
++          $display("COLMON> %0d DBG pc=%08x cause=%0d req=%b step=%b steprq=%b ir0v=%b brk=%b ebrk=%b",
++                   cycle_cnt, dut.issuer_i.csr_exc_info_o.pc, dut.issuer_i.debug_cause_o,
++                   dut.issuer_i.debug_req_i, dut.issuer_i.debug_step_i, dut.issuer_i.step_req_q,
++                   dut.issuer_i.ir_valid_i[0], dut.issuer_i.ir0_dec.is_brkpt, dut.issuer_i.ebreak_enter_debug);
++        end
++        if (dut.issuer_i.debug_cause_o == 0) begin
++          colmon_err++;
++          $display("COLMON-ERR> %0d DBGNONE: debug entry with dcsr.cause=0 pc=%08x", cycle_cnt,
++                   dut.issuer_i.csr_exc_info_o.pc);
++        end
++        if (dut.issuer_i.step_req_q && (dut.issuer_i.debug_cause_o inside {1, 2})) begin
++          colmon_dbga++;
++          $display("COLMON-DBGA> %0d step completion reported as cause=%0d pc=%08x", cycle_cnt,
++                   dut.issuer_i.debug_cause_o, dut.issuer_i.csr_exc_info_o.pc);
++        end
++      end
++      if (dut.issuer_i.special_case_q == IRQ) begin
++        logic [5:0]  expc;
++        logic [17:0] iv;
++        colmon_irq++;
++        iv = {dut.issuer_i.irqs_i.irq_fast, dut.issuer_i.irqs_i.irq_timer,
++              dut.issuer_i.irqs_i.irq_software, dut.issuer_i.irqs_i.irq_external};  // TB irq_vec order
++        expc = 6'h3f;
++        if (iv[17:3] != 0) begin
++          for (int k = 14; k >= 0; k--) if (iv[3+k]) expc = 6'(32 + 16 + k);
++        end else if (iv[0]) expc = 6'(32 + 11);
++        else if (iv[1]) expc = 6'(32 + 3);
++        else if (iv[2]) expc = 6'(32 + 7);
++        if (colmon_log < 3000) begin
++          colmon_log++;
++          $display("COLMON> %0d IRQ pc=%08x mcause=%08x irqs=%05x", cycle_cnt,
++                   dut.issuer_i.csr_exc_info_o.pc, dut.issuer_i.csr_exc_info_o.mcause, iv);
++        end
++        if (iv == 0) begin
++          colmon_err++;
++          $display("COLMON-ERR> %0d IRQNONE: irq trap with no pending&enabled line, mcause=%08x pc=%08x",
++                   cycle_cnt, dut.issuer_i.csr_exc_info_o.mcause, dut.issuer_i.csr_exc_info_o.pc);
++        end else if (6'(dut.issuer_i.csr_exc_info_o.mcause) != expc) begin
++          colmon_err++;
++          $display("COLMON-ERR> %0d IRQCAUSE: mcause=%08x expected %08x (irqs=%05x)", cycle_cnt,
++                   dut.issuer_i.csr_exc_info_o.mcause, expc, iv);
++        end
++        if (~dut.issuer_i.csr_mstatus_mie_i && (dut.issuer_i.priv_mode_i == 2'b11)) begin
++          colmon_err++;
++          $display("COLMON-ERR> %0d IRQMIE: irq trap written while mstatus.MIE=0 in M-mode pc=%08x",
++                   cycle_cnt, dut.issuer_i.csr_exc_info_o.pc);
++        end
++        if (dut.issuer_i.debug_mode_q || dut.issuer_i.debug_step_i) begin
++          colmon_err++;
++          $display("COLMON-ERR> %0d IRQDBG: irq trap in debug mode / while stepping pc=%08x",
++                   cycle_cnt, dut.issuer_i.csr_exc_info_o.pc);
++        end
++      end
++    end
++  end
++  final $display("COLMON> summary dbg=%0d irq=%0d errs=%0d dbga=%0d sched_irq=%0d sched_dbg=%0d scratch0=%08x scratch1=%08x mb0=%08x mb1=%08x mb2=%08x mb3=%08x",
++                 colmon_dbg, colmon_irq, colmon_err, colmon_dbga,
++                 u_data_mem.sched_irq_fires, u_data_mem.sched_dbg_fires,
++                 u_data_mem.g_data_rw.scratch_reg0, u_data_mem.g_data_rw.scratch_reg1,
++                 u_data_mem.colmb[0], u_data_mem.colmb[1], u_data_mem.colmb[2], u_data_mem.colmb[3]);
++`endif
++`endif
+ 
++endmodule

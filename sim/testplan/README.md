@@ -50,50 +50,23 @@ event schedule or a separately validated checker. Merely applying an interrupt
 at the same cycle number to different cores does not establish equivalent
 stimulus.
 
-### 1.2 End-to-end formal verification
+### 1.2 Formal verification
 
-Use the CHERIoT-Ibex formal flow as the reference for a Kudu end-to-end FV
-environment. The objective is architectural trace equivalence between Sail and
-RTL, allowing RTL implementation cycles with no architectural event.
+Formal work is JasperGold FPV on **kudu_top** (KuduCfg1, CHERIoTEn = 1),
+documented in [sim/fv/README.md](../fv/README.md):
 
-The public [CHERIoT-Ibex formal documentation][ibex-formal] describes
-**psgen**-generated proof SystemVerilog, a Sail-to-SystemVerilog translation,
-and JasperGold. It explicitly labels the flow work in progress, with no
-current liveness proof. Its documented restrictions include **ResetAll = 1**,
-disabled clock gating, and exclusions for stack zeroing and
-reservation/revocation. These are limitations to review when planning Kudu
-work, not assumptions that may silently be transferred to a Kudu sign-off.
+- **fv/fv_kudu.tcl**: design-assertion groups in **fv/module_fv_ext.sv**,
+  one **KUDU_FORMAL_G*** group per proof session.
+- **fv/fv_kudu_fcov.tcl**: every SVA of the functional coverage model, proved
+  in one clean session per pmode together with FV-only helper lemmas
+  (**KUDU_FV_HELPERS**). It found KUDU-075, KUDU-076 and KUDU-077
+  ([bug_logs_3.md](bug_logs_3.md)).
+- Block-level FIFO proofs.
 
-**Development status supplied for this plan:** this end-to-end FV work is
-currently under development by **SCI Semiconductors**. Kudu adoption, proof
-scope and completion must be tracked explicitly; this document does not claim
-that an end-to-end Kudu proof already exists. The SCI development assignment
-is project-provided status; the public upstream documentation independently
-supports the work-in-progress assessment, not that assignment or a completion
-claim.
-
-For Kudu, the proof plan must define:
-
-| Obligation | Kudu-specific concern |
-|---|---|
-| Initial-state correspondence | Reset, integer/capability registers, PCC, CSRs, memory and tags |
-| Architectural step correspondence | Correctly order both issue/retirement slots and variable-latency results; distinguish stuttering from missing or duplicated events |
-| Instruction semantics | Enabled RV32 and CHERIoT operations, compressed aliases, capability bounds, permissions and sealing |
-| Memory correspondence | Loads/stores, tags, LR/SC, AMO multi-step implementation, revocation and memory errors |
-| Control-flow correspondence | Branch/JAL/CJALR, prediction recovery, faults, traps, debug and interrupts within the supported model |
-| Precise side effects | Killed instructions must not update architectural state; exceptions must identify the correct instruction |
-| Progress | State environmental fairness assumptions and distinguish safety proofs from liveness/progress proofs |
-| Configuration coverage | Record exactly which parameter sets, ISA features and modes each proof covers |
-
-The formal harness must constrain only legitimate environmental behavior.
-Audit reset assumptions, memory abstractions, black boxes, cut points and
-unreachable-state claims. Check assertion activation and cover witnesses to
-avoid vacuous proofs. A bounded result, timeout or unproven partition is not
-an unbounded equivalence proof.
-
-Existing [JasperGold scripts](../../fv/fv_kudu.tcl) and block-oriented
-[formal files](../../fv/) provide complementary assertion/FIFO/LSU work.
-Their presence is not evidence of completed Sail-to-Kudu trace equivalence.
+These are assertion proofs, not end-to-end Sail-to-Kudu trace equivalence.
+The end-to-end plan, based on the CHERIoT-Ibex formal flow and under
+development by SCI Semiconductors, and its proof obligations are also in
+[sim/fv/README.md](../fv/README.md#end-to-end-formal-verification-planned).
 
 ### 1.3 FPGA/emulation and system software
 
@@ -156,8 +129,8 @@ the temporal-safety map and test termination interfaces.
 | **+PMODE** | Choose runtime CHERI or RV32 behavior in a capable build |
 | **+INSTR_GNT_WMAX / +INSTR_RESP_WMAX** | Vary instruction grant/response delay |
 | **+DATA_GNT_WMAX / +DATA_RESP_WMAX** | Vary data grant/response delay |
-| **+INSTR_ERR_RATE / +DATA_ERR_RATE / +CAP_ERR_RATE** | Configure memory/capability-error injection, subject to testbench enables |
-| **+INTR_INTVL / +DBG_REQ_INTVL** | Configure interrupt/debug stimulus |
+| **+INSTR_ERR_RATE / +DATA_ERR_RATE** | Configure instruction/data bus-error injection, subject to testbench enables |
+| **+INTR_RATE / +DBG_REQ_RATE** | Random interrupt / debug-request rate (0 = off, 1..7 = increasing frequency) |
 | **+TIMEOUT / +RVFI_MAX** | Bound cycles and, in DII mode, the emitted RVFI packet count |
 | **+STAT_MCYCLE**, simulator random seed | Control statistics and reproducibility |
 
@@ -207,6 +180,16 @@ authorization, particularly **run_dii/cov_kudu.vdb**. Keep raw per-test coverage
 where attribution is needed; URG accumulation can collapse tests into a merged
 record. Do not merge different elaborations or changed coverage schemas into
 an old database merely because names still match.
+
+### 2.4 Directed RTL-bug tests
+
+Every simulation-reproducible bug in the bug logs ([bug_logs.md](bug_logs.md),
+[bug_logs_2.md](bug_logs_2.md), [bug_logs_3.md](bug_logs_3.md)) has a
+self-checking directed test in [sim/tests_2](../tests_2), one directory per
+test. How to run them, the shared harness, the verdict rules and a description
+of every test are in [direct_tests.md](direct_tests.md).
+Waived behaviour that the SoC integrator must avoid is listed in
+[integration_issues.md](integration_issues.md).
 
 ## 3. Coverage plan and goals
 
@@ -318,7 +301,7 @@ applicability exclusions remain necessary for sign-off.
 |---|---|
 | Every enabled instruction/format and meaningful operand class | TestRIG generation plus directed ISA/CHERIoT programs; Sail comparison and retire coverage |
 | Correct behavior under microarchitectural pressure | Dependency chains, independently varied instruction/data delays, queue boundaries, pipeline mixtures and recovery; microarchitectural coverage plus architectural comparison |
-| Register reservations and forwarding | Exercise each write-reservation bit 1–31 and CHERI reservation bit 1–15 with the four slot-hazard states; cover legal forwarding/reservation pairs 00, 01, 11 per register, reject illegal 10, and exercise both physical slot mappings |
+| Register reservations and forwarding | Exercise each write-reservation bit 1–31 and CHERI reservation bit 1–15 with the four slot-hazard states; cover all forwarding/reservation pairs 00, 01, 10, 11 per register, and exercise both physical slot mappings |
 | Commit writeback and destination collisions | Exercise each port's registers 1–15 in CHERI mode and 1–31 in RV32 mode; cover nonzero destination equality for port pairs 0/1, 1/2 and 0/2, including an early load suppressed by a younger writer |
 | Scoreboard pressure | Reach FIFO occupancy 0, 1, 2, 3, 4, 5 and 6 or more using producer/commit pressure and delayed operations; retain architectural comparison through drain and recovery |
 | LSU queue pressure | Reach WAW FIFO levels 0, 1 and 2+, and writeback FIFO levels 0 and 1+; exercise fill, drain, flush and write-through behavior without treating bypass traffic as stored occupancy |
@@ -380,6 +363,10 @@ width, legal values and configuration applicability. In particular:
   types and matching widths do not prove complete architectural observation.
 * Keep disabled bins and reviewed ignore/illegal bins separate from normal
   goals. Couple structural illegal-bin assumptions to assertions.
+
+[fcov_bug_crosscheck.md](fcov_bug_crosscheck.md) applies this review to
+every RTL bug found so far (KUDU-001..074) and records the coverage added so
+that each bug's triggering scenario is a coverage goal or tripwire.
 
 For each uncovered goal, determine whether the cause is missing stimulus,
 an incorrect sampling guard, an RTL defect, an unsupported configuration,
@@ -458,7 +445,7 @@ coverpoints and their six crosses, which were removed.
 | **cp_reg_wrsv_q** | One overlapping set-bit bin per register 1–31 |
 | **cp_reg_cheri_trsv_q** | One overlapping set-bit bin per register 1–15 |
 | **x_cp_reg_wrsv_q**, **x_cp_reg_cheri_trsv_q** | Each reserved register crossed with **hazard_q** through **cp_hazard**: none, IR0, IR1 or both; 124 and 60 cross bins respectively |
-| **cp_fwd_wrsv_r1** through **cp_fwd_wrsv_r31** | Each **{ir0_pl_fwd_act[n], reg_wrsv_q[n]}** pair: 00 neither, 01 reserved only, 11 both are legal; **pair_2** (10, forwarding only) is illegal and backed by an SVA; 93 legal goals plus 31 illegal bins |
+| **cp_fwd_wrsv_r1** through **cp_fwd_wrsv_r31** | Each **{ir0_pl_fwd_act[n], reg_wrsv_q[n]}** pair: 00 neither, 01 reserved only, 10 forwarding only, 11 both; all four are normal goals, including **pair_2** (10); 124 goals |
 | **cp_branch_mispredict_event** | Separate IR0/IR1 hit bins from the full two-bit event, already qualified by branch decode and issue in RTL |
 | **cp_ira_is0** | Both physical-to-logical mappings: IRA is IR0 when 1, IRB is IR0 when 0 |
 | **cp_mcause** | Issuer-generated exception/IRQ causes, each fast IRQ ID 0–14, and forwarded commit-error causes, sampled only on non-debug cause saves |
@@ -557,27 +544,28 @@ reports and do not merge incompatible schemas.
 
 ### 4.2 Source census, not achieved coverage
 
-The following snapshot is the coverage source census on 2026-10-10,
-after the updates in this plan. Mode-qualified bins
+The following snapshot is the coverage source census on 2026-11-14,
+after the bug-driven additions described in
+[fcov_bug_crosscheck.md](fcov_bug_crosscheck.md). Mode-qualified bins
 and report denominators must be reviewed per hardware report domain.
 
 | Organization | Covergroup types | Coverpoint declarations | Explicit crosses |
 |---|---:|---:|---:|
 | ISA instructions | 1 | 44 | 30 |
-| ISA operands | 1 | 30 | 128 |
-| ISA/CSR | 1 | 42 | 2 |
-| IF | 1 | 62 | 3 |
-| ID | 2 | 65 | 18 |
-| Issue | 1 | 93 | 7 |
-| EX, including branch groups | 4 | 92 | 14 |
+| ISA operands | 1 | 24 | 139 |
+| ISA/CSR | 1 | 49 | 3 |
+| IF | 1 | 65 | 4 |
+| ID | 2 | 69 | 19 |
+| Issue | 1 | 113 | 17 |
+| EX, including branch groups | 4 | 99 | 14 |
 | Context | 2 | 11 | 2 |
-| LSU | 3 | 99 | 9 |
+| LSU | 3 | 112 | 15 |
 | Commit | 1 | 31 | 0 |
 | Top level | 1 | 40 | 0 |
-| **Total** | **18** | **609** | **213** |
+| **Total** | **18** | **657** | **243** |
 
-The tool also reports **16 bind declarations**, **1,523 normal bin
-declarations**, **75 illegal-bin declarations**, and **169 ignore-bin
+The tool also reports **16 bind declarations**, **1,696 normal bin
+declarations**, **59 illegal-bin declarations**, and **196 ignore-bin
 declarations**. It reports the branch type separately as **cg_ma_branch**;
 the table folds it into EX.
 
@@ -930,11 +918,11 @@ event calls. **run_issue_sampling.py** checks simultaneous events, reset,
 FSM history, saved-RA tracking and both hardware/load-filter/mode settings;
 **--baseline** compares every native point/cross report against a preserved
 pre-consolidation source. Other legal-bin counters and applicability are
-preserved; only forwarding **pair_2** changes from a legal goal to an illegal
-bin. The old four-group weighted average is not the new single-group score.
-The negative forwarding sweep checks all 31 pair_2 bins and their paired
-assertions in both hardware/runtime modes, including idle cycles, with
-reset, between-edge and x0 rejection. Three legal goals per register remain.
+preserved, including forwarding **pair_2** as a normal goal.
+The old four-group weighted average is not the new single-group score.
+The forwarding sweep checks all 124 normal bins in both hardware/runtime
+modes, including idle cycles, with reset, between-edge and x0 rejection.
+There are no forwarding-requires-reservation assertions or error-continuation flags.
 
 In **FC_MA_IF**, **cp_pdt_cand0/1** cover which predictor source (branch,
 JAL, JALR) each slot proposes, and **x_cp_pdt_priority_contention** crosses
