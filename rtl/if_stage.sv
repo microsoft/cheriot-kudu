@@ -15,19 +15,20 @@
  */
 
 module if_stage import super_pkg::*; #(
-  parameter int unsigned DmHaltAddr        = 32'h1A110800,
-  parameter int unsigned DmExceptionAddr   = 32'h1A110808,
-  parameter bit          BranchPredictor   = 1'b0,
-  parameter bit          CHERIoTEn         = 1'b0,
-  parameter bit          InstrBufEn        = 1'b1,
-  parameter bit          CompDecEn         = 1'b1,
-  parameter bit          UnalignedFetch    = 1'b0,
-  parameter bit          InstrRdataBypass  = 1'b1,
-  parameter bit          PredictUseBtb     = 1'b1,
-  parameter int unsigned PredictBhtSize    = 16,
-  parameter int unsigned PrefetchDepth     = 3,
-  parameter bit          AltEnable         = 1'b0,
-  parameter bit          PredictRA         = 1'b0
+  parameter int unsigned DmHaltAddr       = 32'h1A110800,
+  parameter int unsigned DmExceptionAddr  = 32'h1A110808,
+  parameter bit          BranchPredictor  = 1'b0,
+  parameter bit          CHERIoTEn        = 1'b0,
+  parameter bit          InstrBufEn       = 1'b1,
+  parameter bit          CompDecEn        = 1'b1,
+  parameter bit          UnalignedFetch   = 1'b0,
+  parameter bit          InstrRdataBypass = 1'b1,
+  parameter bit          PredictUseBtb    = 1'b1,
+  parameter int unsigned PredictBhtSize   = 16,
+  parameter int unsigned PrefetchDepth    = 3,
+  parameter bit          AltEnable        = 1'b0,
+  parameter bit          PredictRA        = 1'b0,
+  parameter bit          FlatFetchAddrMux = 1'b1
 ) (
   input  logic             clk_i,
   input  logic             rst_ni,
@@ -56,6 +57,8 @@ module if_stage import super_pkg::*; #(
   // control signals       
   input  logic             ex_pc_set_i,              // set the PC to a new value
   input  logic [31:0]      ex_pc_target_i,           // Not-taken branch address in ID/EX
+  input  logic [6:0]       ex_pc_tgt_sel_i,
+  input  logic [6:0][31:0] ex_pc_tgt_data_i,
                                                      // vectorized interrupt lines
   input  logic             ex_bp_init_i, 
   input  ex_bp_info_t      ex_bp_info_i,
@@ -96,10 +99,11 @@ module if_stage import super_pkg::*; #(
   assign alloc_alt    = ~ex_pc_set_i & bp_alloc_alt;   // don't save ALT if EX request a pc_set
   
   prefetch_buffer64 #(
-    .UnalignedFetch (UnalignedFetch),
-    .RdataBypass    (InstrRdataBypass),
-    .FifoDepth      (PrefetchDepth),
-    .AltEnable      (AltEnable)
+    .UnalignedFetch   (UnalignedFetch),
+    .RdataBypass      (InstrRdataBypass),
+    .FifoDepth        (PrefetchDepth),
+    .AltEnable        (AltEnable),
+    .FlatFetchAddrMux (FlatFetchAddrMux)
   ) prefetch_buffer_i (
       .clk_i               ( clk_i                      ),
       .rst_ni              ( rst_ni                     ),
@@ -107,6 +111,11 @@ module if_stage import super_pkg::*; #(
       .req_i               ( req_i                      ),
       .branch_i            ( branch_req                 ),
       .addr_i              ( {fetch_addr_n[31:1], 1'b0} ),
+      .ex_pc_set_i         ( ex_pc_set_i                ),
+      .pc_tgt_sel_i        ( ex_pc_tgt_sel_i            ),
+      .pc_tgt_data_i       ( ex_pc_tgt_data_i           ),
+      .pdt_pc_set_i        ( predict_pc_set             ),
+      .pdt_pc_target_i     ( predict_pc_target          ),
       .ex_alt_ctrl_i       ( ex_alt_ctrl_i              ),
       .alloc_alt_i         ( alloc_alt                  ),
       .bp_instr0_i         ( bp_instr0                  ),

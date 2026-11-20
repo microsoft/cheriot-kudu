@@ -14,10 +14,11 @@
  * paths to the instruction cache.
  */
 module prefetch_buffer64 import super_pkg::*; #(
-  parameter bit          UnalignedFetch = 1'b0,
-  parameter bit          RdataBypass    = 1'b1,
-  parameter int unsigned FifoDepth      = 3,
-  parameter bit          AltEnable      = 1'b0
+  parameter bit          UnalignedFetch   = 1'b0,
+  parameter bit          RdataBypass      = 1'b1,
+  parameter int unsigned FifoDepth        = 3,
+  parameter bit          AltEnable        = 1'b0,
+  parameter bit          FlatFetchAddrMux = 1'b1
 ) (
   input  logic          clk_i,
   input  logic          rst_ni,
@@ -28,6 +29,12 @@ module prefetch_buffer64 import super_pkg::*; #(
                         
   input  logic          branch_i,
   input  logic [31:0]   addr_i,
+  // flattened fetch address mux sources
+  input  logic          ex_pc_set_i,
+  input  logic [6:0]    pc_tgt_sel_i,
+  input  logic [6:0][31:0] pc_tgt_data_i,
+  input  logic          pdt_pc_set_i,
+  input  logic [31:0]   pdt_pc_target_i,
 
   // ALT branch related signals
   input  ex_alt_ctrl_t  ex_alt_ctrl_i,
@@ -86,7 +93,7 @@ module prefetch_buffer64 import super_pkg::*; #(
   logic                instr_rvalid_in;
 
   logic                apply_alt_ok;
-  logic [31:0]         alt_nxt_addr;
+  logic [31:0]         alt_nxt_addr, alt_nxt_addr0, alt_nxt_addr1;
 
   ////////////////////////////
   // Prefetch buffer status //
@@ -144,9 +151,10 @@ module prefetch_buffer64 import super_pkg::*; #(
   end 
 
   fetch_fifo64 #(
-    .NUM_REQS       (NUM_REQS),
-    .UnalignedFetch (UnalignedFetch),
-    .AltEnable      (AltEnable)
+    .NUM_REQS         (NUM_REQS),
+    .UnalignedFetch   (UnalignedFetch),
+    .AltEnable        (AltEnable),
+    .FlatFetchAddrMux (FlatFetchAddrMux)
   ) fifo_i (
       .clk_i                 ( clk_i              ),
       .rst_ni                ( rst_ni             ),
@@ -155,6 +163,8 @@ module prefetch_buffer64 import super_pkg::*; #(
       .ex_alt_ctrl_i         ( ex_alt_ctrl_i      ),
       .apply_alt_ok_o        ( apply_alt_ok       ),
       .alt_nxt_addr_o        ( alt_nxt_addr       ),
+      .alt_nxt_addr0_o       ( alt_nxt_addr0      ),
+      .alt_nxt_addr1_o       ( alt_nxt_addr1      ),
       .alloc_alt_i           ( alloc_alt_i        ),
       .bp_instr0_i           ( bp_instr0_i        ),
       .alt_has_free_o        ( alt_has_free_o     ),
@@ -254,9 +264,38 @@ module prefetch_buffer64 import super_pkg::*; #(
   end
 
   // Address mux
-  assign instr_addr = valid_req_q         ? stored_addr_q :
-                      branch_i            ? comb_target :
-                                            fetch_addr_q;
+  if (FlatFetchAddrMux) begin : gen_flat_addr_mux
+    // Flattened as a single AND-OR so the late selects (pc_set/issue/apply_alt) act at the last level.
+    // Equivalent to: valid_req_q ? stored_addr_q : branch_i ? comb_target : fetch_addr_q
+    logic       alt_ok, sel_st, sel_alt0, sel_alt1, sel_pdt, sel_fa;
+    logic [6:0] sel_ex;
+
+    assign alt_ok   = AltEnable & apply_alt_ok;
+    assign sel_st   = valid_req_q;
+    assign sel_alt0 = ~valid_req_q & alt_ok & ~ex_alt_ctrl_i.ir_sel;
+    assign sel_alt1 = ~valid_req_q & alt_ok &  ex_alt_ctrl_i.ir_sel;
+    assign sel_ex   = {7{~valid_req_q & ~alt_ok & ex_pc_set_i}} & pc_tgt_sel_i;
+    assign sel_pdt  = ~valid_req_q & ~alt_ok & ~ex_pc_set_i & pdt_pc_set_i;
+    assign sel_fa   = ~valid_req_q & ~branch_i;
+
+    always_comb begin
+      instr_addr = ({32{sel_st}}   & stored_addr_q) |
+                   ({32{sel_alt0}} & alt_nxt_addr0) |
+                   ({32{sel_alt1}} & alt_nxt_addr1) |
+                   ({32{sel_pdt}}  & {pdt_pc_target_i[31:1], 1'b0}) |
+                   ({32{sel_fa}}   & fetch_addr_q);
+      for (int k = 0; k < 7; k++)
+        instr_addr = instr_addr | ({32{sel_ex[k]}} & {pc_tgt_data_i[k][31:1], 1'b0});
+    end
+  end else begin : gen_addr_mux
+    assign instr_addr = valid_req_q         ? stored_addr_q :
+                        branch_i            ? comb_target :
+                                              fetch_addr_q;
+
+    logic unused_flat_srcs;
+    assign unused_flat_srcs = ^{ex_pc_set_i, pc_tgt_sel_i, pc_tgt_data_i, pdt_pc_set_i,
+                                pdt_pc_target_i, alt_nxt_addr0, alt_nxt_addr1};
+  end
 
   assign instr_addr_w_aligned = UnalignedFetch ? {instr_addr[31:2], 2'b00} : {instr_addr[31:3], 3'b000};
 

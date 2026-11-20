@@ -63,6 +63,10 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
 
   op_data2_t      ira_op_rdata2, irb_op_rdata2;
 
+  // 1: build instr_addr_o as a single flattened AND-OR of all fetch address sources
+  // 0: original priority mux (valid_req_q ? stored_addr_q : branch ? comb_target : fetch_addr_q)
+  localparam bit  FlatFetchAddrMux = 1'b1;
+
   logic [RegW-1:0] rf_wdata0, rf_wdata1, rf_wdata2;
   logic [4:0]      rf_waddr0, rf_waddr1, rf_waddr2;
   logic            rf_we0, rf_we1, rf_we2;
@@ -71,6 +75,8 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   // control signals
   logic           ex_pc_set;
   logic [31:0]    ex_pc_target;            // Not-taken branch address in ID/EX
+  logic [6:0]       ex_pc_tgt_sel;
+  logic [6:0][31:0] ex_pc_tgt_data;
                                             // vectorized interrupt lines
   logic           ex_bp_init;         
   ex_bp_info_t    ex_bp_info; 
@@ -211,7 +217,8 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .PredictBhtSize   (CFG.PredictBhtSize),
     .PrefetchDepth    (CFG.PrefetchDepth),
     .AltEnable        (CFG.AltEnable),
-    .PredictRA        (CFG.PredictRA)
+    .PredictRA        (CFG.PredictRA),
+    .FlatFetchAddrMux (FlatFetchAddrMux)
   ) if_stage_i(
     .clk_i                   (clk_i                   ),
     .rst_ni                  (rst_ni                  ),
@@ -232,6 +239,8 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .if_valid_o              (if_valid                ),
     .ex_pc_set_i             (ex_pc_set               ),   
     .ex_pc_target_i          (ex_pc_target            ),   
+    .ex_pc_tgt_sel_i         (ex_pc_tgt_sel           ),
+    .ex_pc_tgt_data_i        (ex_pc_tgt_data          ),
     .ex_bp_init_i            (ex_bp_init              ),
     .ex_bp_info_i            (ex_bp_info              ),
     .ex_alt_ctrl_i           (ex_alt_ctrl             ),
@@ -296,14 +305,15 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
   );
 
   issuer #(
-    .CHERIoTEn  (CHERIoTEn ), 
-    .DualIssue  (CFG.DualIssue ), 
-    .LoadFiltEn (CHERIoTEn),
-    .RV32A      (CFG.RV32A     ),
-    .AltEnable  (CFG.AltEnable ),
-    .CJALRErrEn (CFG.CJALRErrEn),
-    .DmHaltAddr (CFG.DmHaltAddr),
-    .DmExcAddr  (CFG.DmExcAddr )
+    .CHERIoTEn        (CHERIoTEn       ),
+    .DualIssue        (CFG.DualIssue   ),
+    .LoadFiltEn       (CHERIoTEn       ),
+    .RV32A            (CFG.RV32A       ),
+    .AltEnable        (CFG.AltEnable   ),
+    .CJALRErrEn       (CFG.CJALRErrEn  ),
+    .DmHaltAddr       (CFG.DmHaltAddr  ),
+    .DmExcAddr        (CFG.DmExcAddr   ),
+    .FlatFetchAddrMux (FlatFetchAddrMux)
   ) issuer_i (
     .clk_i                     (clk_i                   ),
     .rst_ni                    (rst_ni                  ),
@@ -355,6 +365,8 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
     .fetch_req_o               (fetch_req               ),
     .pc_set_o                  (ex_pc_set               ),
     .pc_target_o               (ex_pc_target            ),   
+    .pc_tgt_sel_o              (ex_pc_tgt_sel           ),
+    .pc_tgt_data_o             (ex_pc_tgt_data          ),
     .ex_bp_init_o              (ex_bp_init              ),
     .ex_bp_info_o              (ex_bp_info              ),
     .ex_alt_ctrl_o             (ex_alt_ctrl             ),

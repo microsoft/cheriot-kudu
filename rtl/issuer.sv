@@ -7,15 +7,16 @@
 //
 //  ir0 is always the 1st (earlier) instruction. Fifo logic handles switching.
 module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
-  parameter bit          CHERIoTEn  = 1'b1,
-  parameter bit          DualIssue  = 1'b1,
-  parameter bit          AllowWaW   = 1'b1,
-  parameter bit          LoadFiltEn = 1'b1,
-  parameter bit          RV32A      = 1'b1,
-  parameter bit          AltEnable  = 1'b0,
-  parameter bit          CJALRErrEn = 1'b1,
-  parameter int unsigned DmHaltAddr = 32'h1A110800,
-  parameter int unsigned DmExcAddr  = 32'h1A110808
+  parameter bit          CHERIoTEn        = 1'b1,
+  parameter bit          DualIssue        = 1'b1,
+  parameter bit          AllowWaW         = 1'b1,
+  parameter bit          LoadFiltEn       = 1'b1,
+  parameter bit          RV32A            = 1'b1,
+  parameter bit          AltEnable        = 1'b0,
+  parameter bit          CJALRErrEn       = 1'b1,
+  parameter int unsigned DmHaltAddr       = 32'h1A110800,
+  parameter int unsigned DmExcAddr        = 32'h1A110808,
+  parameter bit          FlatFetchAddrMux = 1'b1
 ) (
   input  logic             clk_i,
   input  logic             rst_ni,
@@ -84,6 +85,8 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
   output logic             fetch_req_o,
   output logic             pc_set_o,          // flushing prefetched instructions and move PC
   output logic [31:0]      pc_target_o,
+  output logic [6:0]       pc_tgt_sel_o,      // one-hot pc_target_o source (valid when pc_set_o)
+  output logic [6:0][31:0] pc_tgt_data_o,
   output logic             ex_bp_init_o,      // to branch predictor
   output ex_bp_info_t      ex_bp_info_o,      // to branch predictor
   output ex_alt_ctrl_t     ex_alt_ctrl_o,
@@ -668,6 +671,35 @@ module issuer import super_pkg::*; import cheri_pkg::*; import csr_pkg::*; # (
       fetch_req_o = 1'b1;
     else
       fetch_req_o = 1'b0;
+  end
+
+  // Flattened pc_target_o: pc_target_o == OR(pc_tgt_sel_o[k] & pc_tgt_data_o[k]) whenever pc_set_o
+  if (FlatFetchAddrMux) begin : gen_flat_pc_tgt
+    logic ir0_tgt_bt, ir0_tgt_pn, ir1_tgt_bt, ir1_tgt_pn, dec_st;
+    assign dec_st     = ctrl_fsm_cs[CSM_DECODE];
+    assign ir0_tgt_bt = ir0_mis_cause[0] | ir0_mis_cause[2];
+    assign ir0_tgt_pn = ir0_mis_cause[1];
+    assign ir1_tgt_bt = ir1_mis_cause[0] | ir1_mis_cause[2];
+    assign ir1_tgt_pn = ir1_mis_cause[1];
+
+    assign pc_tgt_sel_o[0] = ~dec_st;
+    assign pc_tgt_sel_o[1] = dec_st &  mispredict[0] & ir0_tgt_bt;
+    assign pc_tgt_sel_o[2] = dec_st &  mispredict[0] & ~ir0_tgt_bt & ir0_tgt_pn;
+    assign pc_tgt_sel_o[3] = dec_st &  mispredict[0] & ~ir0_tgt_bt & ~ir0_tgt_pn;
+    assign pc_tgt_sel_o[4] = dec_st & ~mispredict[0] & ir1_tgt_bt;
+    assign pc_tgt_sel_o[5] = dec_st & ~mispredict[0] & ~ir1_tgt_bt & ir1_tgt_pn;
+    assign pc_tgt_sel_o[6] = dec_st & ~mispredict[0] & ~ir1_tgt_bt & ~ir1_tgt_pn;
+
+    assign pc_tgt_data_o[0] = special_pc_q;
+    assign pc_tgt_data_o[1] = ir0_dec.btarget;
+    assign pc_tgt_data_o[2] = ir0_dec.pc_nxt;
+    assign pc_tgt_data_o[3] = ir0_jalr_target_i;
+    assign pc_tgt_data_o[4] = ir1_dec.btarget;
+    assign pc_tgt_data_o[5] = ir1_dec.pc_nxt;
+    assign pc_tgt_data_o[6] = ir1_jalr_target_i;
+  end else begin : gen_no_flat_pc_tgt
+    assign pc_tgt_sel_o  = '0;
+    assign pc_tgt_data_o = '0;
   end
 
   logic        flush_alt, apply_alt, alt_ir_sel;

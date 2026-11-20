@@ -15,9 +15,10 @@
  */
 
 module fetch_fifo64 import super_pkg::*; #(
-  parameter int unsigned NUM_REQS       = 2,
-  parameter bit          UnalignedFetch = 1'b0,
-  parameter bit          AltEnable      = 1'b0
+  parameter int unsigned NUM_REQS         = 2,
+  parameter bit          UnalignedFetch   = 1'b0,
+  parameter bit          AltEnable        = 1'b0,
+  parameter bit          FlatFetchAddrMux = 1'b1
 ) (
   input  logic                clk_i,
   input  logic                rst_ni,
@@ -36,6 +37,8 @@ module fetch_fifo64 import super_pkg::*; #(
   input  logic                bp_instr0_i,
   output logic                apply_alt_ok_o,
   output logic [31:0]         alt_nxt_addr_o,   // to instruction fetch address generation logic
+  output logic [31:0]         alt_nxt_addr0_o,  // ALT nxt_addr of ex_alt_ctrl_i.id0
+  output logic [31:0]         alt_nxt_addr1_o,  // ALT nxt_addr of ex_alt_ctrl_i.id1
   output logic                alt_has_free_o,   // status signal to branch predictor
   output logic [1:0]          alt_free_id_o,     
 
@@ -506,6 +509,8 @@ module fetch_fifo64 import super_pkg::*; #(
     assign alt_rd_rdata    = '0;
     assign alt_rd_err      = '0;
     assign alt_rd_nxt_addr = 32'h0;
+    assign alt_nxt_addr0_o = 32'h0;
+    assign alt_nxt_addr1_o = 32'h0;
     assign alt_status      = '0;
     assign alt_free_id     = '0;
 
@@ -532,6 +537,9 @@ module fetch_fifo64 import super_pkg::*; #(
     assign alt_rd_rdata    = alt_rdout.rdata;
     assign alt_rd_err      = alt_rdout.err;
     assign alt_rd_nxt_addr = alt_rdout.nxt_addr;
+    // per-ID ALT next addresses for the flattened fetch address mux
+    assign alt_nxt_addr0_o = FlatFetchAddrMux ? alt_table[ex_alt_ctrl_i.id0].nxt_addr : 32'h0;
+    assign alt_nxt_addr1_o = FlatFetchAddrMux ? alt_table[ex_alt_ctrl_i.id1].nxt_addr : 32'h0;
 
     // ALT alloc interface
     

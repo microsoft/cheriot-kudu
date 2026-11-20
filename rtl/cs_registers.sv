@@ -712,7 +712,7 @@ module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg:
           dcsr_d.zero0 = 1'b0;
           dcsr_d.zero1 = 1'b0;
           dcsr_d.zero2 = 12'h0;
-          dcsr_en      = 1'b1;
+          dcsr_en      = debug_mode_i; 
         end
 
         // machine counter/timers
@@ -841,7 +841,7 @@ module cs_registers import kudu_cfg_pkg::*; import super_pkg::*; import csr_pkg:
 
   // only write CSRs during one clock cycle
 
-  assign csr_we_int32  = csr_wr & csr_op_en_i &  ~csr_cheri_i & ~illegal_csr_insn_o;
+  assign csr_we_int32  = csr_wr & csr_op_en_i &  ~csr_cheri_i & ~illegal_csr_write & ~illegal_csr_priv;
 
   assign csr_rdata_o = csr_cheri_i  ? csr_rdata_cheri  : csr_rdata32;
 

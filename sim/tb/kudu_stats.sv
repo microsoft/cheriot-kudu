@@ -209,23 +209,30 @@ module kudu_stats (
     end
   end
 
-  `define DCACHE tb_kudu_top.dut.ls_pipeline_i.genblk1.dcache_i
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      load_hit_cnt  <= 0;
-      load_cnt      <= 0;
-      store_cnt     <= 0;
-      byp_match_cnt <= 0;
-      byp_hit_cnt   <= 0;
-    end else if (cnt_enable) begin
-      load_hit_cnt  <= load_hit_cnt  + `DCACHE.load_hit_event;
-      load_cnt      <= load_cnt      + `DCACHE.load_event;
-      store_cnt     <= store_cnt     + `DCACHE.store_event;
-      byp_match_cnt <= byp_match_cnt + `DCACHE.byp_match_event;
-      byp_hit_cnt   <= byp_hit_cnt   + `DCACHE.byp_hit_event;
+  if (dut.ls_pipeline_i.DCacheEn) begin
+    `define DCACHE tb_kudu_top.dut.ls_pipeline_i.genblk1.dcache_i
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+      if (!rst_ni) begin
+        load_hit_cnt  <= 0;
+        load_cnt      <= 0;
+        store_cnt     <= 0;
+        byp_match_cnt <= 0;
+        byp_hit_cnt   <= 0;
+      end else if (cnt_enable) begin
+        load_hit_cnt  <= load_hit_cnt  + `DCACHE.load_hit_event;
+        load_cnt      <= load_cnt      + `DCACHE.load_event;
+        store_cnt     <= store_cnt     + `DCACHE.store_event;
+        byp_match_cnt <= byp_match_cnt + `DCACHE.byp_match_event;
+        byp_hit_cnt   <= byp_hit_cnt   + `DCACHE.byp_hit_event;
+      end
     end
+  end else begin
+    assign load_hit_cnt  = 0;
+    assign load_cnt      = 0;
+    assign store_cnt     = 0;
+    assign byp_match_cnt = 0;
+    assign byp_hit_cnt   = 0;
   end
-
 
   initial begin
     @(posedge rst_ni);
