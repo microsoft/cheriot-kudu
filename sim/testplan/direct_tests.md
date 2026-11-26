@@ -192,6 +192,7 @@ time of writing; the authoritative status is in the bug logs.
 | rtl_bug_vcscomp_trace_dpi | 069 | 1 | script (fake vcs) | PASS |
 | rtl_bug_fetch_err_pcc_top | 070 | 13 | stock, regr | PASS (070 Fixed) |
 | rtl_bug_step_ebreak_cause | 071 | 3 | stock, regr | PASS (071 Fixed) |
+| rtl_cov_step_trap | none (coverage) | 6 | stock, regr | PASS |
 | rtl_bug_irq_withdraw | 072 | 2 | shadow (collide TB), post hook | DEFER (072 Waived) |
 | rtl_bug_dbg_req_withdraw | 073 | 2 | shadow (collide TB), post hook | DEFER (073 Waived) |
 | rtl_bug_rvfi_intr_stale_pc | 074 | 2 | shadow (RVFI dump), post hook | PASS (074 Fixed) |
@@ -265,6 +266,18 @@ output lines and the pre-fix symptom.
   halt with dcsr.cause = STEP first, then EBREAK/TRIGGER on the next resume.
   Uses its own register-transparent debug ROM that logs every debug entry. Runs
   on simv32, simv PMODE=0 and simv PMODE=1.
+- **rtl_cov_step_trap** (coverage test, no KUDU id): single-steps onto
+  trapping instructions. The trap must be taken and the step must halt at the
+  first handler instruction (dcsr.cause = STEP, dpc = handler, mcause/mepc of
+  the trap), after which the handler runs once. Cases 40-49 (both ISAs): load,
+  store and AMO access faults, misaligned AMO, instruction access fault, ebreak
+  with ebreakm = 0, dret outside debug mode, and U-mode mret, ecall and load
+  fault. Cases 50-56 (CHERIoT only): LSU bounds/permission/tag faults, cjr to
+  an untagged capability, a PCC-bounds fetch fault, and misaligned clc/csc.
+  Closes the stepped trap classes of **x_step_trap** and **cp_step_mcause**.
+  Reuses the debug ROM and case framework of rtl_bug_step_ebreak_cause. Six
+  runs: rv32, cheriot (PMODE=0) and cheri (PMODE=1), each with and without
+  wait states.
 - **rtl_bug_dbg_req_withdraw** (KUDU-073, Waived): on the collide testbench, a
   debug_req pulse of 1–4 cycles fired 1–12 cycles after an arming store
   (48 combinations). Any halt taken must report cause HALTREQ; on HEAD every
@@ -478,3 +491,8 @@ the PCC top). The 1 KUDU-070, 3 KUDU-071 and 4 KUDU-076 XFAIL runs move to
 PASS (verified: 144 PASS, 7 XFAIL, 11 DEFER, 0 FAIL on conf1), so the
 expected run_all totals are now 162 runs: 144 PASS, 7 XFAIL and 11 DEFER.
 The bug regression grows by the same 10 runs (verified: 310 PASS, 7 XFAIL).
+
+rtl_cov_step_trap (6 runs, all PASS on HEAD) was then added as a coverage
+test for stepped traps; it is not tied to a KUDU id. The expected run_all
+totals become 168 runs: 150 PASS, 7 XFAIL and 11 DEFER, and the bug
+regression grows by the same 6 runs.
