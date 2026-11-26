@@ -285,6 +285,12 @@ module kudu_fcov_context
                                         binsof(cp_ir0) intersect {IR_EMPTY};
         ignore_bins error_without_ir1 = binsof(cp_special_event.ir1_err) &&
                                         binsof(cp_ir1) intersect {IR_EMPTY};
+        // Commit errors only come from LSU responses. The faulting response
+        // clears outstanding_resp_q and blocks ds_rdy_i until cmt_flush. Paired
+        // with AssertLsuReqNoCmtErr.
+        illegal_bins lsu_commit_error = (binsof(cp_special_event.commit_error) &&
+                                         binsof(cp_ex_resident)) with
+                                        (i == LsuReq && cp_ex_resident != EMPTY);
       }
     endgroup
     cg_execution u_cg_execution = new();
@@ -303,5 +309,9 @@ module kudu_fcov_context
   AssertIrOrder: assert property (@(posedge clk_i) disable iff (!rst_ni)
     kudu_top.ir_valid[1] |-> kudu_top.ir_valid[0])
     else $error("FCOV context: IR1 valid without IR0");
+  AssertLsuReqNoCmtErr: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.issuer_i.cmt_err_i |->
+      !kudu_top.ls_pipeline_i.load_store_unit_i.outstanding_resp_q)
+    else $error("FCOV context: LSU request outstanding during commit error");
 `endif
 endmodule

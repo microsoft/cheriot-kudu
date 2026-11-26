@@ -1338,6 +1338,24 @@ module kudu_fcov_issue
     x_step_trap: cross cp_tc, cp_trap_step iff (event_kind == ISSUE_CYCLE && csr_save_cause_o) {
       ignore_bins no_irq_step = binsof(cp_tc) intersect {TC_IRQ} && binsof(cp_trap_step.on);
     }
+    // Exception cause of a stepped instruction that traps (the STEP debug
+    // entry follows at the handler). Stimulus: sim/tests_2/rtl_cov_step_trap.
+    // Interrupts are masked while stepping (AssertNoIrqWhileStepping), so
+    // they have no bins.
+    cp_step_mcause: coverpoint csr_exc_info_o.mcause
+        iff (event_kind == ISSUE_CYCLE && csr_save_cause_o && !debug_csr_save_o &&
+             !debug_mode_q && debug_single_step_i) {
+      bins instr_access   = {EXC_CAUSE_INSTR_ACCESS_FAULT};
+      bins illegal_insn   = {EXC_CAUSE_ILLEGAL_INSN};
+      bins breakpoint     = {EXC_CAUSE_BREAKPOINT};
+      bins load_misalign  = {EXC_CAUSE_LOAD_ADDR_MISALIGN};
+      bins load_fault     = {EXC_CAUSE_LOAD_ACCESS_FAULT};
+      bins store_misalign = {EXC_CAUSE_STORE_ADDR_MISALIGN};
+      bins store_fault    = {EXC_CAUSE_STORE_ACCESS_FAULT};
+      bins ecall_u        = {EXC_CAUSE_ECALL_UMODE};
+      bins ecall_m        = {EXC_CAUSE_ECALL_MMODE};
+      bins cheri_fault    = {EXC_CAUSE_CHERI_FAULT} iff (cheri_active);
+    }
 
     // KUDU-039: mepc/dpc must be even (IALIGN = 16). Backed by AssertTrapPcEven.
     cp_trap_pc_odd: coverpoint csr_exc_info_o.pc[0]
