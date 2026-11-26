@@ -10,6 +10,12 @@ module bindfiles;
   bind alu_pipeline        alu_pipeline_fv_ext    alu_pipeline_fv_ext_i (.*);
   bind dcache              dcache_fv_ext          dcache_fv_ext_i (.*);
   bind kudu_top            kudu_top_fv_ext        kudo_top_fv_ext_i (.*);
+`ifdef KUDU_FORMAL_G0_Long
+  // helper lemmas for the G0_Long asserts (see the helper modules at the end of this file)
+  bind kudu_top            fv_long_help_cmplx     fv_long_help_cmplx_i (.*);
+  bind kudu_top            fv_long_help_fwdact    fv_long_help_fwdact_i (.*);
+  bind kudu_top            fv_long_help_pcc       fv_long_help_pcc_i (.*);
+`endif
 endmodule
 
 ////////////////////////////////////////////////////////////////
@@ -703,7 +709,8 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   input  lsu_req_info_t   lsu_req_info,
   input  logic            lsu_resp_valid,
   input  logic            resp_err_latched,
-  input  logic            lsu_err_active
+  input  logic            lsu_err_active,
+  input  logic            csr_op_en_o
 );
   logic       data_rvalid_mem;
   logic [7:0] instr_seq_in, instr_seq_exp, req_seq_exp;
@@ -825,8 +832,20 @@ module ls_pipeline_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_p
   // Load/store/csr Error handling
   //  
   // this runs too long in Jasper..
+  // Original form, kept for reference. It is stale and cannot elaborate as written:
+  // there is no trap_pending signal, and cs_registers_i is not visible from the
+  // ls_pipeline scope. It is restated below with the LSU's own error state
+  // (resp_err_latched / lsu_err_active) and the LSU-side CSR enable (csr_op_en_o).
   // AssertTrapPendingAll: assert property (@(posedge clk_i) 
   //   (trap_pending |-> (~cs_registers_i.csr_op_en_i & ~data_req_o) ));
+
+  // once an LSU/CSR error response has been latched (until the flush), no CSR
+  // operation and no data memory request is issued (proven in ~2 s)
+  AssertTrapPendingAll: assert property (@(posedge clk_i) 
+    (resp_err_latched |-> (~csr_op_en_o & ~data_req_o) ));
+  // same for the whole error-active window, which includes the error response cycle
+  AssertTrapPendingNoReq: assert property (@(posedge clk_i) 
+    (lsu_err_active |-> ~data_req_o ));
 
   AssertLsuTrapLatched: assert property (@(posedge clk_i) 
     ($fell(resp_err_latched) |-> $past(flush_i,1) ));
@@ -1251,16 +1270,17 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   input  logic           cmplx_instr_start
 );
 
-  defparam if_stage_i.AltEnable = 1'b0;
 
   AssumeKTopCfgCheriMode:   assume property (cheri_pmode_i == 1'b1);
   AssumeKTopCfgBootAddr:    assume property (boot_addr_i == 32'h8000_0000);
 
 `ifdef KUDU_FORMAL_G0_0
+  defparam if_stage_i.AltEnable = 1'b0;
   `define KUDU_TOP_ASSUMPTIONS
 `endif 
 
 `ifdef KUDU_FORMAL_G0_1
+  defparam if_stage_i.AltEnable = 1'b0;
   `define KUDU_TOP_ASSUMPTIONS
 `endif 
 
@@ -1379,6 +1399,8 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
 
   // prove one register is good enough (all registers are identical for this purpose)
   // QQQ this reaches only 33 cycles after running overnight
+  // Now proven in ~1 min with the fv_long_help_fwdact lemmas: a ghost register records the
+  // EX pipeline of the latest issued x1 writer, and each pipeline's x1 claim implies it is that one.
   AssertFwdActOK1: assert property (@(posedge clk_i) $onehot0(reg1_fwd_active));
 
   //
@@ -1418,7 +1440,7 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   assign fwd_alu0_ocap = reg2opcap(alupl0_fwd_info.data1[RegW-1:0]);
   assign fwd_alu1_ocap = reg2opcap(alupl1_fwd_info.data1[RegW-1:0]);
   assign fwd_ls_ocap   = reg2opcap(lspl_fwd_info.data1[RegW-1:0]);
-  assign fwd_mult_ocap = reg2opcap(mult_fwd_info.data1[RegW-1:0]);
+  assign fwd_mult_ocap = reg2opcap(multpl_fwd_info.data1[RegW-1:0]);
 
   // AssumeFwdCapOK0: assume property (fwd_alu0_ocap == alupl0_fwd_info.data1);
   // AssumeFwdCapOK1: assume property (fwd_alu1_ocap == alupl1_fwd_info.data1);
@@ -1444,9 +1466,600 @@ module kudu_top_fv_ext import super_pkg::*; import cheri_pkg::*; import csr_pkg:
   // However it took too long for FV to prove it directly, so we try use sbd_fifo empty us instead
   // of using cmplx_instr_start 
   // AssertCmplxLSRdy: assert property (@(posedge clk_i) (cmplx_instr_start |-> lspl_rdy));
+  // Both forms now prove in seconds with the fv_long_help_cmplx lemmas (scoreboard
+  // per-pipeline counts == in-flight counts); the original intent is restored as
+  // AssertCmplxStartLSRdy.
   AssertCmplxLSRdy: assert property (@(posedge clk_i) (~sbdfifo_rd_valid[0] |-> lspl_rdy));
+  AssertCmplxStartLSRdy: assert property (@(posedge clk_i) (cmplx_instr_start |-> lspl_rdy));
 
 `endif
 
 endmodule
 
+////////////////////////////////////////////////////////////////
+// G0_Long helper lemmas (bound into kudu_top from bindfiles)
+// The G0_Long targets do not prove directly in reasonable time. Each helper
+// below is inductive given the earlier ones and proves in seconds. Use
+// run_fv_long (fv_kudu.tcl): it proves the helpers in dependency order, assumes
+// each proven one, then proves the targets (~5 min for the whole group).
+////////////////////////////////////////////////////////////////
+`ifdef KUDU_FORMAL_G0_Long
+
+// Helper lemmas for AssertCmplxLSRdy / AssertCmplxStartLSRdy (G0_Long).
+// Per EX pipeline X (pl bit 1 alu0, 2 alu1, 3 ls, 4 mult), the number of scoreboard
+// entries targeting X equals the number of instructions in flight in X (AssertHbCnt).
+// With the scoreboard empty the LS pipeline holds nothing, so lsu_if is ready.
+module fv_long_help_cmplx import super_pkg::*; (
+  input logic clk_i,
+  input logic rst_ni
+);
+  localparam int unsigned SbdDepth = 8;
+
+  logic [3:0]  sbd_rd, sbd_cnt;
+  sbd_fifo_t   sbd_e   [SbdDepth];
+  logic        sbd_v   [SbdDepth];
+  logic [3:0]  rank    [5][SbdDepth];
+  logic [3:0]  plcnt   [5];
+  logic [31:0] seq_pc  [5][SbdDepth];
+  logic [3:0]  seq_cnt [5];
+
+  assign sbd_rd  = kudu_top.sbd_fifo_i.rd_ptr_q;
+  assign sbd_cnt = kudu_top.sbd_fifo_i.wr_ptr_q - kudu_top.sbd_fifo_i.rd_ptr_q;
+
+  always_comb begin
+    for (int k = 0; k < SbdDepth; k++) begin
+      sbd_e[k] = sbd_fifo_t'(kudu_top.sbd_fifo_i.fifo_mem[3'(sbd_rd[2:0] + k[2:0])]);
+      sbd_v[k] = (k < 32'(sbd_cnt));
+    end
+    for (int x = 0; x < 5; x++) begin
+      plcnt[x] = 4'h0;
+      for (int k = 0; k < SbdDepth; k++) begin
+        rank[x][k] = plcnt[x];
+        if (sbd_v[k] && sbd_e[k].pl[x]) plcnt[x] = plcnt[x] + 4'h1;
+      end
+    end
+  end
+
+  // ---- in-flight instruction sequences per pipeline ----
+  logic        lsu_e, hold_e, dly_e;
+  logic [2:0]  wb_occ;
+  logic [2:0]  lsif_fsm;
+
+  assign lsif_fsm = kudu_top.ls_pipeline_i.lsu_if_i.lsif_fsm_q;
+  assign wb_occ   = kudu_top.ls_pipeline_i.wb_fifo_i.wr_ptr_q - kudu_top.ls_pipeline_i.wb_fifo_i.rd_ptr_q;
+  assign lsu_e    = kudu_top.ls_pipeline_i.load_store_unit_i.outstanding_resp_q &&
+                    (kudu_top.ls_pipeline_i.load_store_unit_i.ls_fsm_cs == IDLE);
+  assign hold_e   = (lsif_fsm == 3'h1) || (lsif_fsm == 3'h3);
+  assign dly_e    = ((lsif_fsm == 3'h2) || (lsif_fsm == 3'h3)) && kudu_top.ls_pipeline_i.lsu_if_i.req_dly_valid;
+
+  always_comb begin
+    logic [3:0] n;
+    pl_out_t    wbe;
+    for (int x = 0; x < 5; x++)
+      for (int k = 0; k < SbdDepth; k++) seq_pc[x][k] = 32'h0;
+    seq_cnt[0] = 4'h0;
+    // alu pipelines: single wb stage
+    seq_cnt[1]    = {3'h0, kudu_top.alu_pipeline0_i.wb_valid};
+    seq_pc[1][0]  = kudu_top.alu_pipeline0_i.wb_reg.pc[31:0];
+    seq_cnt[2]    = {3'h0, kudu_top.alu_pipeline1_i.wb_valid};
+    seq_pc[2][0]  = kudu_top.alu_pipeline1_i.wb_reg.pc[31:0];
+    // mult pipeline: wb (older) then ex2
+    seq_cnt[4]    = {3'h0, kudu_top.mult_pipeline_i.wb_valid} + {3'h0, kudu_top.mult_pipeline_i.ex2_valid};
+    seq_pc[4][0]  = kudu_top.mult_pipeline_i.wb_valid ? kudu_top.mult_pipeline_i.wb_reg.pc[31:0] :
+                                                        kudu_top.mult_pipeline_i.ex2_reg.pc[31:0];
+    seq_pc[4][1]  = kudu_top.mult_pipeline_i.ex2_reg.pc[31:0];
+    // ls pipeline: wb_fifo entries, LSU outstanding response, lsu_if hold, lsu_if dly
+    n = 4'h0;
+    for (int i = 0; i < 4; i++) begin
+      wbe = pl_out_t'(kudu_top.ls_pipeline_i.wb_fifo_i.fifo_mem[2'(kudu_top.ls_pipeline_i.wb_fifo_i.rd_ptr_q[1:0] + i[1:0])]);
+      if (i < 32'(wb_occ)) begin
+        seq_pc[3][n[2:0]] = wbe.pc[31:0];
+        n = n + 4'h1;
+      end
+    end
+    if (lsu_e) begin
+      seq_pc[3][n[2:0]] = kudu_top.ls_pipeline_i.load_store_unit_i.lsu_req_info_q.pc[31:0];
+      n = n + 4'h1;
+    end
+    if (hold_e) begin
+      seq_pc[3][n[2:0]] = kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.pc[31:0];
+      n = n + 4'h1;
+    end
+    if (dly_e) begin
+      seq_pc[3][n[2:0]] = kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.pc[31:0];
+      n = n + 4'h1;
+    end
+    seq_cnt[3] = n;
+  end
+
+  function automatic logic pl_legal(logic [4:0] pl);
+    return (pl == 5'h02) || (pl == 5'h04) || (pl == 5'h08) || (pl == 5'h10) ||
+           (pl == 5'h03) || (pl == 5'h05) || (pl == 5'h11);
+  endfunction
+
+  // every occupied scoreboard entry has a legal pl encoding (one EX pipeline)
+  AssertHbPlLegalAll: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (!sbd_v[0] || pl_legal(sbd_e[0].pl)) && (!sbd_v[1] || pl_legal(sbd_e[1].pl)) &&
+    (!sbd_v[2] || pl_legal(sbd_e[2].pl)) && (!sbd_v[3] || pl_legal(sbd_e[3].pl)) &&
+    (!sbd_v[4] || pl_legal(sbd_e[4].pl)) && (!sbd_v[5] || pl_legal(sbd_e[5].pl)) &&
+    (!sbd_v[6] || pl_legal(sbd_e[6].pl)) && (!sbd_v[7] || pl_legal(sbd_e[7].pl)));
+
+  // LSU busy (waiting for grant) implies lsu_if still holds the same request in its hold register
+  logic lsu_busy_hold_ok;
+  assign lsu_busy_hold_ok = (kudu_top.ls_pipeline_i.load_store_unit_i.ls_fsm_cs == IDLE) ||
+      (hold_e && kudu_top.ls_pipeline_i.load_store_unit_i.outstanding_resp_q &&
+       (kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.pc[31:0] ==
+        kudu_top.ls_pipeline_i.load_store_unit_i.lsu_req_info_q.pc[31:0]));
+
+  for (genvar x = 1; x < 5; x++) begin : g_pl
+    // number of scoreboard entries targeting pipeline x == number of instructions in flight in x
+    // (the LS count is only inductive together with lsu_busy_hold_ok, so the two are proven jointly)
+    if (x == 3) begin : g_ls
+      AssertHbCnt: assert property (@(posedge clk_i) disable iff (!rst_ni)
+        (plcnt[x] == seq_cnt[x]) && lsu_busy_hold_ok);
+    end else begin : g_nls
+      AssertHbCnt: assert property (@(posedge clk_i) disable iff (!rst_ni)
+        plcnt[x] == seq_cnt[x]);
+    end
+  end
+
+  // scoreboard head valid iff the scoreboard holds at least one entry
+  AssertHxSbdValid: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.sbdfifo_rd_valid[0] == (sbd_cnt != 4'h0));
+
+  // lsu_if not ready only while it holds an issued request (DLY0_WGNT / DLY1_WGNT)
+  AssertHxLsNotRdyHold: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    !kudu_top.lspl_rdy |-> hold_e);
+
+  // (the target forms AssertCmplxLSRdy / AssertCmplxStartLSRdy are in kudu_top_fv_ext)
+
+endmodule
+
+// Helper lemmas for AssertFwdActOK1 (G0_Long): x1 forwarding active in at most one EX pipeline.
+// Ghost lw_q = ex-pipeline selection (pl_sel[4:1]) of the most recently issued x1 writer
+// (updated exactly on issuer waw_act_o events with rd==1). Each pipeline claim implies lw_q
+// points at that pipeline, so at most one pipeline can claim x1.
+
+module fv_long_help_fwdact import super_pkg::*; (
+  input logic clk_i,
+  input logic rst_ni
+);
+
+  // ---------------- ghost: pipeline of latest issued x1 writer ----------------
+  logic [3:0] lw_q;
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (~rst_ni)
+      lw_q <= 4'h0;
+    else if (issuer_i.waw_act_o.valid[1] && (issuer_i.waw_act_o.rd1 == 5'd1))
+      lw_q <= issuer_i.ir1_pl_sel[4:1];
+    else if (issuer_i.waw_act_o.valid[0] && (issuer_i.waw_act_o.rd0 == 5'd1))
+      lw_q <= issuer_i.ir0_pl_sel[4:1];
+  end
+
+  // ---------------- per pipeline claims ----------------
+  logic alu0_wb_c, alu1_wb_c, mul_ex2_c, mul_wb_c, ls_fwd_c;
+  assign alu0_wb_c = alu_pipeline0_i.wb_fwd_valid_q && (alu_pipeline0_i.wb_reg.rd == 5'd1);
+  assign alu1_wb_c = alu_pipeline1_i.wb_fwd_valid_q && (alu_pipeline1_i.wb_reg.rd == 5'd1);
+  assign mul_ex2_c = mult_pipeline_i.ex2_valid && mult_pipeline_i.ex2_fwd_ok && 
+                     mult_pipeline_i.ex2_reg.rf_we && (mult_pipeline_i.ex2_reg.rd == 5'd1);
+  assign mul_wb_c  = mult_pipeline_i.wb_fwd_valid_q && (mult_pipeline_i.wb_reg.rd == 5'd1);
+  assign ls_fwd_c  = ls_pipeline_i.fwd_info_o.valid[1] && (ls_pipeline_i.fwd_info_o.addr1 == 5'd1);
+
+  // fwd_act_o[1] flop equals the registered fwd valid/rd pair
+  AssertHfaAlu0Eq: assert property (@(posedge clk_i) alu_pipeline0_i.fwd_act_o[1] == alu0_wb_c);
+  AssertHfaAlu1Eq: assert property (@(posedge clk_i) alu_pipeline1_i.fwd_act_o[1] == alu1_wb_c);
+  AssertHfaMulEq:  assert property (@(posedge clk_i) mult_pipeline_i.fwd_act_o[1] == mul_wb_c);
+
+  // decoded instructions in IR have rd==0 unless rf_we (IbexCmpt decoder)
+  AssertHfaIraRdWe: assert property (@(posedge clk_i) (ir_stage_i.ira_dec_o.rd != 0) |-> ir_stage_i.ira_dec_o.rf_we);
+  AssertHfaIrbRdWe: assert property (@(posedge clk_i) (ir_stage_i.irb_dec_o.rd != 0) |-> ir_stage_i.irb_dec_o.rf_we);
+
+  // complex-unit LSU requests never coincide with a normal LS issue
+  AssertHfaCmplxNoLs: assert property (@(posedge clk_i) comlx_unit_i.cmplx_lsu_req_valid_o |-> ~issuer_i.ex_valid_o[3]);
+
+  // ALU / MULT claims
+  AssertHfaAlu0Claim:  assert property (@(posedge clk_i) alu0_wb_c |-> (lw_q == 4'b0001));
+  AssertHfaAlu1Claim:  assert property (@(posedge clk_i) alu1_wb_c |-> (lw_q == 4'b0010));
+  AssertHfaMulEx2Claim: assert property (@(posedge clk_i) mul_ex2_c |-> (lw_q == 4'b1000));
+  AssertHfaMulWbClaim:  assert property (@(posedge clk_i) mul_wb_c  |-> (lw_q == 4'b1000));
+
+  // ---------------- LS pipeline: lsu_if <-> dcache waw fifo correspondence ----------------
+  logic [2:0] lsif_fsm;
+  logic       dly_v, hold_v;
+  logic [2:0] dc_cnt;
+  logic [1:0] dc_rp;
+  lsu_req_info_t req_dly, req_hold;
+
+  assign lsif_fsm = ls_pipeline_i.lsu_if_i.lsif_fsm_q;
+  assign req_dly  = ls_pipeline_i.lsu_if_i.req_dly_q;
+  assign req_hold = ls_pipeline_i.lsu_if_i.req_hold_q;
+  assign dly_v    = ((lsif_fsm == 3'h2) || (lsif_fsm == 3'h3)) && ls_pipeline_i.lsu_if_i.req_dly_valid &&
+                    (req_dly.amo_flag[3:2] == 2'b00);
+  assign hold_v   = ((lsif_fsm == 3'h1) || (lsif_fsm == 3'h3)) && (req_hold.amo_flag[3:2] == 2'b00);
+  assign dc_cnt   = ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.wr_ptr_q - ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.rd_ptr_q;
+  assign dc_rp    = ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.rd_ptr_q[1:0];
+
+  AssertHfaLsCnt:   assert property (@(posedge clk_i) dc_cnt == (3'(dly_v) + 3'(hold_v)));
+  AssertHfaLsHold:  assert property (@(posedge clk_i) hold_v |-> 
+    (ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.fifo_mem[dc_rp][4:0] == req_hold.rd));
+  AssertHfaLsDly0:  assert property (@(posedge clk_i) (dly_v & ~hold_v) |-> 
+    (ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.fifo_mem[dc_rp][4:0] == req_dly.rd));
+  AssertHfaLsDly1:  assert property (@(posedge clk_i) (dly_v & hold_v) |-> 
+    (ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.fifo_mem[2'(dc_rp+1)][4:0] == req_dly.rd));
+
+  // normal LSU request matches dcache waw fifo head
+  AssertHfaLsReqHead: assert property (@(posedge clk_i) 
+    (ls_pipeline_i.lsu_req && (ls_pipeline_i.lsu_req_info.amo_flag[3:2] == 2'b00)) |-> 
+    (ls_pipeline_i.genblk1.dcache_i.waw_fifo_rd_valid && 
+     (ls_pipeline_i.genblk1.dcache_i.waw_fifo_rdata[4:0] == ls_pipeline_i.lsu_req_info.rd)));
+
+  // dcache waw fifo entries not cancelled with rd==1 belong to the latest x1 writer
+  for (genvar i = 0; i < 4; i++) begin : gen_ent
+    AssertHfaLsEntClaim: assert property (@(posedge clk_i) 
+      (ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.fifo_mem[i] == 6'h21) |-> (lw_q == 4'b0100));
+  end
+
+  // LS forwarding claim
+  AssertHfaLsFwdClaim: assert property (@(posedge clk_i) ls_fwd_c |-> (lw_q == 4'b0100));
+
+  // non-vacuity covers
+  CoverHfaAlu0:  cover property (@(posedge clk_i) alu0_wb_c);
+  CoverHfaMulEx2: cover property (@(posedge clk_i) mul_ex2_c);
+  CoverHfaMulWb: cover property (@(posedge clk_i) mul_wb_c);
+  CoverHfaLsEnt: cover property (@(posedge clk_i) ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.fifo_mem[1] == 6'h21);
+  CoverHfaLsFwd: cover property (@(posedge clk_i) ls_fwd_c);
+  CoverHfaLsFwdAlu: cover property (@(posedge clk_i) ls_fwd_c ##1 alu0_wb_c);
+
+endmodule
+
+// Helper lemmas for AssertIR0PC / AssertPccCorrect0 (G0_Long).
+// Key invariants: AssertHpcChainAll (pc continuity fetch -> s0 -> s1 -> ir0_nxt_pc_q)
+// and AssertHpcPccAll (s1/IR predicted PCC chain, oldest in flight == ex1_pcc_cap).
+// Each helper is inductive given the earlier lemmas of the proof order.
+module fv_long_help_pcc import super_pkg::*; import cheri_pkg::*; (input logic clk_i, input logic rst_ni);
+
+  function automatic logic [31:0] succ0(ir_reg_t e);
+    return e.ptaken ? e.ptarget : (e.pc + (e.is_comp ? 32'd2 : 32'd4));
+  endfunction
+  function automatic logic [31:0] succ1(ir_dec_t d);
+    return d.ptaken ? d.ptarget[31:0] : d.pc_nxt;
+  endfunction
+  function automatic logic unk1(ir_dec_t d);
+    return d.is_jalr && !d.ptaken;
+  endfunction
+
+  // ---------------- state taps
+  logic [31:0] nxt;
+  assign nxt = kudu_top.issuer_i.ir0_nxt_pc_q;
+
+  ir_reg_t     s0m [4];
+  logic [2:0]  s0_rp, s0_wp, s0_cnt;
+  ir_reg_t     s0e [4];
+  for (genvar i = 0; i < 4; i++) begin : g_s0
+    assign s0m[i] = kudu_top.ir_stage_i.gen_stage0_buffer.s0_fifo.fifo_mem[i];
+  end
+  assign s0_rp  = kudu_top.ir_stage_i.gen_stage0_buffer.s0_fifo.rd_ptr_q;
+  assign s0_wp  = kudu_top.ir_stage_i.gen_stage0_buffer.s0_fifo.wr_ptr_q;
+  assign s0_cnt = s0_wp - s0_rp;
+  for (genvar j = 0; j < 4; j++) begin : g_s0e
+    logic [1:0] ix;
+    assign ix = s0_rp[1:0] + 2'(j);
+    assign s0e[j] = s0m[ix];
+  end
+  logic [1:0] s0_fill, s0_room;
+  assign s0_fill = kudu_top.ir_stage_i.gen_stage0_buffer.s0_fifo.fill_status_q;
+  assign s0_room = kudu_top.ir_stage_i.gen_stage0_buffer.s0_fifo.room_status_q;
+
+  ir_dec_t     s1m [2];
+  logic        s1_rp, s1_wp, s1_full;
+  logic [1:0]  s1_cnt;
+  ir_dec_t     s1e0, s1e1, s1t;
+  assign s1m[0]  = kudu_top.ir_stage_i.gen_stage1.s1_fifo.fifo_mem[0];
+  assign s1m[1]  = kudu_top.ir_stage_i.gen_stage1.s1_fifo.fifo_mem[1];
+  assign s1_rp   = kudu_top.ir_stage_i.gen_stage1.s1_fifo.rd_ptr_q;
+  assign s1_wp   = kudu_top.ir_stage_i.gen_stage1.s1_fifo.wr_ptr_q;
+  assign s1_full = kudu_top.ir_stage_i.gen_stage1.s1_fifo.full_stat_q;
+  assign s1_cnt  = s1_full ? 2'd2 : (s1_wp != s1_rp) ? 2'd1 : 2'd0;
+  assign s1e0    = s1m[s1_rp];
+  assign s1e1    = s1m[~s1_rp];
+  assign s1t     = (s1_cnt == 2'd2) ? s1e1 : s1e0;
+
+  ir_reg_t     s0last;
+  assign s0last = s0e[2'(s0_cnt - 3'd1)];
+
+  logic [31:0] if_pc;
+  assign if_pc = {kudu_top.if_stage_i.prefetch_buffer_i.fifo_i.instr_addr_q, 1'b0};
+
+  // issuer still in RESET/BOOT_SET (before the first pc_set)
+  logic boot;
+  assign boot = kudu_top.issuer_i.ctrl_fsm_cs[CSM_RESET] | kudu_top.issuer_i.ctrl_fsm_cs[CSM_BOOT_SET];
+
+  // ---------------- structural FIFO invariants
+  // s0 dual_fifo: count bounded and fill/room status flags agree with the pointers
+  AssertHpcS0Status: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (s0_cnt <= 3'd4) && (s0_fill[0] == (s0_cnt > 0)) && (s0_fill[1] == (s0_cnt > 1)) &&
+    (s0_room[0] == (s0_cnt < 4)) && (s0_room[1] == (s0_cnt < 3)));
+  // s1 stage_fifo: full implies equal pointers
+  AssertHpcS1Full: assert property (@(posedge clk_i) disable iff (!rst_ni) s1_full |-> (s1_wp == s1_rp));
+  // fetch fifo precomputed address increments (or still at reset value)
+  AssertHpcIfAddrP: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    ((kudu_top.if_stage_i.prefetch_buffer_i.fifo_i.instr_addrp2_q == kudu_top.if_stage_i.prefetch_buffer_i.fifo_i.instr_addr_q + 31'd1) &&
+     (kudu_top.if_stage_i.prefetch_buffer_i.fifo_i.instr_addrp4_q == kudu_top.if_stage_i.prefetch_buffer_i.fifo_i.instr_addr_q + 31'd2)) ||
+    ((kudu_top.if_stage_i.prefetch_buffer_i.fifo_i.instr_addr_q == '0) && (kudu_top.if_stage_i.prefetch_buffer_i.fifo_i.instr_addrp2_q == '0) &&
+     (kudu_top.if_stage_i.prefetch_buffer_i.fifo_i.instr_addrp4_q == '0) && boot));
+
+  // ptaken in s1 only on control transfer instructions
+  AssertHpcS1PtakenCti0: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (s1_cnt != 0) && s1e0.ptaken |-> (s1e0.is_branch | s1e0.is_jal | s1e0.is_jalr));
+  AssertHpcS1PtakenCti1: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (s1_cnt == 2) && s1e1.ptaken |-> (s1e1.is_branch | s1e1.is_jal | s1e1.is_jalr));
+
+  // ---------------- PC chain (IF -> s0 -> s1 -> ir0_nxt_pc_q)
+  function automatic logic eqh(logic [31:0] a, logic [31:0] b);
+    return a[31:1] == b[31:1];
+  endfunction
+  logic chain_ok;
+  always_comb begin
+    chain_ok = 1'b1;
+    if (!boot) begin
+    if (s1_cnt != 0) chain_ok &= (s1e0.pc_nxt == s1e0.pc + (s1e0.is_comp ? 32'd2 : 32'd4)) && eqh(s1e0.pc, nxt);
+    if (s1_cnt == 2) chain_ok &= (s1e1.pc_nxt == s1e1.pc + (s1e1.is_comp ? 32'd2 : 32'd4));
+    if ((s1_cnt == 2) && !unk1(s1e0)) chain_ok &= eqh(s1e1.pc, succ1(s1e0));
+    if ((s0_cnt != 0) && !((s1_cnt != 0) && unk1(s1t)))
+      chain_ok &= eqh(s0e[0].pc, ((s1_cnt == 0) ? nxt : succ1(s1t)));
+    for (int j = 1; j < 4; j++) if (s0_cnt > j) chain_ok &= eqh(s0e[j].pc, succ0(s0e[j-1]));
+    if (!((s0_cnt == 0) && (s1_cnt != 0) && unk1(s1t)))
+      chain_ok &= eqh(if_pc, ((s0_cnt != 0) ? succ0(s0last) : (s1_cnt != 0) ? succ1(s1t) : nxt));
+    end
+  end
+  // issuer control FSM is one-hot
+  AssertHpcFsmOH: assert property (@(posedge clk_i) disable iff (!rst_ni) $onehot(kudu_top.issuer_i.ctrl_fsm_cs));
+  // nothing in the IR stage before boot
+  AssertHpcBootEmpty: assert property (@(posedge clk_i) disable iff (!rst_ni) boot |-> (s1_cnt == 0) && (s0_cnt == 0));
+  // the whole chain (inductive as a conjunction)
+  AssertHpcChainAll: assert property (@(posedge clk_i) disable iff (!rst_ni) chain_ok);
+
+  // ---------------- issuer special cases
+  // special issue of an instruction always has a valid IR0
+  AssertHpcSpecValid: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.issuer_i.ctrl_fsm_cs[CSM_ISSUE_SPECIAL] &&
+    (kudu_top.issuer_i.special_case_q inside {EXEC, SYSCTL, CMPLX, STEP}) |-> kudu_top.issuer_i.ir_valid_i[0]);
+  // single-step of a revoked-prediction jalr always redirects
+  AssertHpcStepUnk: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.issuer_i.ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (kudu_top.issuer_i.special_case_q == STEP) &&
+    unk1(kudu_top.issuer_i.ir0_dec) |-> kudu_top.issuer_i.special_setpc_q);
+
+
+  // special-issued CMPLX / SYSCTL instruction in IR0 is really that kind of instruction (not a CTI)
+  AssertHpcSpecCase: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.issuer_i.ctrl_fsm_cs[CSM_ISSUE_SPECIAL] |->
+    (((kudu_top.issuer_i.special_case_q == CMPLX)  -> kudu_top.issuer_i.ir0_dec.is_cmplx) &&
+     ((kudu_top.issuer_i.special_case_q == SYSCTL) -> kudu_top.issuer_i.ir0_dec.sysctl.valid)));
+  // decoded instruction classes in valid s1 entries are mutually exclusive (all opcode based)
+  function automatic logic excl(ir_dec_t d);
+    return $onehot0({d.is_branch, d.is_jal, d.is_jalr, d.sysctl.valid, d.is_cmplx});
+  endfunction
+  AssertHpcS1Excl0: assert property (@(posedge clk_i) disable iff (!rst_ni) (s1_cnt != 0) |-> excl(s1e0));
+  AssertHpcS1Excl1: assert property (@(posedge clk_i) disable iff (!rst_ni) (s1_cnt == 2) |-> excl(s1e1));
+
+  // decoded JALR in s1 always carries pl_type PL_JALR (so it is dispatched to mult/branch)
+  AssertHpcS1Pl0: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (s1_cnt != 0) && s1e0.is_jalr |-> (s1e0.pl_type == PL_JALR));
+  AssertHpcS1Pl1: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (s1_cnt == 2) && s1e1.is_jalr |-> (s1e1.pl_type == PL_JALR));
+  // special cases that change CSR context also redirect the pc (and so flush IR)
+  AssertHpcSpecSetpc: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    ((kudu_top.issuer_i.special_case_q inside {DEBUG, EXEC, IRQ}) ||
+     ((kudu_top.issuer_i.special_case_q == SYSCTL) &&
+      (kudu_top.issuer_i.sysctl_q.ebrk | kudu_top.issuer_i.sysctl_q.ecall |
+       kudu_top.issuer_i.sysctl_q.mret | kudu_top.issuer_i.sysctl_q.dret))) |-> kudu_top.issuer_i.special_setpc_q);
+  // any PCC reload from CSR (trap/mret/dret) coincides with an IR flush
+  AssertHpcExcSetpc: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.cs_registers_i.gen_scr.exc_flag |-> kudu_top.issuer_i.pc_set_o);
+  // ---------------- PCC (AssertPccCorrect0)
+  // s1 entry is a CJALR whose RA prediction was confirmed at s1 write (ptarget := cur_ra)
+  function automatic logic pok(ir_dec_t d);
+    return d.is_jalr && d.ptaken;
+  endfunction
+  // PCC predicted at IR for such an entry (same expression as cs_registers ir_cjalr_pcap)
+  function automatic pcc_cap_t pred(ir_dec_t d);
+    return full2pcap(op2fullcap(reg2opcap(unseal_rcap(reg_cap_t'(d.ptarget[RegW-1:0])))));
+  endfunction
+
+  pcc_cap_t m0, m1, mt, ex1_pcc, ir_pcc;
+  assign m0      = kudu_top.kudo_top_fv_ext_i.s1_fifo_mirror.fifo_mem[s1_rp];
+  assign m1      = kudu_top.kudo_top_fv_ext_i.s1_fifo_mirror.fifo_mem[~s1_rp];
+  assign mt      = (s1_cnt == 2'd2) ? m1 : m0;
+  assign ex1_pcc = kudu_top.cs_registers_i.ex1_pcc_cap_q;
+  assign ir_pcc  = kudu_top.cs_registers_i.ir_pcc_cap_q;
+  logic  esc;   // single-step pending outside debug mode: target is vacuous (handle_step)
+  assign esc     = kudu_top.issuer_i.debug_step_i & ~kudu_top.issuer_i.debug_mode_q;
+
+  // single-step special issue only happens outside debug mode with dcsr.step set
+  AssertHpcStepEsc: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.issuer_i.ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (kudu_top.issuer_i.special_case_q == STEP) |-> esc);
+  // mirror fifo pointers in lockstep with the RTL s1 fifo
+  AssertHpcPLock: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (kudu_top.kudo_top_fv_ext_i.s1_fifo_mirror.wr_ptr_q == s1_wp) &&
+    (kudu_top.kudo_top_fv_ext_i.s1_fifo_mirror.rd_ptr_q == s1_rp) &&
+    (kudu_top.kudo_top_fv_ext_i.s1_fifo_mirror.full_stat_q == s1_full));
+
+  // canonical op cap: correction bits are those recomputed from the register-format bits
+  function automatic logic canon(op_cap_t c);
+    return c == reg2opcap(c[RegW-1:0]);
+  endfunction
+  // forwarded WB data of every EX pipeline is a canonical op cap
+  AssertHpcFwdCanonA0: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.alupl0_fwd_info.valid[1] |-> canon(kudu_top.alupl0_fwd_info.data1));
+  AssertHpcFwdCanonA1: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.alupl1_fwd_info.valid[1] |-> canon(kudu_top.alupl1_fwd_info.data1));
+  AssertHpcFwdCanonLS: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.lspl_fwd_info.valid[1] |-> canon(kudu_top.lspl_fwd_info.data1));
+  AssertHpcFwdCanonM: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.multpl_fwd_info.valid[1] |-> canon(kudu_top.multpl_fwd_info.data1));
+  // at most one forwarding source matches any register (generalises AssertFwdActOK1 to every
+  // register and both forwarding stages; proven from AssertHpcFwdLiveAll)
+  logic fwd_oh;
+  always_comb begin
+    fwd_oh = 1'b1;
+    for (int r = 1; r < 32; r++) begin
+      logic [7:0] mt8;
+      mt8 = {kudu_top.alupl0_fwd_info.valid[0] && (kudu_top.alupl0_fwd_info.addr0 == r),
+             kudu_top.alupl0_fwd_info.valid[1] && (kudu_top.alupl0_fwd_info.addr1 == r),
+             kudu_top.alupl1_fwd_info.valid[0] && (kudu_top.alupl1_fwd_info.addr0 == r),
+             kudu_top.alupl1_fwd_info.valid[1] && (kudu_top.alupl1_fwd_info.addr1 == r),
+             kudu_top.lspl_fwd_info.valid[0]   && (kudu_top.lspl_fwd_info.addr0 == r),
+             kudu_top.lspl_fwd_info.valid[1]   && (kudu_top.lspl_fwd_info.addr1 == r),
+             kudu_top.multpl_fwd_info.valid[0] && (kudu_top.multpl_fwd_info.addr0 == r),
+             kudu_top.multpl_fwd_info.valid[1] && (kudu_top.multpl_fwd_info.addr1 == r)};
+      if (!$onehot0(mt8)) fwd_oh = 1'b0;
+    end
+  end
+  AssertHpcFwdOH: assert property (@(posedge clk_i) disable iff (!rst_ni) fwd_oh);
+  // WB forwarding flag implies a valid WB entry (ALU0/ALU1/MULT)
+  AssertHpcWbFv: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (kudu_top.alu_pipeline0_i.wb_fwd_valid_q -> kudu_top.alu_pipeline0_i.wb_valid) &&
+    (kudu_top.alu_pipeline1_i.wb_fwd_valid_q -> kudu_top.alu_pipeline1_i.wb_valid) &&
+    (kudu_top.mult_pipeline_i.wb_fwd_valid_q -> kudu_top.mult_pipeline_i.wb_valid));
+  // dcache: EX2-stage forwarding never used; waw fifo occupancy <= Depth(4)
+  AssertHpcDcV0: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    !kudu_top.ls_pipeline_i.genblk1.dcache_i.fwd_info_o.valid[0] &&
+    ((kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.wr_ptr_q -
+      kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.rd_ptr_q) <= 3'd4));
+  // at most one live writer per register, now including dcache fwd and live dcache waw-fifo entries
+  logic fwd_live_all;
+  logic lsv0, lsv1;
+  logic [5:0] lhd, lsc;
+  always_comb begin
+    lsv0 = kudu_top.ls_pipeline_i.lsu_if_i.lsif_fsm_q inside {3'h1, 3'h3} &&
+           !(|kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.amo_flag[3:2]);
+    lsv1 = kudu_top.ls_pipeline_i.lsu_if_i.lsif_fsm_q inside {3'h2, 3'h3} &&
+           kudu_top.ls_pipeline_i.lsu_if_i.req_dly_valid &&
+           !(|kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.amo_flag[3:2]);
+    lhd = kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.fifo_mem[kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.rd_ptr_q[1:0]];
+    lsc = kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.fifo_mem[2'(kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.rd_ptr_q[1:0]+1)];
+  end
+  always_comb begin
+    fwd_live_all = 1'b1;
+    for (int r = 1; r < 32; r++) begin
+      logic [8:0] lv;
+      lv[0] = kudu_top.alu_pipeline0_i.wb_fwd_valid_q && (kudu_top.alu_pipeline0_i.wb_reg.rd == r);
+      lv[1] = kudu_top.alu_pipeline1_i.wb_fwd_valid_q && (kudu_top.alu_pipeline1_i.wb_reg.rd == r);
+      lv[2] = kudu_top.mult_pipeline_i.ex2_valid && kudu_top.mult_pipeline_i.ex2_fwd_ok &&
+              kudu_top.mult_pipeline_i.ex2_reg.rf_we && (kudu_top.mult_pipeline_i.ex2_reg.rd == r);
+      lv[3] = kudu_top.mult_pipeline_i.wb_fwd_valid_q && (kudu_top.mult_pipeline_i.wb_reg.rd == r);
+      lv[4] = kudu_top.ls_pipeline_i.genblk1.dcache_i.fwd_info_o.valid[1] &&
+              (kudu_top.ls_pipeline_i.genblk1.dcache_i.fwd_info_o.addr1 == r);
+      // live pending loads in lsu_if (hold, dly) whose dcache waw-fifo entry is not yet WAW-cancelled
+      lv[5] = lsv0 && kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.is_load && lhd[5] &&
+              (kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.rd == r);
+      lv[6] = lsv1 && kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.is_load && (lsv0 ? lsc[5] : lhd[5]) &&
+              (kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.rd == r);
+      lv[8:7] = 2'b00;
+      if (!$onehot0(lv)) fwd_live_all = 1'b0;
+    end
+  end
+  // a load issued to (or pending in) the LS pipeline always writes rd
+  AssertHpcLdWeIss: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (kudu_top.ls_pipeline_i.us_valid_i && !kudu_top.ls_pipeline_i.cmplx_lsu_req_valid_i &&
+     kudu_top.ls_pipeline_i.lsu_req_dec.is_load) -> kudu_top.ls_pipeline_i.lsu_req_dec.rf_we);
+  AssertHpcLdWePend: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (lsv0 && kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.is_load -> kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.rf_we) &&
+    (lsv1 && kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.is_load -> kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.rf_we));
+  // AMO (cmplx) LSU requests are only generated while the issuer is not in DECODE (no normal issue)
+  AssertHpcCmplxExcl: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (kudu_top.comlx_unit_i.cmplx_fsm_cs != 2'h0 || kudu_top.cmplx_lsu_req_valid) ->
+    !kudu_top.issuer_i.ctrl_fsm_cs[CSM_DECODE]);
+  // an AMO (cmplx) LSU request never coincides with an LS-pipeline issue
+  AssertHpcCmplxExcl2: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.cmplx_lsu_req_valid -> !kudu_top.ls_pipeline_i.us_valid_i);
+  // AMO (cmplx) requests, issued or pending in lsu_if, are never dcache-able
+  AssertHpcAmoNoCache: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (kudu_top.ls_pipeline_i.cmplx_lsu_req_valid_i -> !kudu_top.ls_pipeline_i.lsu_req_dec.cache_ok) &&
+    ((kudu_top.ls_pipeline_i.lsu_if_i.lsif_fsm_q inside {3'h1, 3'h3}) &&
+     (|kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.amo_flag[3:2]) -> !kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.cache_ok) &&
+    ((kudu_top.ls_pipeline_i.lsu_if_i.lsif_fsm_q inside {3'h2, 3'h3}) && kudu_top.ls_pipeline_i.lsu_if_i.req_dly_valid &&
+     (|kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.amo_flag[3:2]) -> !kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.cache_ok));
+  // dcache waw-fifo entries correspond 1:1 (in order, by rd) to the requests pending in lsu_if
+  logic lsif_match;
+  always_comb begin
+    logic [2:0] n, cnt;
+    logic [5:0] hd, sc;
+    logic [1:0] rp;
+    logic       v0, v1;
+    logic [4:0] r0, r1, f0, f1;
+    n  = kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.wr_ptr_q -
+         kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.rd_ptr_q;
+    rp = kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.rd_ptr_q[1:0];
+    hd = kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.fifo_mem[rp];
+    sc = kudu_top.ls_pipeline_i.genblk1.dcache_i.waw_fifo_i.fifo_mem[2'(rp+1)];
+    // pending non-AMO (non-cmplx) requests in lsu_if, oldest first: hold, then dly
+    v0 = kudu_top.ls_pipeline_i.lsu_if_i.lsif_fsm_q inside {3'h1, 3'h3} &&
+         !(|kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.amo_flag[3:2]);
+    v1 = kudu_top.ls_pipeline_i.lsu_if_i.lsif_fsm_q inside {3'h2, 3'h3} &&
+         kudu_top.ls_pipeline_i.lsu_if_i.req_dly_valid &&
+         !(|kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.amo_flag[3:2]);
+    r0 = kudu_top.ls_pipeline_i.lsu_if_i.req_hold_q.rd;
+    r1 = kudu_top.ls_pipeline_i.lsu_if_i.req_dly_q.rd;
+    cnt = 3'(v0) + 3'(v1);
+    f0 = v0 ? r0 : r1;
+    lsif_match = (n == cnt) && (cnt == 0 || hd[4:0] == f0) && (cnt < 2 || sc[4:0] == r1) &&
+                 (kudu_top.ls_pipeline_i.lsu_if_i.lsif_fsm_q <= 3'h3);
+  end
+  AssertHpcLsIfMatch: assert property (@(posedge clk_i) disable iff (!rst_ni) lsif_match);
+  AssertHpcFwdLiveAll: assert property (@(posedge clk_i) disable iff (!rst_ni) fwd_live_all);
+  // EX2-stage forwarded data (data0) is canonical
+  AssertHpcFwd0Canon: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (kudu_top.alupl0_fwd_info.valid[0] -> canon(kudu_top.alupl0_fwd_info.data0)) &&
+    (kudu_top.alupl1_fwd_info.valid[0] -> canon(kudu_top.alupl1_fwd_info.data0)) &&
+    (kudu_top.lspl_fwd_info.valid[0]   -> canon(kudu_top.lspl_fwd_info.data0)) &&
+    (kudu_top.multpl_fwd_info.valid[0] -> canon(kudu_top.multpl_fwd_info.data0)));
+  // ALU WB-stage cheri result registers produce a canonical cap: either set-address recomputes
+  // the correction bits from a consistent ptrmi9, or the registered op cap is already canonical
+  function automatic logic aluq_ok(full_cap_t c, logic sa, logic [8:0] p9);
+    return sa ? (p9 == 9'(c.addr >> c.exp)) : canon(c[OpW-1:0]);
+  endfunction
+  logic aluq0_ok, aluq1_ok;
+  assign aluq0_ok = !(kudu_top.alu_pipeline0_i.wb_fwd_valid_q && kudu_top.alu_pipeline0_i.wb_reg.is_cheri) ||
+    aluq_ok(kudu_top.alu_pipeline0_i.gen_cheri_alu.cheri_alu_i.imd_fcap_q,
+            kudu_top.alu_pipeline0_i.gen_cheri_alu.cheri_alu_i.setaddr_flag_q,
+            kudu_top.alu_pipeline0_i.gen_cheri_alu.cheri_alu_i.ptrmi9_q);
+  assign aluq1_ok = !(kudu_top.alu_pipeline1_i.wb_fwd_valid_q && kudu_top.alu_pipeline1_i.wb_reg.is_cheri) ||
+    aluq_ok(kudu_top.alu_pipeline1_i.gen_cheri_alu.cheri_alu_i.imd_fcap_q,
+            kudu_top.alu_pipeline1_i.gen_cheri_alu.cheri_alu_i.setaddr_flag_q,
+            kudu_top.alu_pipeline1_i.gen_cheri_alu.cheri_alu_i.ptrmi9_q);
+  AssertHpcAluQ: assert property (@(posedge clk_i) disable iff (!rst_ni) aluq0_ok && aluq1_ok);
+  // issuer operand (after forwarding mux) is canonical
+  AssertHpcOpA: assert property (@(posedge clk_i) disable iff (!rst_ni) canon(kudu_top.issuer_i.ira_op_data2_fwd.d0));
+  AssertHpcOpB: assert property (@(posedge clk_i) disable iff (!rst_ni) canon(kudu_top.issuer_i.irb_op_data2_fwd.d0));
+  // cs1 operand of an issued CJALR is canonical
+  AssertHpcOpCanon: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.mult_pipeline_i.cjalr_pcc_set_o |->
+    (kudu_top.mult_pipeline_i.full_data2.d0 == op2fullcap(reg2opcap(kudu_top.mult_pipeline_i.full_data2.d0[RegW-1:0]))));
+  // combinational: canonical cs1 equal (reg bits) to the RA prediction gives the IR-predicted PCC
+  AssertHpcPCjalrComb: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.mult_pipeline_i.cjalr_pcc_set_o && kudu_top.mult_pipeline_i.instr_dec.ptaken &&
+    (kudu_top.mult_pipeline_i.instr_dec.ptarget[RegW-1:0] == kudu_top.mult_pipeline_i.full_data2.d0[RegW-1:0]) &&
+    (kudu_top.mult_pipeline_i.full_data2.d0 == op2fullcap(reg2opcap(kudu_top.mult_pipeline_i.full_data2.d0[RegW-1:0]))) |->
+    (kudu_top.mult_pipeline_i.cjalr_pcap_o == pred(kudu_top.mult_pipeline_i.instr_dec)));
+
+  // datapath: a correctly predicted CJALR produces exactly the IR-predicted PCC
+  AssertHpcPCjalr: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    kudu_top.mult_pipeline_i.cjalr_pcc_set_o && kudu_top.mult_pipeline_i.instr_dec.ptaken &&
+    (kudu_top.mult_pipeline_i.instr_dec.ptarget[RegW-1:0] == kudu_top.mult_pipeline_i.full_data2.d0[RegW-1:0]) |->
+    (kudu_top.mult_pipeline_i.cjalr_pcap_o == pred(kudu_top.mult_pipeline_i.instr_dec)));
+
+
+  // combined PCC invariant (1-inductive given the lemmas above + PCjalr):
+  //  s1 entry1 PCC = successor of entry0, IR PCC = successor of the tail,
+  //  and the oldest PCC in flight (head or IR) = EX PCC unless single-stepping
+  logic pcc_ok;
+  assign pcc_ok = ((s1_cnt == 2'd2) -> (m1 == (pok(s1e0) ? pred(s1e0) : m0))) &&
+                  ((s1_cnt != 2'd0) -> (ir_pcc == (pok(s1t) ? pred(s1t) : mt))) &&
+                  (((s1_cnt == 2'd0) && !esc) -> (ir_pcc == ex1_pcc)) &&
+                  (((s1_cnt != 2'd0) && !esc) -> (m0 == ex1_pcc));
+  AssertHpcPccAll: assert property (@(posedge clk_i) disable iff (!rst_ni) pcc_ok);
+
+endmodule
+
+`endif
