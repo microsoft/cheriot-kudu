@@ -31,8 +31,10 @@ module alu_pipeline #(
   logic       rst_ni = 0;
   logic       us_valid_i = 0;
   logic       alupl_rdy_o = 1;
-  logic       ds_rdy_i = 1;
   logic       alupl_valid_o = 0;
+  // committer.sv dequeues only a valid output (cp_ds.rdy_no_out is illegal).
+  logic       ds_rdy_i;
+  assign ds_rdy_i = alupl_valid_o;
   logic       flush_i = 0;
   ir_dec_t    instr_i = '0;
   pl_out_t    alupl_output_o = '0;
@@ -64,7 +66,9 @@ module alu_pipeline #(
     #5 clk_i = 0;
   endtask
 
-  task automatic pcc_vector(input int n);
+  // legal=1 forces the only encodings that reach the ALU outside debug mode:
+  // tagged, reserved clear, executable-format cperms and unsealed.
+  task automatic pcc_vector(input int n, input bit legal = 1'b0);
     mem_cap_t expected;
     pcc_cap_i = '0;
     expected = '0;
@@ -75,10 +79,16 @@ module alu_pipeline #(
     pcc_cap_i.rsvd = n[1];
     pcc_cap_i.cperms = 6'(n);
     pcc_cap_i.otype = 3'(n);
-    expected.valid = n[0];
-    expected.rsvd = n[1];
-    expected.cperms = 6'(n);
-    expected.otype = 3'(n);
+    if (legal) begin
+      pcc_cap_i.valid = 1'b1;
+      pcc_cap_i.rsvd = 1'b0;
+      pcc_cap_i.cperms = {n[5], 2'b01, n[2:0]};
+      pcc_cap_i.otype = '0;
+    end
+    expected.valid = pcc_cap_i.valid;
+    expected.rsvd = pcc_cap_i.rsvd;
+    expected.cperms = pcc_cap_i.cperms;
+    expected.otype = pcc_cap_i.otype;
     case (n % 10)
       0: begin
         pcc_cap_i.exp = 0; pcc_cap_i.base32 = 0; pcc_cap_i.top33 = 1;
@@ -147,8 +157,16 @@ module alu_pipeline #(
     ex1_is_cheri = 1;
     us_valid_i = 1;
     cheri_pmode_i = 1;
+    // Every raw encoding in debug mode: the conversion is checked, but the
+    // points must not sample (their illegal bins would fire).
+    debug_mode_i = 1;
     for (int n = 0; n < 64; n++) begin
       pcc_vector(n);
+      tick();
+    end
+    debug_mode_i = 0;
+    for (int n = 0; n < 64; n++) begin
+      pcc_vector(n, 1'b1);
       tick();
     end
     cheri_pmode_i = 0; tick(); cheri_pmode_i = 1;
@@ -223,8 +241,9 @@ module mult_pipeline;
   logic       rst_ni = 0;
   logic       us_valid_i = 0;
   logic       multpl_rdy_o = 1;
-  logic       ds_rdy_i = 1;
   logic       multpl_valid_o = 0;
+  logic       ds_rdy_i;
+  assign ds_rdy_i = multpl_valid_o;
   logic       flush_i = 0;
   logic       sel_ira_i = 1;
   cpu_ctrl_t  cpu_ctrl_i = '0;
@@ -328,10 +347,11 @@ module mult_pipeline;
   endtask
 
   task automatic save_cheri_mode(input bit mode);
+    // An empty EX2 is always ready (cp_ex2.idle is illegal), so the mode is
+    // re-latched every cycle and simply follows cheri_pmode_i.
     cheri_pmode_i = mode;
     ex2_rdy = 1;
     tick();
-    ex2_rdy = 0;
   endtask
 
   task automatic sample_setbounds(input cheri_op_t op, input full_cap_t c,

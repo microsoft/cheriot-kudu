@@ -499,8 +499,33 @@ module kudu_fcov_isa
            (kudu_top.CHERIoTEn && instruction_mode(instruction, 1));
   endfunction
 
+  // An issue-side CJALR fault (tag/seal/execute) still reads CS1: the issuer only
+  // raises it without a hazard, from the same forwarded operand the tracer reports.
+  function automatic bit jump_fault(instr_trace_t t);
+    return t.rvfi.trap && !t.is_ex && t.ir_dec.is_jalr && !t.ir_dec.any_err;
+  endfunction
+
+  // Mirror of branch_unit get_cjalr_err() on the traced CS1.
+  function automatic bit jump_fault_cause(instr_trace_t t, mem_cap_t cs1);
+    logic [PERMS_W-1:0] perms;
+    logic ex, o0, o1, o23, o45, seal;
+    logic [4:0] rd, rs1;
+    perms = expand_perms(cs1.cperms);
+    ex  = perms[PERM_EX];
+    o0  = cs1.otype == 0;
+    o1  = ex && cs1.otype == 1;
+    o23 = ex && cs1.otype inside {2, 3};
+    o45 = ex && cs1.otype inside {4, 5};
+    rd  = t.ir_dec.rd;
+    rs1 = t.ir_dec.rs1;
+    seal = (!o0 && t.ir_dec.insn[31:20] != 0) ||
+           !((rd == 0 && rs1 == 1 && o45) || (rd == 0 && rs1 != 1 && (o0 || o1)) ||
+             (rd == 1 && (o0 || o23)) || (rd != 0 && (o0 || o1)));
+    return !cs1.valid || seal || !ex;
+  endfunction
+
   function automatic bit source_available(instr_trace_t t, isa_instr_e instruction, bit second);
-    return (!t.rvfi.trap || t.is_ex) && uses_source(instruction, second) &&
+    return (!t.rvfi.trap || t.is_ex || (!second && jump_fault(t))) && uses_source(instruction, second) &&
            (second || instruction != ISA_CSCRRW || t.rvfi.rs1_addr != 0);
   endfunction
 
@@ -538,6 +563,12 @@ module kudu_fcov_isa
       ISA_CLC, ISA_AUIPCC, ISA_AUICGP, ISA_C_INCADDR4CSPN, ISA_C_INCADDR16CSP,
       ISA_C_CLCSP, ISA_C_CLC, ISA_JAL, ISA_JALR, ISA_C_JAL, ISA_C_JALR
     };
+  endfunction
+
+  // Roots have RSVD 0 and exponent 24 (CEXP 7); only CSetHigh can set RSVD, and its
+  // result is untagged. Bounds setting never exceeds exponent 24 (CEXP 1..6).
+  function automatic bit tagged_cap_encoding_ok(mem_cap_t c);
+    return !c.valid || (!c.rsvd && !(c.cexp inside {[1:6]}));
   endfunction
 
   function automatic bit destination_available(instr_trace_t t, isa_instr_e instruction, bit mode);
@@ -1152,8 +1183,10 @@ module kudu_fcov_isa
     // ======================================================================
     // All 32 architectural registers must be written and read.  x0 is split
     // out because it is the one register with defined special behaviour.
+    // The tracer zeroes rd_wdata for x0, so this guard never admits x0
+    // (AssertIsaRdX0NoData).
     cp_rd: coverpoint t.rvfi.rd_addr iff (|t.rvfi.rd_wdata || t.rvfi.rd_addr != 5'd0) {
-      bins x0     = {5'd0};
+      illegal_bins x0 = {5'd0};
       bins reg_[] = {[1:31]};
     }
 
@@ -1168,17 +1201,23 @@ module kudu_fcov_isa
       bins has_tag  = {1'b1};
     }
 
+    // The tracer reports unshifted masks; alignment is cp_mem_align
+    // (AssertIsaMemMaskUnshifted).
     cp_mem_rmask: coverpoint t.rvfi.mem_rmask {
       bins none    = {4'b0000};
-      bins byte_[] = {4'b0001, 4'b0010, 4'b0100, 4'b1000};
-      bins half_[] = {4'b0011, 4'b1100};
+      bins byte_   = {4'b0001};
+      bins half_   = {4'b0011};
+      illegal_bins shifted = {4'b0010, 4'b0100, 4'b1000, 4'b1100};
       bins word_   = {4'b1111};
       bins other   = default;
     }
+    // The tracer reports unshifted masks; alignment is cp_mem_align
+    // (AssertIsaMemMaskUnshifted).
     cp_mem_wmask: coverpoint t.rvfi.mem_wmask {
       bins none    = {4'b0000};
-      bins byte_[] = {4'b0001, 4'b0010, 4'b0100, 4'b1000};
-      bins half_[] = {4'b0011, 4'b1100};
+      bins byte_   = {4'b0001};
+      bins half_   = {4'b0011};
+      illegal_bins shifted = {4'b0010, 4'b0100, 4'b1000, 4'b1100};
       bins word_   = {4'b1111};
       bins other   = default;
     }
@@ -1204,10 +1243,12 @@ module kudu_fcov_isa
     cp_target_align: coverpoint t.rvfi.pc_wdata[1:0] {
       bins aligned4 = {2'b00};
       bins aligned2 = {2'b10};
-      bins odd      = {2'b01, 2'b11};
+      // Every next-PC source clears bit 0 (AssertIsaTargetEven).
+      illegal_bins odd = {2'b01, 2'b11};
     }
 
-    cp_mode: coverpoint t.rvfi.mode { bins m[] = {[0:3]}; }
+    // tracer.sv ties rvfi.mode to 0 (AssertIsaModeTied).
+    cp_mode: coverpoint t.rvfi.mode { bins m0 = {2'd0}; illegal_bins tied = {[2'd1:2'd3]}; }
     cp_intr: coverpoint t.rvfi.intr { bins hit = {1'b1}; }
     cp_trap: coverpoint t.rvfi.trap;
   endgroup
@@ -1264,9 +1305,15 @@ module kudu_fcov_isa
       option.weight = 0;
       bins value[] = {0, 1};
     }
-    cp_cs1_cperms: coverpoint cs1.cperms iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+    cp_cs1_cperms: coverpoint fcov_cperm_category(cs1.cperms)
+        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = 0;
-      bins permissions[] = {[0:63]};
+      bins memory_capability = {PC_MEMORY};
+      bins load_capability = {PC_LOAD};
+      bins store_capability = {PC_STORE};
+      bins data_only = {PC_DATA};
+      bins execute = {PC_EXECUTE};
+      bins sealing = {PC_SEAL};
     }
     cp_cs1_otype: coverpoint cs1.otype iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
       option.weight = 0;
@@ -1304,9 +1351,15 @@ module kudu_fcov_isa
       option.weight = 0;
       bins value[] = {0, 1};
     }
-    cp_cs2_cperms: coverpoint cs2.cperms iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
+    cp_cs2_cperms: coverpoint fcov_cperm_category(cs2.cperms)
+        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
       option.weight = 0;
-      bins permissions[] = {[0:63]};
+      bins memory_capability = {PC_MEMORY};
+      bins load_capability = {PC_LOAD};
+      bins store_capability = {PC_STORE};
+      bins data_only = {PC_DATA};
+      bins execute = {PC_EXECUTE};
+      bins sealing = {PC_SEAL};
     }
     cp_cs2_otype: coverpoint cs2.otype iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
       option.weight = 0;
@@ -1350,6 +1403,146 @@ module kudu_fcov_isa
     // BEGIN GENERATED FAMILY CROSSES
 
     // Regenerate with fcov/generate_isa_operand_crosses.py --write.
+
+    cp_cs1_access_permissions: coverpoint fcov_cperm_profile(cs1.cperms, 6'b001111)
+        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = 0;
+      bins memory_capability[] = {[24:31]};
+      bins load_capability[] = {[20:23]};
+      bins store_capability = {16};
+      bins data_only[] = {[17:19]};
+      bins execute = {8};
+      bins sealing = {0};
+    }
+
+    cp_cs1_target_permissions: coverpoint fcov_cperm_profile(cs1.cperms, 6'b010000)
+        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = 0;
+      bins memory_capability = {24};
+      bins load_capability = {20};
+      bins store_capability = {16};
+      bins data_only = {17};
+      bins execute[] = {[8:15]};
+      bins sealing = {0};
+    }
+
+    cp_cs2_sealing_permissions: coverpoint fcov_cperm_profile(cs2.cperms, 6'b100000)
+        iff (source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) {
+      option.weight = 0;
+      bins memory_capability = {24};
+      bins load_capability = {20};
+      bins store_capability = {16};
+      bins data_only = {17};
+      bins execute = {8};
+      bins sealing[] = {[0:7]};
+    }
+
+    cp_cs1_permission_bits: coverpoint expand_perms(cs1.cperms)
+        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && instruction == ISA_CGETPERM) {
+      option.weight = 0;
+      wildcard bins global_0 = {12'b???????????0};
+      wildcard bins global_1 = {12'b???????????1};
+      wildcard bins load_global_0 = {12'b??????????0?};
+      wildcard bins load_global_1 = {12'b??????????1?};
+      wildcard bins store_0 = {12'b?????????0??};
+      wildcard bins store_1 = {12'b?????????1??};
+      wildcard bins load_mutable_0 = {12'b????????0???};
+      wildcard bins load_mutable_1 = {12'b????????1???};
+      wildcard bins store_local_0 = {12'b???????0????};
+      wildcard bins store_local_1 = {12'b???????1????};
+      wildcard bins load_0 = {12'b??????0?????};
+      wildcard bins load_1 = {12'b??????1?????};
+      wildcard bins capability_0 = {12'b?????0??????};
+      wildcard bins capability_1 = {12'b?????1??????};
+      wildcard bins system_register_0 = {12'b????0???????};
+      wildcard bins system_register_1 = {12'b????1???????};
+      wildcard bins execute_0 = {12'b???0????????};
+      wildcard bins execute_1 = {12'b???1????????};
+      wildcard bins unseal_0 = {12'b??0?????????};
+      wildcard bins unseal_1 = {12'b??1?????????};
+      wildcard bins seal_0 = {12'b?0??????????};
+      wildcard bins seal_1 = {12'b?1??????????};
+      wildcard bins user0_0 = {12'b0???????????};
+      wildcard bins user0_1 = {12'b1???????????};
+    }
+
+    cp_cs1_mask_permissions: coverpoint {expand_perms(cs1.cperms), t.rvfi.rs2_rdata[PERMS_W-1:0]}
+        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && !capability_source(instruction, mode, 1) && instruction == ISA_CANDPERM) {
+      option.weight = 0;
+      wildcard bins global_00 = {24'b???????????0???????????0};
+      wildcard bins global_01 = {24'b???????????0???????????1};
+      wildcard bins global_10 = {24'b???????????1???????????0};
+      wildcard bins global_11 = {24'b???????????1???????????1};
+      wildcard bins load_global_00 = {24'b??????????0???????????0?};
+      wildcard bins load_global_01 = {24'b??????????0???????????1?};
+      wildcard bins load_global_10 = {24'b??????????1???????????0?};
+      wildcard bins load_global_11 = {24'b??????????1???????????1?};
+      wildcard bins store_00 = {24'b?????????0???????????0??};
+      wildcard bins store_01 = {24'b?????????0???????????1??};
+      wildcard bins store_10 = {24'b?????????1???????????0??};
+      wildcard bins store_11 = {24'b?????????1???????????1??};
+      wildcard bins load_mutable_00 = {24'b????????0???????????0???};
+      wildcard bins load_mutable_01 = {24'b????????0???????????1???};
+      wildcard bins load_mutable_10 = {24'b????????1???????????0???};
+      wildcard bins load_mutable_11 = {24'b????????1???????????1???};
+      wildcard bins store_local_00 = {24'b???????0???????????0????};
+      wildcard bins store_local_01 = {24'b???????0???????????1????};
+      wildcard bins store_local_10 = {24'b???????1???????????0????};
+      wildcard bins store_local_11 = {24'b???????1???????????1????};
+      wildcard bins load_00 = {24'b??????0???????????0?????};
+      wildcard bins load_01 = {24'b??????0???????????1?????};
+      wildcard bins load_10 = {24'b??????1???????????0?????};
+      wildcard bins load_11 = {24'b??????1???????????1?????};
+      wildcard bins capability_00 = {24'b?????0???????????0??????};
+      wildcard bins capability_01 = {24'b?????0???????????1??????};
+      wildcard bins capability_10 = {24'b?????1???????????0??????};
+      wildcard bins capability_11 = {24'b?????1???????????1??????};
+      wildcard bins system_register_00 = {24'b????0???????????0???????};
+      wildcard bins system_register_01 = {24'b????0???????????1???????};
+      wildcard bins system_register_10 = {24'b????1???????????0???????};
+      wildcard bins system_register_11 = {24'b????1???????????1???????};
+      wildcard bins execute_00 = {24'b???0???????????0????????};
+      wildcard bins execute_01 = {24'b???0???????????1????????};
+      wildcard bins execute_10 = {24'b???1???????????0????????};
+      wildcard bins execute_11 = {24'b???1???????????1????????};
+      wildcard bins unseal_00 = {24'b??0???????????0?????????};
+      wildcard bins unseal_01 = {24'b??0???????????1?????????};
+      wildcard bins unseal_10 = {24'b??1???????????0?????????};
+      wildcard bins unseal_11 = {24'b??1???????????1?????????};
+      wildcard bins seal_00 = {24'b?0???????????0??????????};
+      wildcard bins seal_01 = {24'b?0???????????1??????????};
+      wildcard bins seal_10 = {24'b?1???????????0??????????};
+      wildcard bins seal_11 = {24'b?1???????????1??????????};
+      wildcard bins user0_00 = {24'b0???????????0???????????};
+      wildcard bins user0_01 = {24'b0???????????1???????????};
+      wildcard bins user0_10 = {24'b1???????????0???????????};
+      wildcard bins user0_11 = {24'b1???????????1???????????};
+    }
+
+    cp_permission_relation: coverpoint fcov_permission_relation(expand_perms(cs1.cperms), expand_perms(cs2.cperms))
+        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && instruction inside {ISA_CTESTSUB, ISA_CSETEQX}) {
+      option.weight = 0;
+      bins equal = {PR_EQUAL};
+      bins cs2_subset = {PR_CS2_SUBSET};
+      bins cs1_subset = {PR_CS1_SUBSET};
+      bins incomparable = {PR_INCOMPARABLE};
+    }
+
+    cp_store_permissions: coverpoint fcov_store_permissions(cs1.cperms, cs2.cperms)
+        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && instruction inside {ISA_CSC, ISA_C_CSC, ISA_C_CSCSP}) {
+      option.weight = 0;
+      bins no_store_or_capability[] = {0, 1};
+      bins capability_no_store[] = {4, 5};
+      bins data_store_only[] = {8, 9};
+      bins capability_store[] = {12, 13};
+      bins store_local[] = {14, 15};
+    }
+
+    cp_unseal_global: coverpoint {cs1.cperms[5], cs2.cperms[5]}
+        iff (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && instruction == ISA_CUNSEAL) {
+      option.weight = 0;
+      bins global_pair[] = {[0:3]};
+    }
 
     // ARITHMETIC: only actual source/destination roles contribute goals.
 
@@ -1614,6 +1807,7 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
          !source_destination_goal(isa_instr_e'(cp_instruction), 0, CF_TAG, cp_cs1_tag, cp_cd_tag) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins untagged_link = binsof(cp_cd_tag) intersect {0};
     }
 
     x_control_cs1_reserved: cross cp_instruction, cp_cs1_reserved, cp_cs1_tag
@@ -1623,6 +1817,8 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_control_cs1_cperms: cross cp_instruction, cp_cs1_cperms, cp_cs1_tag
@@ -1650,6 +1846,8 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_control_cs1_base: cross cp_instruction, cp_cs1_base, cp_cs1_tag
@@ -1677,6 +1875,7 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
          !destination_field_goal(isa_instr_e'(cp_instruction), CF_TAG, cp_cd_tag) ||
          (uses_source(isa_instr_e'(cp_instruction), 0) && isa_instr_e'(cp_instruction) != ISA_CSCRRW));
+      illegal_bins untagged_link = binsof(cp_cd_tag) intersect {0};
     }
 
     // MEMORY: only actual source/destination roles contribute goals.
@@ -1768,6 +1967,8 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_memory_cs1_cperms: cross cp_instruction, cp_cs1_cperms, cp_cs1_tag
@@ -1795,6 +1996,8 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_memory_cs1_base: cross cp_instruction, cp_cs1_base, cp_cs1_tag
@@ -1846,6 +2049,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_memory_cs1_rs2_reserved_size: cross cp_instruction, cp_cs1_reserved, cp_rs2_size, cp_cs1_tag
@@ -1857,6 +2062,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_memory_cs1_rs2_cperms: cross cp_instruction, cp_cs1_cperms, cp_rs2_data, cp_cs1_tag
@@ -1912,6 +2119,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_memory_cs1_rs2_cexp_size: cross cp_instruction, cp_cs1_cexp, cp_rs2_size, cp_cs1_tag
@@ -1923,6 +2132,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_memory_cs1_rs2_base: cross cp_instruction, cp_cs1_base, cp_rs2_data, cp_cs1_tag
@@ -2035,6 +2246,8 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_atomic_cs1_cperms: cross cp_instruction, cp_cs1_cperms, cp_cs1_tag
@@ -2062,6 +2275,8 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_atomic_cs1_base: cross cp_instruction, cp_cs1_base, cp_cs1_tag
@@ -2113,6 +2328,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_atomic_cs1_rs2_reserved_size: cross cp_instruction, cp_cs1_reserved, cp_rs2_size, cp_cs1_tag
@@ -2124,6 +2341,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_atomic_cs1_rs2_cperms: cross cp_instruction, cp_cs1_cperms, cp_rs2_data, cp_cs1_tag
@@ -2179,6 +2398,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_atomic_cs1_rs2_cexp_size: cross cp_instruction, cp_cs1_cexp, cp_rs2_size, cp_cs1_tag
@@ -2190,6 +2411,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_atomic_cs1_rs2_base: cross cp_instruction, cp_cs1_base, cp_rs2_data, cp_cs1_tag
@@ -2345,6 +2568,8 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_cheri_cs1_cperms: cross cp_instruction, cp_cs1_cperms, cp_cs1_tag
@@ -2372,6 +2597,8 @@ module kudu_fcov_isa
         (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_cheri_cs1_base: cross cp_instruction, cp_cs1_base, cp_cs1_tag
@@ -2439,6 +2666,8 @@ module kudu_fcov_isa
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_cheri_cs1_cs2_cperms: cross cp_instruction, cp_cs1_cperms, cp_cs2_cperms, cp_cs1_tag
@@ -2469,6 +2698,8 @@ module kudu_fcov_isa
          !capability_source_goal(isa_instr_e'(cp_instruction), 0) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_cheri_cs1_cs2_base: cross cp_instruction, cp_cs1_base, cp_cs2_base, cp_cs1_tag
@@ -2522,6 +2753,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_cheri_cs1_rs2_reserved_size: cross cp_instruction, cp_cs1_reserved, cp_rs2_size, cp_cs1_tag
@@ -2533,6 +2766,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_reserved = binsof(cp_cs1_reserved) intersect {1} &&
+                                     binsof(cp_cs1_tag) intersect {1};
     }
 
     x_cheri_cs1_rs2_cperms: cross cp_instruction, cp_cs1_cperms, cp_rs2_data, cp_cs1_tag
@@ -2588,6 +2823,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_cheri_cs1_rs2_cexp_size: cross cp_instruction, cp_cs1_cexp, cp_rs2_size, cp_cs1_tag
@@ -2599,6 +2836,8 @@ module kudu_fcov_isa
          !integer_source_goal(isa_instr_e'(cp_instruction), 1) ||
          capability_source(isa_instr_e'(cp_instruction), 1, 1) ||
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+      illegal_bins tagged_above_max = binsof(cp_cs1_cexp) intersect {[1:6]} &&
+                                      binsof(cp_cs1_tag) intersect {1};
     }
 
     x_cheri_cs1_rs2_base: cross cp_instruction, cp_cs1_base, cp_rs2_data, cp_cs1_tag
@@ -2645,6 +2884,96 @@ module kudu_fcov_isa
          !capability_source_goal(isa_instr_e'(cp_instruction), 0));
     }
 
+    x_memory_access_permissions: cross cp_instruction, cp_cs1_access_permissions, cp_cs1_tag
+        iff (operand_family(instruction) == OF_MEMORY && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && instruction inside {ISA_LB, ISA_LH, ISA_LW, ISA_LBU, ISA_LHU, ISA_SB, ISA_SH, ISA_SW, ISA_C_LW, ISA_C_SW, ISA_C_LWSP, ISA_C_SWSP, ISA_LR_W, ISA_SC_W, ISA_AMOSWAP, ISA_AMOADD, ISA_AMOXOR, ISA_AMOAND, ISA_AMOOR, ISA_AMOMIN, ISA_AMOMAX, ISA_AMOMINU, ISA_AMOMAXU, ISA_CLC, ISA_CSC, ISA_C_CLC, ISA_C_CLCSP, ISA_C_CSC, ISA_C_CSCSP}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_memory_access_permissions with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_MEMORY ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_LB, ISA_LH, ISA_LW, ISA_LBU, ISA_LHU, ISA_SB, ISA_SH, ISA_SW, ISA_C_LW, ISA_C_SW, ISA_C_LWSP, ISA_C_SWSP, ISA_LR_W, ISA_SC_W, ISA_AMOSWAP, ISA_AMOADD, ISA_AMOXOR, ISA_AMOAND, ISA_AMOOR, ISA_AMOMIN, ISA_AMOMAX, ISA_AMOMINU, ISA_AMOMAXU, ISA_CLC, ISA_CSC, ISA_C_CLC, ISA_C_CLCSP, ISA_C_CSC, ISA_C_CSCSP}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_atomic_access_permissions: cross cp_instruction, cp_cs1_access_permissions, cp_cs1_tag
+        iff (operand_family(instruction) == OF_ATOMIC && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && instruction inside {ISA_LB, ISA_LH, ISA_LW, ISA_LBU, ISA_LHU, ISA_SB, ISA_SH, ISA_SW, ISA_C_LW, ISA_C_SW, ISA_C_LWSP, ISA_C_SWSP, ISA_LR_W, ISA_SC_W, ISA_AMOSWAP, ISA_AMOADD, ISA_AMOXOR, ISA_AMOAND, ISA_AMOOR, ISA_AMOMIN, ISA_AMOMAX, ISA_AMOMINU, ISA_AMOMAXU, ISA_CLC, ISA_CSC, ISA_C_CLC, ISA_C_CLCSP, ISA_C_CSC, ISA_C_CSCSP}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_atomic_access_permissions with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_ATOMIC ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_LB, ISA_LH, ISA_LW, ISA_LBU, ISA_LHU, ISA_SB, ISA_SH, ISA_SW, ISA_C_LW, ISA_C_SW, ISA_C_LWSP, ISA_C_SWSP, ISA_LR_W, ISA_SC_W, ISA_AMOSWAP, ISA_AMOADD, ISA_AMOXOR, ISA_AMOAND, ISA_AMOOR, ISA_AMOMIN, ISA_AMOMAX, ISA_AMOMINU, ISA_AMOMAXU, ISA_CLC, ISA_CSC, ISA_C_CLC, ISA_C_CLCSP, ISA_C_CSC, ISA_C_CSCSP}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_access_permissions: cross cp_instruction, cp_cs1_access_permissions, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && instruction inside {ISA_LB, ISA_LH, ISA_LW, ISA_LBU, ISA_LHU, ISA_SB, ISA_SH, ISA_SW, ISA_C_LW, ISA_C_SW, ISA_C_LWSP, ISA_C_SWSP, ISA_LR_W, ISA_SC_W, ISA_AMOSWAP, ISA_AMOADD, ISA_AMOXOR, ISA_AMOAND, ISA_AMOOR, ISA_AMOMIN, ISA_AMOMAX, ISA_AMOMINU, ISA_AMOMAXU, ISA_CLC, ISA_CSC, ISA_C_CLC, ISA_C_CLCSP, ISA_C_CSC, ISA_C_CSCSP}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_access_permissions with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_LB, ISA_LH, ISA_LW, ISA_LBU, ISA_LHU, ISA_SB, ISA_SH, ISA_SW, ISA_C_LW, ISA_C_SW, ISA_C_LWSP, ISA_C_SWSP, ISA_LR_W, ISA_SC_W, ISA_AMOSWAP, ISA_AMOADD, ISA_AMOXOR, ISA_AMOAND, ISA_AMOOR, ISA_AMOMIN, ISA_AMOMAX, ISA_AMOMINU, ISA_AMOMAXU, ISA_CLC, ISA_CSC, ISA_C_CLC, ISA_C_CLCSP, ISA_C_CSC, ISA_C_CSCSP}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_control_target_permissions: cross cp_instruction, cp_cs1_target_permissions, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CONTROL && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && instruction inside {ISA_JALR, ISA_C_JR, ISA_C_JALR}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_control_target_permissions with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CONTROL ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_JALR, ISA_C_JR, ISA_C_JALR}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_sealing_permissions: cross cp_instruction, cp_cs2_sealing_permissions, cp_cs2_tag, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && instruction inside {ISA_CSEAL, ISA_CUNSEAL}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_sealing_permissions with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_CSEAL, ISA_CUNSEAL}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_permission_bits: cross cp_instruction, cp_cs1_permission_bits, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && instruction inside {ISA_CGETPERM}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_permission_bits with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_CGETPERM}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_mask_permissions: cross cp_instruction, cp_cs1_mask_permissions, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && !capability_source(instruction, mode, 1) && instruction inside {ISA_CANDPERM}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_mask_permissions with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_CANDPERM}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_permission_relation: cross cp_instruction, cp_permission_relation, cp_cs2_tag, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && instruction inside {ISA_CTESTSUB, ISA_CSETEQX}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_permission_relation with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_CTESTSUB, ISA_CSETEQX}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_store_permissions: cross cp_instruction, cp_store_permissions, cp_cs2_tag, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && instruction inside {ISA_CSC, ISA_C_CSC, ISA_C_CSCSP}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_store_permissions with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_CSC, ISA_C_CSC, ISA_C_CSCSP}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
+    x_cheri_unseal_global: cross cp_instruction, cp_unseal_global, cp_cs2_tag, cp_cs1_tag
+        iff (operand_family(instruction) == OF_CHERI && (source_available(t, instruction, 0) && capability_source(instruction, mode, 0) && source_available(t, instruction, 1) && capability_source(instruction, mode, 1) && instruction inside {ISA_CUNSEAL}) && source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) {
+      option.weight = kudu_top.CHERIoTEn ? 1 : 0;
+      ignore_bins unused = x_cheri_unseal_global with
+        (operand_family(isa_instr_e'(cp_instruction)) != OF_CHERI ||
+         !(isa_instr_e'(cp_instruction) inside {ISA_CUNSEAL}) ||
+         !capability_source_goal(isa_instr_e'(cp_instruction), 0));
+    }
+
     // END GENERATED FAMILY CROSSES
   endgroup
 
@@ -2660,10 +2989,46 @@ module kudu_fcov_isa
   task automatic sample_entry(instr_trace_t t, bit saved_cheri_mode);
     isa_instr_e instruction;
     bit mode;
+    mem_cap_t link_cap;
     if (!t.rvfi.valid) return;
+    // Twins of the cg_isa_instr illegal bins (sim only: this tap is not in FV).
+    AssertIsaRdX0NoData: assert (t.rvfi.rd_addr != 5'd0 || t.rvfi.rd_wdata == '0)
+      else $error("FCOV: tracer reported data for an x0 write");
+    AssertIsaMemMaskUnshifted: assert (t.rvfi.mem_rmask inside {4'h0, 4'h1, 4'h3, 4'hf} &&
+                                       t.rvfi.mem_wmask inside {4'h0, 4'h1, 4'h3, 4'hf})
+      else $error("FCOV: tracer reported a shifted memory mask r=%h w=%h",
+                  t.rvfi.mem_rmask, t.rvfi.mem_wmask);
+    // The tracer can report an X next PC; like the illegal bin, only a known 1 fails.
+    AssertIsaTargetEven: assert (t.rvfi.pc_wdata[0] !== 1'b1)
+      else $error("FCOV: odd next PC %h", t.rvfi.pc_wdata);
+    AssertIsaModeTied: assert (t.rvfi.mode == '0)
+      else $error("FCOV: tracer mode no longer tied to 0, update cp_mode");
     mode = kudu_top.CHERIoTEn && saved_cheri_mode;
+    AssertIsaJumpFaultCause: assert (!jump_fault(t) ||
+                                     (mode && jump_fault_cause(t, mem_cap_t'(t.rvfi.rs1_rdata))))
+      else $error("FCOV: faulting jump at %h with CS1 %h that does not explain the fault",
+                  t.rvfi.pc_rdata, t.rvfi.rs1_rdata);
     u_cg_isa_instr.sample(t, mode, mode);
     instruction = instruction_id(t, mode);
+    // Twins of the cg_isa_operands tagged_reserved/tagged_above_max and
+    // untagged_link illegal bins. Like AssertAuipccPccEncoding, these rely on
+    // memory never holding such a tagged capability, so they are sim-only.
+    if (!t.rvfi.intr && instruction != ISA_UNKNOWN) begin
+      link_cap = mem_cap_t'(t.rvfi.rd_wdata);
+      AssertIsaTaggedCapEncoding: assert (
+          (!(source_available(t, instruction, 0) && capability_source(instruction, mode, 0)) ||
+           tagged_cap_encoding_ok(mem_cap_t'(t.rvfi.rs1_rdata))) &&
+          (!(source_available(t, instruction, 1) && capability_source(instruction, mode, 1)) ||
+           tagged_cap_encoding_ok(mem_cap_t'(t.rvfi.rs2_rdata))) &&
+          (!destination_available(t, instruction, mode) ||
+           tagged_cap_encoding_ok(mem_cap_t'(t.rvfi.rd_wdata))))
+        else $error("FCOV: tagged capability with RSVD set or CEXP 1..6 at %h", t.rvfi.pc_rdata);
+      AssertIsaJumpLinkTagged: assert (
+          !(instruction inside {ISA_JAL, ISA_JALR, ISA_C_JAL, ISA_C_JALR}) ||
+          !destination_available(t, instruction, mode) ||
+          link_cap.valid)
+        else $error("FCOV: jump at %h linked an untagged capability", t.rvfi.pc_rdata);
+    end
     // Operand and destination availability are qualified inside the group;
     // instruction/mode coverage also includes recognized issue-side traps.
     if (!t.rvfi.intr && instruction != ISA_UNKNOWN)

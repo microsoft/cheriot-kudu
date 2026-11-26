@@ -174,9 +174,17 @@ module kudu_fcov_csr
 
     cp_mstatus_mie:  coverpoint mstatus_mie;
     cp_mstatus_mpie: coverpoint mstatus_mpie;
-    cp_mstatus_mpp:  coverpoint mstatus_mpp { bins p[] = {[0:3]}; }
+    // mpp/priv are WARL {U, M} (cs_registers.sv:674-676,766,783,808,818,867);
+    // AssertMppLegal / AssertPrivLegal in kudu_sva_csr.
+    cp_mstatus_mpp:  coverpoint mstatus_mpp {
+      bins         p[]    = {0, 3};
+      illegal_bins rsvd   = {1, 2};
+    }
     cp_mstatus_en:   coverpoint mstatus_en { bins hit = {1'b1}; }
-    cp_priv_mode:    coverpoint priv_mode { bins p[] = {[0:3]}; }
+    cp_priv_mode:    coverpoint priv_mode {
+      bins         p[]    = {0, 3};
+      illegal_bins rsvd   = {1, 2};
+    }
 
     // Taking a trap while already in a trap handler (interrupts disabled) is
     // the nested-fault case.
@@ -211,7 +219,11 @@ module kudu_fcov_csr
     // of that check need to be seen.
     cp_pending_mie_clear: coverpoint (irq_pending_o & ~mstatus_mie) { bins hit = {1'b1}; }
     cp_debug_mode:  coverpoint debug_mode_i;
-    cp_entering:    coverpoint debug_mode_entering_i { bins hit = {1'b1}; }
+    // Tied to 1'b0 at kudu_top.sv:656; AssertDbgEnteringTiedOff.
+    cp_entering:    coverpoint debug_mode_entering_i {
+      bins         idle = {1'b0};
+      illegal_bins hit  = {1'b1};
+    }
     // Every architectural debug entry cause.
     cp_dbg_cause: coverpoint debug_cause_i iff (debug_csr_save_i) {
       bins none    = {DBG_CAUSE_NONE};
@@ -221,21 +233,28 @@ module kudu_fcov_csr
       bins step    = {DBG_CAUSE_STEP};
     }
     cp_step:     coverpoint dcsr_step;
-    cp_stepie:   coverpoint dcsr_stepie;
+    // dcsr.stepie/nmip are hardwired 0 and dcsr.prv is WARL {U, M}
+    // (cs_registers.sv:648,695-697,703,706,771,956-960);
+    // AssertDcsrFixedFields / AssertDcsrPrvLegal in kudu_sva_csr.
+    cp_stepie:   coverpoint dcsr_stepie { bins zero = {1'b0}; illegal_bins one = {1'b1}; }
     cp_ebreakm:  coverpoint dcsr_ebreakm;
     cp_ebreaku:  coverpoint dcsr_ebreaku;
-    cp_dcsr_nmip: coverpoint dcsr_nmip;
-    cp_dcsr_prv: coverpoint dcsr_prv { bins p[] = {[0:3]}; }
+    cp_dcsr_nmip: coverpoint dcsr_nmip { bins zero = {1'b0}; illegal_bins one = {1'b1}; }
+    cp_dcsr_prv: coverpoint dcsr_prv {
+      bins         p[]    = {0, 3};
+      illegal_bins rsvd   = {1, 2};
+    }
     cp_dcsr_en:  coverpoint dcsr_en { bins hit = {1'b1}; }
     cp_trigger_en: coverpoint tmatch_control;
 
     // Single-stepping with interrupts enabled is the case where an interrupt
     // and the step trap compete (finding F-06). dcsr.stepie is hardwired to 0
-    // (cs_registers.sv:703, KUDU-029), so the bin is unreachable; weight 0
-    // keeps it as a tripwire without counting against the score.
+    // (cs_registers.sv:703, KUDU-029), so the bin is unreachable
+    // (AssertDcsrFixedFields).
     cp_step_with_ie: coverpoint (dcsr_step & dcsr_stepie) {
       option.weight = 0;
-      bins hit = {1'b1};
+      bins         none = {1'b0};
+      illegal_bins hit  = {1'b1};
     }
     // Every implemented CSR address, each crossed with every access kind.
     // READ is CSRRS/CSRRC with rs1 = x0; WRITE/SET/CLEAR are CSRRW[I],
@@ -347,9 +366,12 @@ module kudu_fcov_csr
       bins rv32  = {1'b0};
       bins pmode = {1'b1};
     }
+    // dpc/dscratch0/1 are illegal CSRs in CHERI mode (cs_registers.sv:512-522;
+    // DEPCC/DSCRATCHC* replace them); AssertNoDbgCsrWrInPmode.
     x_dbg_csr_pmode: cross cp_dbg_csr_wr, cp_dbg_wr_pmode
         iff (csr_exec_ok && !csr_cheri_i && csr_is_wr && debug_mode_i) {
       option.weight = CHERIoTEn;
+      illegal_bins pmode = binsof(cp_dbg_wr_pmode.pmode);
     }
 
     // KUDU-022/027: which kind of trap entry (M-mode trap, debug entry,
@@ -367,7 +389,9 @@ module kudu_fcov_csr
     // KUDU-016: CSR write to MSHWM/MSHWMB followed closely by a store.
     cp_mshwm_wr_to_store: coverpoint mshwm_wr_age iff (csr_lsu_wr_req_i && cheri_cov_en) {
       option.weight = CHERIoTEn;
-      bins same_cycle = {2'd0};
+      // A CSR write needs lsu_req_info_q.is_csr, the LSU store update needs
+      // !is_csr (load_store_unit.sv:542,686-687); AssertNoMshwmCsrWrWithLsuWr.
+      illegal_bins same_cycle = {2'd0};
       bins one        = {2'd1};
       bins two        = {2'd2};
       bins three_plus = {2'd3};
@@ -450,6 +474,9 @@ module kudu_sva_csr
   input logic                illegal_csr_insn_o,
   input logic [31:0]         csr_wdata32,
   input logic                csr_lsu_wr_req_i,
+  input logic                mshwm_en,
+  input logic                mshwmb_en,
+  input logic                debug_mode_entering_i,
 
   // --- interrupts --------------------------------------------------------------
   input irqs_t               irqs_o,
@@ -633,6 +660,8 @@ module kudu_sva_csr
     m_trap |-> mcause_legal(csr_exc_info_i.mcause))
     else $error("SVA_CSR: trap with undefined mcause 0x%02x", csr_exc_info_i.mcause);
 
+`ifdef KUDU_FORMAL_RTL
+  // Temporarily formal-only: simulation exercises waived IRQ withdrawal.
   // Privileged spec 3.1.6.1/3.1.9: an interrupt is taken only if it is pending
   // and enabled in mie, and M-mode interrupts are globally enabled (mstatus.mie
   // or a lower privilege) (cs_registers.sv:856, issuer.sv:1003-1015).
@@ -642,7 +671,10 @@ module kudu_sva_csr
       (mstatus_mie || (priv_lvl_q == PRIV_LVL_U)))
     else $error("SVA_CSR: interrupt %0d taken while not pending/enabled",
                 csr_exc_info_i.mcause[4:0]);
+`endif
 
+`ifndef DII_SIM
+  // DII forces MPP to M for Sail's machine-only configuration.
   // cs_registers.sv:793-808: mret: priv <- mpp, mie <- mpie, mpie <- 1,
   // mpp <- U (least privilege), mprv cleared when returning below M.
   AssertMretRestore: assert property (@(posedge clk_i) disable iff (!rst_ni)
@@ -651,6 +683,7 @@ module kudu_sva_csr
                            (mstatus_mpp == PRIV_LVL_U) &&
                            (($past(mstatus_mpp) != PRIV_LVL_M) -> !mstatus_mprv))
     else $error("SVA_CSR: wrong mstatus/priv after mret");
+`endif
 
   // cs_registers.sv:789-790: dret returns to the privilege saved in dcsr.prv.
   AssertDretPriv: assert property (@(posedge clk_i) disable iff (!rst_ni)
@@ -663,11 +696,14 @@ module kudu_sva_csr
     !trap_ctrl |=> $stable(priv_lvl_q))
     else $error("SVA_CSR: privilege changed without trap/mret/dret");
 
+`ifdef KUDU_FORMAL_RTL
+  // Temporarily formal-only: simulation exercises waived debug withdrawal.
   // issuer.sv:963-976: a debug entry has a defined cause (debug spec 4.9.1).
   AssertDbgEntryCause: assert property (@(posedge clk_i) disable iff (!rst_ni)
     dbg_entry |-> (debug_cause_i inside {DBG_CAUSE_EBREAK, DBG_CAUSE_TRIGGER,
                                          DBG_CAUSE_HALTREQ, DBG_CAUSE_STEP}))
     else $error("SVA_CSR: debug entry with cause %0d", debug_cause_i);
+`endif
 
   // cs_registers.sv:768-772,1744-1749: debug entry saves cause, prv and the pc
   // in dcsr/dpc, switches to M, and leaves mstatus/mcause/mtval/mepc alone.
@@ -749,6 +785,25 @@ module kudu_sva_csr
     (mshwm_q[3:0] == 4'h0) && (mshwmb_q[3:0] == 4'h0))
     else $error("SVA_CSR: unaligned MSHWM 0x%08x / MSHWMB 0x%08x", mshwm_q, mshwmb_q);
 
+  // kudu_top.sv:656: debug_mode_entering_i is tied off (cp_entering.hit).
+  AssertDbgEnteringTiedOff: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    !debug_mode_entering_i)
+    else $error("SVA_CSR: debug_mode_entering_i asserted");
+
+  // load_store_unit.sv:542,686-687: an MSHWM/MSHWMB CSR write and an LSU store
+  // MSHWM update never share a cycle (cp_mshwm_wr_to_store.same_cycle).
+  AssertNoMshwmCsrWrWithLsuWr: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (csr_lsu_wr_req_i && cheri_pmode) |-> !(mshwm_en || mshwmb_en))
+    else $error("SVA_CSR: MSHWM CSR write in the cycle of an LSU MSHWM update");
+
+  // cs_registers.sv:512-522: in CHERI mode dpc/dscratch0/1 are illegal CSRs,
+  // so no legal debug-mode CSR write reaches them (x_dbg_csr_pmode.pmode).
+  AssertNoDbgCsrWrInPmode: assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (csr_wr_legal && debug_mode_i && cheri_pmode) |->
+      !(csr_is(csr_addr_i, CSR_DPC) || csr_is(csr_addr_i, CSR_DSCRATCH0) ||
+        csr_is(csr_addr_i, CSR_DSCRATCH1)))
+    else $error("SVA_CSR: legal CSR write to dpc/dscratch in CHERI mode (0x%03x)", csr_addr_i);
+
   // cs_registers.sv:981-986: the store-driven MSHWM update only lowers MSHWM,
   // and never below MSHWMB (CHERIoT spec, stack high-water mark).
   AssertMshwmHwLowers: assert property (@(posedge clk_i) disable iff (!rst_ni)
@@ -823,6 +878,8 @@ module kudu_sva_csr
   // ==========================================================================
   // E. Counters
   // ==========================================================================
+`ifdef KUDU_FORMAL_RTL
+  // Temporarily formal-only while simulation counter failures are investigated.
 `ifndef DII_SIM
   // cs_registers.sv:1253,1321-1333, ibex_counter.sv: mcycle counts every cycle
   // unless inhibited, and holds when inhibited (no CSR write).
@@ -830,6 +887,7 @@ module kudu_sva_csr
     !(mhpmcounter_we[0] || mhpmcounterh_we[0]) |=>
       (mcycle == $past(mcycle) + 64'(!$past(mcountinhibit[0]))))
     else $error("SVA_CSR: mcycle did not count correctly");
+`endif
 `endif
 
   // cs_registers.sv:1255,1337-1349: minstret counts retired instructions

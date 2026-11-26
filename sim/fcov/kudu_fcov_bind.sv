@@ -189,7 +189,9 @@ bind ir_stage kudu_sva_id #(
 // ---------------------------------------------------------------------------
 // FC_MA_ISSUE -> issuer
 // ---------------------------------------------------------------------------
-bind issuer kudu_fcov_issue u_fcov_issue (
+bind issuer kudu_fcov_issue #(
+  .AllowWaW(AllowWaW), .AltEnable(AltEnable)
+) u_fcov_issue (
   .*,
 
   // The fwd_act buses are 32-bit per-register masks; the coverage model only
@@ -290,7 +292,7 @@ bind ls_pipeline kudu_fcov_lsu u_fcov_lsu (
 // dcache_i and cheri_trvk_stage_i live inside generate blocks in ls_pipeline
 // (:359 unnamed, :383 gen_trvk), so they are bound by module name instead of
 // reached through a hierarchical path that would break with the config.
-bind dcache kudu_fcov_dcache u_fcov_dcache (.*);
+bind dcache kudu_fcov_dcache #(.TagHi(TagHi)) u_fcov_dcache (.*);
 
 // The testbench and syntax checker keep CHERIoT aligned with CHERIoTEn;
 // kudu_top also sets LoadFiltEn from CHERIoTEn, so RV32 builds have no target.

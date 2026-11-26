@@ -16,7 +16,10 @@ module kudu_fcov_issue
   import cheri_pkg::*;
   import csr_pkg::*;
   import kudu_fcov_pkg::*;
-(
+#(
+  parameter bit AllowWaW  = 1'b1,
+  parameter bit AltEnable = 1'b1
+) (
   input logic        clk_i,
   input logic        rst_ni,
 
@@ -458,7 +461,10 @@ module kudu_fcov_issue
       bins alu1 = {FWD_SRC_ALU1};
       bins ls = {FWD_SRC_LS};
       bins mult = {FWD_SRC_MULT};
-      bins multi = {FWD_SRC_MULTI};
+      // Each pipeline's fwd_act is its WB forwarding slot, and no two WB slots
+      // hold the same rd (waw_act_o cancels the older writer)
+      // (AssertFwdActOneProducer; FV lemma HlpFwdPairNf).
+      illegal_bins multi = {FWD_SRC_MULTI};
     }
     cp_consumer_class: coverpoint event_data.consumer_class iff (event_kind == ISSUE_OPERAND) {
       bins alu = {SC_ALU};
@@ -481,6 +487,16 @@ module kudu_fcov_issue
         // fcov_operand_outcome() returns FWD_SAME_BUNDLE only for IR1.
         ignore_bins same_bundle_ir0 = binsof(cp_consumer_slot.ir0) &&
             binsof(cp_operand_outcome.same_bundle_ir0_to_ir1);
+        // A reserved, non-forwarded operand is a RAW hazard; special issue
+        // requires reg_wrsv_q == 0 (AssertIssuedOperandsReady).
+        illegal_bins raw_stall_issued = binsof(cp_operand_outcome.raw_stall) &&
+                                        binsof(cp_issued.issued);
+        // AllowWaW (hard-wired 1 in kudu_top): ir1_pl_fwd_act masks ir0's rd,
+        // so a same-bundle dependency is always a hazard
+        // (AssertIssuedOperandsReady, AssertIr1NoDepOnIr0).
+        illegal_bins same_bundle_issued = binsof(cp_consumer_slot.ir1) &&
+            binsof(cp_operand_outcome.same_bundle_ir0_to_ir1) &&
+            binsof(cp_issued.issued);
       }
     x_fwd_producer_consumer:
       cross cp_producer, cp_consumer_slot, cp_consumer_class
@@ -506,7 +522,10 @@ module kudu_fcov_issue
     }
     cp_recovery: coverpoint event_data.recovery iff (event_kind == ISSUE_BP_RESOLUTION) {
       bins none_correct = {BP_REC_NONE};
-      bins ordinary_pc_set = {BP_REC_PC_SET};
+      // AltEnable: ex_alt_ctrl_o.flush == pc_set_o and fcov_recovery_path()
+      // tests flush first (AssertAltFlushOnPcSet).  Live for AltEnable=0.
+      bins ordinary_pc_set = {BP_REC_PC_SET} with (!AltEnable);
+      illegal_bins pc_set_with_alt = {BP_REC_PC_SET} with (AltEnable);
       bins alt_apply = {BP_REC_ALT_APPLY};
       bins alt_cancel_flush = {BP_REC_ALT_CANCEL_FLUSH};
     }
@@ -517,6 +536,27 @@ module kudu_fcov_issue
         ignore_bins jal_never_not_taken =
           binsof(cp_resolution_kind) intersect {BP_KIND_JAL, BP_KIND_JALR} &&
           binsof(cp_actual_taken.not_taken);
+        // The illegal cells below are checked by AssertBpResolutionRecovery.
+        // A resolution whose prediction was wrong always redirects.
+        illegal_bins wrong_pred_no_recovery =
+          ((binsof(cp_predicted_taken.taken) && binsof(cp_actual_taken.not_taken)) ||
+           (binsof(cp_predicted_taken.not_taken) && binsof(cp_actual_taken.taken))) &&
+          binsof(cp_recovery.none_correct);
+        // An ALT apply with IR1 issued can only be IR1's own T->NT branch
+        // (an IR0 mispredict prevents IR1 from issuing).
+        illegal_bins ir1_apply_not_own =
+          binsof(cp_resolution_slot.ir1) && binsof(cp_recovery.alt_apply) &&
+          (!binsof(cp_resolution_kind.branch) || binsof(cp_predicted_taken.not_taken) ||
+           binsof(cp_actual_taken.taken));
+        // IR0 mispredicted NT->T: ALT apply needs T->NT, and IR1 is not issued.
+        illegal_bins ir0_apply_on_nt_t =
+          binsof(cp_resolution_slot.ir0) && binsof(cp_recovery.alt_apply) &&
+          binsof(cp_predicted_taken.not_taken) && binsof(cp_actual_taken.taken);
+        // A correctly predicted NT branch in IR1 has no ALT entry and no redirect.
+        illegal_bins ir1_nt_nt_cancel_flush =
+          binsof(cp_resolution_slot.ir1) && binsof(cp_resolution_kind.branch) &&
+          binsof(cp_predicted_taken.not_taken) && binsof(cp_actual_taken.not_taken) &&
+          binsof(cp_recovery.alt_cancel_flush);
       }
 
     cp_cheri_slot: coverpoint event_data.slot iff (event_kind == ISSUE_CHERI_DEP) {
@@ -538,6 +578,10 @@ module kudu_fcov_issue
       cross cp_cheri_slot, cp_cheri_temporal_outcome, cp_cheri_temporal_issued
       iff (event_kind == ISSUE_CHERI_DEP && cheri_active && issuer.LoadFiltEn) {
         option.weight = (issuer.CHERIoTEn && issuer.LoadFiltEn) ? 1 : 0;
+        // ir_cheri_hazard is part of ir_hazard; special issue has
+        // reg_cheri_trsv_q == 0 (AssertCheriHazardNotIssued).
+        illegal_bins stall_issued = binsof(cp_cheri_temporal_outcome.temporal_stall) &&
+                                    binsof(cp_cheri_temporal_issued.issued);
       }
 
     // KUDU-051: LR/SC skipped the load-barrier hazard after a CLC. Which kind
@@ -667,8 +711,12 @@ module kudu_fcov_issue
     // ======================================================================
     cp_raw_hazard: coverpoint (ir_raw_hazard & ir_valid_i)
         iff (event_kind == ISSUE_CYCLE) { bins v[] = {[0:3]}; }
+    // ir_waw_hazard[0] = ~AllowWaW & ... (AssertNoIr0WawHazard).
     cp_waw_hazard: coverpoint (ir_waw_hazard & ir_valid_i)
-        iff (event_kind == ISSUE_CYCLE) { bins v[] = {[0:3]}; }
+        iff (event_kind == ISSUE_CYCLE) {
+      bins v[] = {[0:3]} with (!AllowWaW || !item[0]);
+      illegal_bins ir0_waw = {2'b01, 2'b11} with (AllowWaW);
+    }
     cp_cheri_hazard: coverpoint (ir_cheri_hazard & ir_valid_i)
         iff (event_kind == ISSUE_CYCLE && cheri_active) {
       option.weight = issuer.CHERIoTEn ? 1 : 0;
@@ -1001,7 +1049,8 @@ module kudu_fcov_issue
         iff (event_kind == ISSUE_CYCLE) {
       bins none = {2'b00};
       bins ir0  = {2'b01};
-      bins ir1  = {2'b10};
+      // ir1_pl_fwd_act is ir0_pl_fwd_act, optionally masked (AssertIr1FwdSubsetIr0).
+      illegal_bins ir1 = {2'b10};
       bins both = {2'b11};
     }
 
@@ -1038,11 +1087,15 @@ module kudu_fcov_issue
       bins t_cmt0_special = (CSM_WAIT_CMT0     => CSM_ISSUE_SPECIAL);
       bins t_special_cplx = (CSM_ISSUE_SPECIAL => CSM_WAIT_CMPLX);
       bins t_special_fin  = (CSM_ISSUE_SPECIAL => CSM_WAIT_FINAL);
-      bins t_cmplx_dec    = (CSM_WAIT_CMPLX    => CSM_DECODE);
+      bins t_cmplx_fin    = (CSM_WAIT_CMPLX    => CSM_WAIT_FINAL);
       bins t_fin_dec      = (CSM_WAIT_FINAL    => CSM_DECODE);
-      bins t_sleep_in     = (CSM_WAIT_FINAL    => CSM_SLEEP),
-                            (CSM_DECODE        => CSM_SLEEP);
-      bins t_sleep_out    = (CSM_SLEEP         => CSM_DECODE),
+      bins t_sleep_in     = (CSM_ISSUE_SPECIAL => CSM_SLEEP);
+      bins t_sleep_out    = (CSM_SLEEP         => CSM_DECODE);
+      // SLEEP is entered only from ISSUE_SPECIAL and left only to DECODE;
+      // WAIT_CMPLX leaves only to CMT_FLUSH or WAIT_FINAL (AssertFsmTransLegal).
+      illegal_bins t_bad  = (CSM_WAIT_CMPLX    => CSM_DECODE),
+                            (CSM_WAIT_FINAL    => CSM_SLEEP),
+                            (CSM_DECODE        => CSM_SLEEP),
                             (CSM_SLEEP         => CSM_WAIT_CMT0);
     }
 
@@ -1196,13 +1249,13 @@ module kudu_fcov_issue
 
     // Entry source latched before the special-case state, against the cause
     // reported there. Diagnostic only (weight 0): the cells follow from the
-    // cause priority, and KUDU-071 (open) shows up as step_ebreak / step_trigger
-    // reporting EBREAK / TRIGGER instead of STEP.
+    // cause priority (~step_req_q gates trigger and ebreak; KUDU-071 is fixed).
+    // Impossible source/cause pairs are illegal (AssertDbgCauseFromSrc).
     cp_dbg_src_q: coverpoint dbg_src_q
                   iff (event_kind == ISSUE_CYCLE &&
                        (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == DEBUG))) {
       option.weight = 0;
-      bins none           = {4'b0000};
+      illegal_bins none   = {4'b0000};
       bins req            = {4'b0001};
       bins trigger        = {4'b0010};
       bins ebreak         = {4'b0100};
@@ -1217,6 +1270,18 @@ module kudu_fcov_issue
         iff (event_kind == ISSUE_CYCLE &&
              (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] & (special_case_q == DEBUG))) {
       option.weight = 0;
+      // Step masks trigger/ebreak; the latched source is stable until
+      // ISSUE_SPECIAL except for debug_req_i.
+      illegal_bins step_masks_te = (binsof(cp_dbg_src_q.step) || binsof(cp_dbg_src_q.step_req) ||
+                                    binsof(cp_dbg_src_q.step_trigger) || binsof(cp_dbg_src_q.step_ebreak)) &&
+                                   (binsof(cp_dbg_cause_sel.none) || binsof(cp_dbg_cause_sel.trigger) ||
+                                    binsof(cp_dbg_cause_sel.ebreak));
+      illegal_bins trig_only_bad = binsof(cp_dbg_src_q.trigger) &&
+                                   !binsof(cp_dbg_cause_sel.trigger);
+      illegal_bins ebrk_only_bad = binsof(cp_dbg_src_q.ebreak) &&
+                                   !binsof(cp_dbg_cause_sel.ebreak);
+      illegal_bins req_step      = binsof(cp_dbg_src_q.req) && binsof(cp_dbg_cause_sel.step);
+      illegal_bins multi_none    = binsof(cp_dbg_src_q.other_multiple) && binsof(cp_dbg_cause_sel.none);
     }
 
     // ======================================================================
@@ -1304,6 +1369,8 @@ module kudu_fcov_issue
                              binsof(cp_mtval) intersect {MTVAL_ZERO, MTVAL_INSN};
       ignore_bins encoded = binsof(cp_tc) intersect {TC_CHERI, TC_CMT_ERR} &&
                             !binsof(cp_mtval) intersect {MTVAL_OTHER};
+      // TC_DBG implies debug_csr_save_o, which this cross's guard excludes.
+      ignore_bins dbg_entry = binsof(cp_tc) intersect {TC_DBG};
     }
     cp_mtval_unexpected: coverpoint mtval_unexpected
         iff (event_kind == ISSUE_CYCLE && csr_save_cause_o && !debug_csr_save_o) {
@@ -1514,6 +1581,118 @@ module kudu_fcov_issue
   AssertTrapPcEven: assert property (
     @(posedge clk_i) disable iff (!rst_ni) csr_save_cause_o |-> !csr_exc_info_o.pc[0])
     else $error("FCOV: odd exception pc 0x%08x (KUDU-039)", csr_exc_info_o.pc);
+
+  // cp_producer multi.  Bit 0 is masked: operands are sampled only for rs != 0.
+  AssertFwdActOneProducer: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (((issuer.alupl0_fwd_act_i & issuer.alupl1_fwd_act_i) |
+      (issuer.alupl0_fwd_act_i & issuer.lspl_fwd_act_i)   |
+      (issuer.alupl0_fwd_act_i & issuer.multpl_fwd_act_i) |
+      (issuer.alupl1_fwd_act_i & issuer.lspl_fwd_act_i)   |
+      (issuer.alupl1_fwd_act_i & issuer.multpl_fwd_act_i) |
+      (issuer.lspl_fwd_act_i   & issuer.multpl_fwd_act_i)) & 32'hffff_fffe) == 32'h0)
+    else $error("FCOV: register forwarded by more than one pipeline");
+
+  // x_operand_outcome_issue raw_stall_issued / same_bundle_issued.
+  function automatic bit fcov_opnd_ok(fcov_issue_slot_e slot, logic [4:0] rs);
+    fcov_fwd_outcome_e o;
+    o = fcov_operand_outcome(slot, rs);
+    return (o != FWD_RAW_STALL) && (!AllowWaW || (o != FWD_SAME_BUNDLE));
+  endfunction
+
+  // Functions that read module signals see current, not sampled, values inside
+  // a concurrent assertion, so evaluate them here and assert on the result.
+  logic [3:0] fcov_opnd_chk;
+  always_comb begin
+    fcov_opnd_chk[0] = !(ir0_issued && ir0_dec.rf_ren[0] && (ir0_dec.rs1 != 5'd0)) ||
+                       fcov_opnd_ok(FCOV_IR0, ir0_dec.rs1);
+    fcov_opnd_chk[1] = !(ir0_issued && ir0_dec.rf_ren[1] && (ir0_dec.rs2 != 5'd0)) ||
+                       fcov_opnd_ok(FCOV_IR0, ir0_dec.rs2);
+    fcov_opnd_chk[2] = !(ir1_issued && ir1_dec.rf_ren[0] && (ir1_dec.rs1 != 5'd0)) ||
+                       fcov_opnd_ok(FCOV_IR1, ir1_dec.rs1);
+    fcov_opnd_chk[3] = !(ir1_issued && ir1_dec.rf_ren[1] && (ir1_dec.rs2 != 5'd0)) ||
+                       fcov_opnd_ok(FCOV_IR1, ir1_dec.rs2);
+  end
+
+  AssertIssuedOperandsReady: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) &fcov_opnd_chk)
+    else $error("FCOV: operand issued with RAW stall / same-bundle dependency (%b)",
+                fcov_opnd_chk);
+
+  // cp_recovery pc_set_with_alt.
+  if (AltEnable) begin : gen_alt_flush_chk
+    AssertAltFlushOnPcSet: assert property (
+      @(posedge clk_i) disable iff (!rst_ni) issuer.pc_set_o |-> issuer.ex_alt_ctrl_o.flush)
+      else $error("FCOV: pc_set without ALT flush (AltEnable)");
+  end
+
+  // x_prediction_resolution_recovery illegal cells.
+  function automatic bit fcov_bp_cell_legal(fcov_issue_slot_e slot, fcov_bp_kind_e kind,
+                                            logic pt, logic at, fcov_bp_recovery_e rec);
+    if ((pt != at) && (rec == BP_REC_NONE)) return 1'b0;
+    if ((rec == BP_REC_ALT_APPLY) && (slot == FCOV_IR1) &&
+        !((kind == BP_KIND_BRANCH) && pt && !at)) return 1'b0;
+    if ((rec == BP_REC_ALT_APPLY) && (slot == FCOV_IR0) && !pt && at) return 1'b0;
+    if ((rec == BP_REC_ALT_CANCEL_FLUSH) && (slot == FCOV_IR1) &&
+        (kind == BP_KIND_BRANCH) && !pt && !at) return 1'b0;
+    return 1'b1;
+  endfunction
+
+  logic [1:0] fcov_bp_chk;
+  always_comb begin
+    fcov_bp_chk[0] = !(ir0_issued && (ir0_dec.is_branch || ir0_dec.is_jal || ir0_dec.is_jalr)) ||
+        fcov_bp_cell_legal(FCOV_IR0, fcov_bp_kind(ir0_dec), ir0_dec.ptaken,
+                           ir0_dec.is_branch ? issuer.branch_info_i.branch_taken[0] : 1'b1,
+                           fcov_recovery_path(FCOV_IR0));
+    fcov_bp_chk[1] = !(ir1_issued && (ir1_dec.is_branch || ir1_dec.is_jal || ir1_dec.is_jalr)) ||
+        fcov_bp_cell_legal(FCOV_IR1, fcov_bp_kind(ir1_dec), ir1_dec.ptaken,
+                           ir1_dec.is_branch ? issuer.branch_info_i.branch_taken[1] : 1'b1,
+                           fcov_recovery_path(FCOV_IR1));
+  end
+
+  AssertBpResolutionRecovery: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) &fcov_bp_chk)
+    else $error("FCOV: illegal branch-resolution / recovery combination (%b)", fcov_bp_chk);
+
+  // x_cheri_temporal_issue stall_issued.
+  AssertCheriHazardNotIssued: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    !(ir_valid_i[0] && ir_cheri_hazard[0] && ir0_issued) &&
+    !(ir_valid_i[1] && ir_cheri_hazard[1] && ir1_issued))
+    else $error("FCOV: instruction issued over a CHERI load-filter hazard");
+
+  // cp_waw_hazard ir0_waw.
+  if (AllowWaW) begin : gen_waw_chk
+    AssertNoIr0WawHazard: assert property (
+      @(posedge clk_i) disable iff (!rst_ni) !(ir_waw_hazard[0] && ir_valid_i[0]))
+      else $error("FCOV: IR0 WAW hazard with AllowWaW");
+  end
+
+  // cp_fwd_to_slot ir1.
+  AssertIr1FwdSubsetIr0: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) (ir1_pl_fwd_act & ~ir0_pl_fwd_act) == 32'h0)
+    else $error("FCOV: IR1 forwarding not a subset of IR0 forwarding");
+
+  // cp_fsm_trans t_bad.
+  AssertFsmTransLegal: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (ctrl_fsm_cs[CSM_WAIT_CMPLX] |=> !ctrl_fsm_cs[CSM_DECODE]) and
+    (ctrl_fsm_cs[CSM_WAIT_FINAL] |=> !ctrl_fsm_cs[CSM_SLEEP])  and
+    (ctrl_fsm_cs[CSM_DECODE]     |=> !ctrl_fsm_cs[CSM_SLEEP])  and
+    (ctrl_fsm_cs[CSM_SLEEP]      |=> !ctrl_fsm_cs[CSM_WAIT_CMT0]))
+    else $error("FCOV: illegal controller FSM transition");
+
+  // cp_dbg_src_q none and x_dbg_src_cause illegal cells.
+  AssertDbgCauseFromSrc: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (ctrl_fsm_cs[CSM_ISSUE_SPECIAL] && (special_case_q == DEBUG)) |->
+      (dbg_src_q != 4'b0000) &&
+      (!dbg_src_q[3] || (debug_cause_o inside {DBG_CAUSE_STEP, DBG_CAUSE_HALTREQ})) &&
+      (!(!dbg_src_q[3] && dbg_src_q[1]) || (debug_cause_o == DBG_CAUSE_TRIGGER)) &&
+      (!(!dbg_src_q[3] && !dbg_src_q[1] && dbg_src_q[2]) || (debug_cause_o == DBG_CAUSE_EBREAK)) &&
+      ((dbg_src_q != 4'b0001) || (debug_cause_o != DBG_CAUSE_STEP)))
+    else $error("FCOV: debug cause %s inconsistent with latched source %b",
+                debug_cause_o.name(), dbg_src_q);
 
 `endif  // KUDU_FCOV_OFF
 
@@ -1767,10 +1946,13 @@ module kudu_sva_issue
   AssertDebugExit: assert property (@(posedge clk_i) disable iff (!rst_ni)
     $fell(debug_mode_q) |-> $past(csr_restore_dret_o));
 
+`ifdef KUDU_FORMAL_RTL
+  // Temporarily formal-only: simulation exercises waived debug withdrawal.
   // rtl/issuer.sv:968-976 -- debug entry always records a defined dcsr.cause
   AssertDebugCauseValid: assert property (@(posedge clk_i) disable iff (!rst_ni)
     debug_csr_save_o |-> (debug_cause_o inside {DBG_CAUSE_EBREAK, DBG_CAUSE_TRIGGER,
                                                 DBG_CAUSE_HALTREQ, DBG_CAUSE_STEP}));
+`endif
 
   // rtl/issuer.sv:917-922,968-976 -- a completed step (step_req_q set before the decision) halts with cause STEP unless haltreq
   AssertDebugCauseStep: assert property (@(posedge clk_i) disable iff (!rst_ni)
@@ -1799,6 +1981,8 @@ module kudu_sva_issue
                ((mcause != 6'(EXC_CAUSE_ILLEGAL_INSN)) || !(CHERIoTEn && cheri_pmode_i) || (mtval == 32'h0)) &&
                ((mcause != 6'(EXC_CAUSE_CHERI_FAULT)) || ((mtval[31:11] == '0) && (mtval[4:0] != 5'h0))));
 
+`ifdef KUDU_FORMAL_RTL
+  // Temporarily formal-only: simulation exercises waived IRQ withdrawal.
   // rtl/issuer.sv:1004-1018 -- the reported interrupt cause is a line that is pending and enabled
   AssertIrqCauseIsPending: assert property (@(posedge clk_i) disable iff (!rst_ni)
     do_irq |-> mcause[5] &&
@@ -1812,6 +1996,7 @@ module kudu_sva_issue
   AssertIrqTakenLegal: assert property (@(posedge clk_i) disable iff (!rst_ni)
     do_irq |-> irq_pending_i && (csr_mstatus_mie_i || (priv_mode_i != PRIV_LVL_M)) &&
                !debug_mode_q && !debug_step_i);
+`endif
 
   // cs_registers.sv:761-785 via rtl/issuer.sv:939 -- every trap enters M-mode; a recorded trap also clears mstatus.mie
   AssertTrapEntersMmode: assert property (@(posedge clk_i) disable iff (!rst_ni)

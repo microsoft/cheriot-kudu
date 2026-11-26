@@ -20,7 +20,7 @@ from check_isa_encoding_sets import expected
 from generate_isa_operand_crosses import generate
 import isa_operand_reference as ref
 
-CASES = ("semantics", "bins", "families", "cd", "tap", "revocation", "pairs")
+CASES = ("semantics", "bins", "families", "cd", "tap", "revocation", "pairs", "permissions")
 
 
 def inputs(root):
@@ -48,11 +48,12 @@ def inputs(root):
     assert len(vectors) == 1056, len(vectors)
     with (root / "vectors.hex").open("x") as output:
         output.writelines(f"{word:016x}\n" for word in vectors)
-    with (root / "pairs.hex").open("x") as output:
-        for name, word, mode, kind, cs1, cs2 in ref.pair_vectors():
-            rs1 = min(ref.registers(name, mode, 0) - {0})
-            rs2 = min(ref.registers(name, mode, 1) - {0})
-            output.write(f"{word:08x} {mode:x} {kind:x} {rs1:x} {rs2:x} {cs1:017x} {cs2:017x}\n")
+    for case, vectors in (("pairs", ref.pair_vectors), ("permissions", ref.permission_vectors)):
+        with (root / f"{case}.hex").open("x") as output:
+            for name, word, mode, kind, cs1, cs2 in vectors():
+                rs1 = min(ref.registers(name, mode, 0) - {0})
+                rs2 = min(ref.registers(name, mode, 1) - {0})
+                output.write(f"{word:08x} {mode:x} {kind:x} {rs1:x} {rs2:x} {cs1:017x} {cs2:017x}\n")
 
 
 def instance_report(path):
@@ -113,6 +114,20 @@ def check(root):
                     "missing", list(wanted.keys() - actual.keys())[:3],
                     "counts", [(k, actual[k], wanted[k]) for k in actual.keys() &
                                wanted.keys() if actual[k] != wanted[k]][:3])
+        focused = ref.permission_hits(hw)
+        for name, wanted in focused.items():
+            actual = cross_hits(reports["permissions"], name, len(schema[name]))
+            assert actual == wanted, (hw, name, "permission hits",
+                "extra", list(actual.keys() - wanted.keys())[:3],
+                "missing", list(wanted.keys() - actual.keys())[:3],
+                "counts", [(k, actual[k], wanted[k]) for k in actual.keys() &
+                           wanted.keys() if actual[k] != wanted[k]][:3])
+            if "_rs2_cperms" not in name:
+                assert len(actual) == expected_goals[name], (hw, name, len(actual), expected_goals[name])
+        if not hw:
+            assert all(not cross_hits(reports["permissions"], name, len(axes))
+                       for name, axes in schema.items() if "permissions" in name or
+                       name.endswith(("permission_bits", "permission_relation", "unseal_global")))
         for suffix, insn in (("pcc_immediate", "AUIPCC"), ("immediate", "CSETBOUNDSIMM"),
                              ("immediate", "CINCADDRIMM")):
             name = "x_cheri_" + suffix

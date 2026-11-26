@@ -37,6 +37,12 @@ DEST = set("cscrrw csetbounds csetboundsex csetboundsrndn cseal cunseal candperm
 TRANSFORMS = set("csetbounds csetboundsex csetboundsrndn csetboundsimm cseal cunseal candperm "
                  "csetaddr cincaddr cmove ccleartag cincaddrimm auicgp c_incaddr4cspn c_incaddr16csp".split())
 BOUNDS = set("csetbounds csetboundsex csetboundsrndn csetboundsimm".split())
+PERMISSION_BITS = ("GL", "LG", "SD", "LM", "SL", "LD", "MC", "SR", "EX", "US", "SE", "U0")
+PERMISSION_NAMES = ("global", "load_global", "store", "load_mutable", "store_local",
+                    "load", "capability", "system_register", "execute", "unseal",
+                    "seal", "user0")
+ACCESS = (INT_MEMORY - {"jalr", "c_jr", "c_jalr"}) | set(
+    "clc csc c_clc c_clcsp c_csc c_cscsp".split())
 
 
 def cheri(family):
@@ -148,6 +154,26 @@ def permissions(code):
     return result | base | {bit for i, bit in enumerate(bits) if code & (1 << i)}
 
 
+def permission_category(code):
+    lower = code & 31
+    if lower >= 24:
+        return "memory_capability"
+    if lower >= 20:
+        return "load_capability"
+    if lower == 16:
+        return "store_capability"
+    if lower >= 16:
+        return "data_only"
+    return "execute" if lower >= 8 else "sealing"
+
+
+def permission_profile(code, detailed):
+    category = permission_category(code)
+    if category in detailed and category != "store_capability":
+        return f"{category}_{code & 31:02x}"
+    return category
+
+
 def destination_values(name, field):
     if field == "tag" and name in {"ccleartag", "csethigh"}:
         return (0,)
@@ -187,6 +213,15 @@ def allowed_pair(name, second, field, source, dest):
     return True
 
 
+# Tagged values excluded by the tagged_reserved / tagged_above_max illegal bins.
+ILLEGAL_TAGGED = {"reserved": 1, "cexp": 6}
+
+
+def legal_capability(capability):
+    reserved, cexp = (capability >> 63) & 1, (capability >> 49) & 31
+    return not (capability >> 64) & 1 or (not reserved and not 1 <= cexp <= 6)
+
+
 def denominators(hardware):
     goals = Counter()
     per_instruction = {}
@@ -218,10 +253,15 @@ def denominators(hardware):
                 counts[prefix + f"cs{r}_address"] = 2 * len(addresses) - int(not s and 0 in addresses)
                 for field in FIELDS:
                     if not s and field != "tag":
-                        counts[prefix + f"cs{r}_{field}"] = 2 * len(DOMAINS[field])
+                        counts[prefix + f"cs{r}_{field}"] = 2 * (
+                            6 if field == "cperms" else len(DOMAINS[field])) - \
+                            ILLEGAL_TAGGED.get(field, 0)
                     if name in DEST and field == "tag":
                         for src in DOMAINS[field]:
                             for dst in destination_values(name, field):
+                                # Control-family jumps always link a tagged capability.
+                                if family == "control" and dst == 0:
+                                    continue
                                 if allowed_pair(name, s, field, src, dst):
                                     factor = (sum(allowed_pair(name, 0, "tag", t, dst)
                                                   for t in range(2)) if field == "tag" and s else
@@ -239,16 +279,36 @@ def denominators(hardware):
                 counts[prefix + f"rs{s+1}_immediate"] = 7 * imm if integers[s] else 0
         if hardware and name in DEST and (not has[0] or name == "cscrrw"):
             for field in ("tag",):
-                counts[prefix + f"cd_no_cs1_{field}"] = len(destination_values(name, field))
+                counts[prefix + f"cd_no_cs1_{field}"] = sum(
+                    family != "control" or value for value in destination_values(name, field))
         if all(caps):
             for field in FIELDS:
-                counts[prefix + f"cs1_cs2_{field}"] = len(DOMAINS[field]) ** 2 * (
-                    1 if field == "tag" else 2)
+                size = 6 if field == "cperms" else len(DOMAINS[field])
+                counts[prefix + f"cs1_cs2_{field}"] = size ** 2 * (
+                    1 if field == "tag" else 2) - ILLEGAL_TAGGED.get(field, 0) * size
         if caps[0] and has[1] and not caps[1]:
             for field in FIELDS:
-                count = len(DOMAINS[field]) * (1 if field == "tag" else 2)
+                count = (6 if field == "cperms" else len(DOMAINS[field])) * (
+                    1 if field == "tag" else 2) - ILLEGAL_TAGGED.get(field, 0)
                 counts[prefix + f"cs1_rs2_{field}"] = count * 7
                 counts[prefix + f"cs1_rs2_{field}_size"] = count * 33
+        if hardware and caps[0]:
+            if name in ACCESS or family == "atomic":
+                counts[prefix + "access_permissions"] = 18 * 2
+            if name in {"jalr", "c_jr", "c_jalr"}:
+                counts[prefix + "target_permissions"] = 13 * 2
+            if name in {"cseal", "cunseal"}:
+                counts[prefix + "sealing_permissions"] = 13 * 4
+            if name == "cgetperm":
+                counts[prefix + "permission_bits"] = 24 * 2
+            if name == "candperm":
+                counts[prefix + "mask_permissions"] = 48 * 2
+            if name in {"ctestsub", "cseteqx"}:
+                counts[prefix + "permission_relation"] = 4 * 4
+            if name in {"csc", "c_csc", "c_cscsp"}:
+                counts[prefix + "store_permissions"] = 10 * 4
+            if name == "cunseal":
+                counts[prefix + "unseal_global"] = 4 * 4
         goals.update(counts)
         per_instruction[name] = counts
     return goals, per_instruction
@@ -270,11 +330,7 @@ def cap_value(field, value, tag):
 
 
 def pair_vectors():
-    words = {}
-    for name, width, base, digits in re.findall(
-            r"\bbins\s+(\w+)\s*=\s*\{(16|32)'([bh])([0-9a-fA-F_?]+)\}", ENCODINGS):
-        words[name.rstrip("_")] = int(digits.replace("_", "").replace("?", "0"),
-                                      2 if base == "b" else 16)
+    words = instruction_words()
     scalars = tuple(dict.fromkeys(
         (0, 1, 0xffffffff, 0x80000000, 0x7fffffff, 17, 0x80000011) +
         tuple(1 << bit for bit in range(32))))
@@ -292,11 +348,43 @@ def pair_vectors():
                         continue
                     cs1 = cap_value(field, a, tag1)
                     cs2 = cap_value(field, b, tag2) if both_caps else b
+                    if not legal_capability(cs1) or (both_caps and not legal_capability(cs2)):
+                        continue
                     for mode in (0, 1):
                         yield name, words[name], mode, 0, cs1, cs2
         for kind in (1, 2, 3, 4):  # Execute trap, issue trap, interrupt, invalid.
             yield name, words[name], 1, kind, cap_value("tag", 1, 0), (
                 cap_value("tag", 0, 0) if both_caps else 17)
+
+
+def instruction_words():
+    from check_isa_encoding_sets import coverage_sets
+
+    words = {}
+    for name, width, base, digits in re.findall(
+            r"\bbins\s+(\w+)\s*=\s*\{(16|32)'([bh])([0-9a-fA-F_?]+)\}", ENCODINGS):
+        name = "cscrrw" if name == "hit" else name.rstrip("_")
+        words[name] = int(digits.replace("_", "").replace("?", "0"),
+                          2 if base == "b" else 16)
+    words.update({name.rstrip("_"): min(values) for name, values in coverage_sets().items()})
+    return words
+
+
+def permission_vectors():
+    words = instruction_words()
+    for name, encoding in RECORDS:
+        if not cap_source(name, encoding, 1, 0):
+            continue
+        both_caps = cap_source(name, encoding, 1, 1)
+        for code1, code2 in product(range(64), range(64) if both_caps else (0, 0xfff)):
+            for tag1, tag2 in product((0, 1), (0, 1) if both_caps else (0,)):
+                cs1 = cap_value("cperms", code1, tag1)
+                cs2 = cap_value("cperms", code2, tag2) if both_caps else code2
+                for mode in (0, 1):
+                    yield name, words[name], mode, 0, cs1, cs2
+        for kind in (1, 2, 3, 4):
+            yield name, words[name], 1, kind, cap_value("cperms", 63, 1), (
+                cap_value("cperms", 0, 1) if both_caps else 0)
 
 
 def cap_bin(field, capability):
@@ -307,7 +395,7 @@ def cap_bin(field, capability):
     if field == "reserved":
         return f"value_{value}"
     if field == "cperms":
-        return f"permissions_{value:02x}"
+        return permission_category(value)
     if field == "otype":
         return "unsealed" if not value else f"{'sentry' if value <= 5 else 'sealed'}_{value}"
     if field == "cexp":
@@ -347,4 +435,70 @@ def pair_hits(hardware):
                 for suffix, value in (("", scalar_bin(cs2)), ("_size", f"bits_{cs2.bit_length()}")):
                     cross = f"x_{family}_cs1_rs2_{field}{suffix}"
                     result.setdefault(cross, Counter())[axes + (value,) + tag] += 1
+    return result
+
+
+def focused_permission_bins(name, encoding, cs1, cs2):
+    family = category(name, encoding)
+    first, second = (cs1 >> 57) & 63, (cs2 >> 57) & 63
+    p1, p2 = permissions(first), permissions(second)
+    instruction = ("auto_ISA_" + name.upper(),)
+    tag1, tag2 = cap_bin("tag", cs1), cap_bin("tag", cs2)
+    result = []
+
+    def add(suffix, value, both=False):
+        axes = instruction + (value,) + ((tag2,) if both else ()) + (tag1,)
+        result.append((f"x_{family}_{suffix}", axes))
+
+    if name in ACCESS or family == "atomic":
+        add("access_permissions", permission_profile(
+            first, {"memory_capability", "load_capability", "data_only"}))
+    if name in {"jalr", "c_jr", "c_jalr"}:
+        add("target_permissions", permission_profile(first, {"execute"}))
+    if name in {"cseal", "cunseal"}:
+        add("sealing_permissions", permission_profile(second, {"sealing"}), True)
+    if name == "cgetperm":
+        for bit, label in zip(PERMISSION_BITS, PERMISSION_NAMES):
+            add("permission_bits", f"{label}_{int(bit in p1)}")
+    if name == "candperm":
+        for index, (bit, label) in enumerate(zip(PERMISSION_BITS, PERMISSION_NAMES)):
+            add("mask_permissions", f"{label}_{int(bit in p1)}{(cs2 >> index) & 1}")
+    if name in {"ctestsub", "cseteqx"}:
+        relation = ("equal" if p1 == p2 else "cs2_subset" if p2 < p1 else
+                    "cs1_subset" if p1 < p2 else "incomparable")
+        add("permission_relation", relation, True)
+    if name in {"csc", "c_csc", "c_cscsp"}:
+        value = (int("SD" in p1) << 3) | (int("MC" in p1) << 2) | (
+            int("SL" in p1) << 1) | int("GL" in p2)
+        label = ("no_store_or_capability" if value < 4 else "capability_no_store" if value < 8
+                 else "data_store_only" if value < 12 else
+                 "capability_store" if value < 14 else "store_local")
+        add("store_permissions", f"{label}_{value:x}", True)
+    if name == "cunseal":
+        value = (int("GL" in p1) << 1) | int("GL" in p2)
+        add("unseal_global", f"global_pair_{value:x}", True)
+    return result
+
+
+def permission_hits(hardware):
+    result = {}
+    if not hardware:
+        return result
+    encodings = dict(RECORDS)
+    for name, word, mode, kind, cs1, cs2 in permission_vectors():
+        if not mode or kind in (2, 3, 4):
+            continue
+        encoding = encodings[name]
+        family = category(name, encoding)
+        first = ("auto_ISA_" + name.upper(), cap_bin("cperms", cs1))
+        tag = (cap_bin("tag", cs1),)
+        bins = [(f"x_{family}_cs1_cperms", first + tag)]
+        if cap_source(name, encoding, 1, 1):
+            bins.append((f"x_{family}_cs1_cs2_cperms", first + (cap_bin("cperms", cs2),) + tag))
+        elif sources(name, encoding)[1] and family in {"memory", "atomic", "cheri"}:
+            for suffix, value in (("", scalar_bin(cs2)), ("_size", f"bits_{cs2.bit_length()}")):
+                bins.append((f"x_{family}_cs1_rs2_cperms{suffix}", first + (value,) + tag))
+        bins += focused_permission_bins(name, encoding, cs1, cs2)
+        for cross, key in bins:
+            result.setdefault(cross, Counter())[key] += 1
     return result

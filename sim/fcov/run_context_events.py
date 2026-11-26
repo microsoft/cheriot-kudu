@@ -28,7 +28,7 @@ def extract(source, pattern):
 
 
 def fixture(source):
-    ir_type = extract(source, r"  typedef enum logic \[3:0\].*?} ir_context_e;")
+    ir_type = extract(source, r"  typedef enum logic \[3:0\] \{\s*IR_LOCAL.*?} ir_context_e;")
     ir_enabled = extract(source, r"  function automatic bit ir_enabled.*?endfunction")
     classifier = extract(source, r"  function automatic ir_context_e classify_ir.*?endfunction")
     taps = extract(source, r"  assign ir0_dec =.*?(?=  if \(!CFG.IrStageBypass\[1\]\))")
@@ -57,8 +57,9 @@ module kudu_top;
   localparam bit CHERIoTEn = 0;
 `endif
   bit clk_i = 0, rst_ni = 0, pmode = 0;
-  typedef enum int {C_ALU_RI = 0, C_AMO = 11, C_ILLEGAL = 18, EMPTY = 31}
+  typedef enum int {C_ALU = 0, C_AMO = 11, C_ILLEGAL = 17, EMPTY = 31}
     context_category_e;
+  typedef enum int {S_ALU = 0, S_ILLEGAL = 9, S_EMPTY = 15} s0_category_e;
   localparam int Alu0Wb = 0, Alu1Wb = 1, LsifDly = 2, LsuReq = 3,
     MultEx2 = 4, MultWb = 5;
   logic [1:0] ir_valid, ir_cmplx_amo, ir_err;
@@ -75,7 +76,10 @@ module kudu_top;
 """ + ir_type + """
   ir_context_e ir_context[2];
   function automatic bit category_enabled(int c);
-    return c inside {C_ALU_RI, EMPTY};
+    return c inside {C_ALU, EMPTY};
+  endfunction
+  function automatic bit s0_enabled(int c);
+    return c inside {S_ALU, S_EMPTY};
   endfunction
   function automatic bit ex_enabled(int c, int stage);
     return category_enabled(c) || c == C_AMO;
@@ -107,7 +111,7 @@ module kudu_top;
     issuer_i.handle_irq = mask[0];
     set_ir(0, ir0, mask);
     set_ir(1, ir1, mask);
-    s0_category = '{s0, s1};
+    s0_category = '{s0 == 31 ? S_EMPTY : s0, s1 == 31 ? S_EMPTY : s1};
     foreach (ex_category[i]) ex_category[i] = ex >= 11 && ex <= 13 ? C_AMO : ex;
     ex_cmplx_amo = ex inside {12, 13} ? '1 : '0;
     #1;
@@ -187,7 +191,8 @@ STAGES = ("frontend", "alu0_wb", "alu1_wb", "lsif_req_dly", "lsu_req",
           "mult_ex2", "mult_wb")
 IR_VALUES = (0, 1, 2, 3, 4, 5, 8, 9)
 IR_STATES = IR_VALUES + (16, 17)  # AMO and stale AMO in an invalid slot.
-CATEGORIES = {0: "category_C_ALU_RI", 31: "category_EMPTY", 11: "category_C_AMO"}
+CATEGORIES = {0: "category_C_ALU", 31: "category_EMPTY", 11: "category_C_AMO"}
+S0_CATEGORIES = {0: "category_S_ALU", 31: "category_S_EMPTY"}
 
 
 def ir_bin(state):
@@ -219,18 +224,20 @@ def samples(exhaustive):
 
 
 def cross_key(frontend, ir0, ir1, event, s0, s1, ex):
-    irs = (ir_bin(ir0), ir_bin(ir1), event)
-    return ((CATEGORIES[s0], CATEGORIES[s1]) + irs if frontend else
-            irs + (CATEGORIES[ex],))
+    irs = (ir_bin(ir0), ir_bin(ir1))
+    return ((S0_CATEGORIES[s0], S0_CATEGORIES[s1]) + irs if frontend else
+            irs + (event, CATEGORIES[ex]))
 
 
 def expected_cross(frontend, exhaustive, factor):
     result = Counter()
     for ir0, ir1, event, s0, s1, ex in product(
-            IR_VALUES, IR_VALUES, EVENTS, (0, 31), (0, 31), CATEGORIES):
-        if ir0 == 8 and (ir1 != 8 or event == "ir0_err"):
+            IR_VALUES, IR_VALUES, (None,) if frontend else EVENTS,
+            (0, 31), (0, 31), CATEGORIES):
+        if ir0 == 8 and ir1 != 8:
             continue
-        if ir1 == 8 and event == "ir1_err":
+        if not frontend and ((ir0 == 8 and event == "ir0_err") or
+                             (ir1 == 8 and event == "ir1_err")):
             continue
         if frontend and s0 == 31 and s1 != 31:
             continue
@@ -238,7 +245,7 @@ def expected_cross(frontend, exhaustive, factor):
     for mask, ir0, ir1, s0, s1, ex in samples(exhaustive):
         if not frontend and (ir0 == 16 or ir1 == 16 or ex in (12, 13)):
             continue
-        for event in events(observed_mask(mask, ir0, ir1)):
+        for event in (None,) if frontend else events(observed_mask(mask, ir0, ir1)):
             key = cross_key(frontend, ir0, ir1, event, s0, s1, 11 if ex in (12, 13) else ex)
             if key in result:
                 result[key] += factor
@@ -313,9 +320,9 @@ def check(root):
                     continue
                 actual = bins(body, name)
                 require(actual == dict(expected), (work, stage, name, actual, expected))
-            name = "x_s0_ir_special" if frontend else "x_ir_special_ex"
+            name = "x_s0_s1" if frontend else "x_ir_special_ex"
             expected = expected_cross(frontend, exhaustive, factor)
-            actual = cross_bins(body, name, 5 if frontend else 4)
+            actual = cross_bins(body, name, 4)
             require(actual == expected, (work, stage, "cross mismatch",
                     "missing", list(expected.keys() - actual.keys())[:5],
                     "extra", list(actual.keys() - expected.keys())[:5],

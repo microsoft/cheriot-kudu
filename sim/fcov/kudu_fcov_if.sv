@@ -154,7 +154,13 @@ module kudu_fcov_if
 
     cp_req:      coverpoint req_i;
     cp_instr_req: coverpoint instr_req_o;
-    cp_busy:     coverpoint {prefetch_busy, if_busy_o};
+    // if_busy_o is prefetch_busy (if_stage.sv:139); the bits cannot differ
+    // (AssertIfBusyEqPrefetchBusy).
+    cp_busy:     coverpoint {prefetch_busy, if_busy_o} {
+      bins idle = {2'b00};
+      bins busy = {2'b11};
+      illegal_bins split = {2'b01, 2'b10};
+    }
 
     // Fetch-side backpressure: the request is up but the bus has not granted.
     cp_req_no_gnt: coverpoint (instr_req_o & ~instr_gnt_i) { bins stalled = {1'b1}; }
@@ -395,7 +401,9 @@ module kudu_fcov_if
     cp_redirect_align: coverpoint ex_pc_target_i[1:0] iff (ex_pc_set_i) {
       bins word = {2'b00};
       bins half = {2'b10};
-      bins misaligned = {2'b01, 2'b11};
+      // All redirect targets are halfword aligned (AssertRedirectTargetEven,
+      // AssertPcTargetEven).
+      illegal_bins misaligned = {2'b01, 2'b11};
     }
 
     cp_alt_flush:  coverpoint ex_alt_ctrl_i.flush  { bins hit = {1'b1}; }
@@ -514,6 +522,13 @@ module kudu_fcov_if
         iff (pdt_en_i && (pdt_pc_set == 2'b11)) {
       ignore_bins non_slot0_winner = binsof(cp_pdt_src) intersect
           {PDT_BR1, PDT_JAL1, PDT_JALR1, PDT_NONE};
+      // pdt_src and pdt_cand0 are both derived from the slot-0 go bits with
+      // the same br > jal > jalr priority, so the slot-0 winner always
+      // matches cand0 (AssertPdtSrcMatchesCand0).
+      illegal_bins src_ne_cand0 =
+          (binsof(cp_pdt_cand0.branch) && binsof(cp_pdt_src) intersect {PDT_JAL0, PDT_JALR0}) ||
+          (binsof(cp_pdt_cand0.jal)    && binsof(cp_pdt_src) intersect {PDT_BR0,  PDT_JALR0}) ||
+          (binsof(cp_pdt_cand0.jalr)   && binsof(cp_pdt_src) intersect {PDT_BR0,  PDT_JAL0});
     }
 
     // The predictor reads only bit 1 of the counter (T/NT); bit 0 (strength) is
@@ -588,6 +603,23 @@ module kudu_fcov_if
   AssertIfValidLegal: assert property (
     @(posedge clk_i) disable iff (!rst_ni) if_valid_o[1] |-> if_valid_o[0])
     else $error("FCOV: if_valid_o == 2'b10");
+
+  AssertIfBusyEqPrefetchBusy: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) if_busy_o == prefetch_busy)
+    else $error("FCOV: if_busy_o != prefetch_busy");
+
+  AssertRedirectTargetEven: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) ex_pc_set_i |-> !ex_pc_target_i[0])
+    else $error("FCOV: odd redirect target 0x%08x", ex_pc_target_i);
+
+  AssertPdtSrcMatchesCand0: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (pdt_en_i && pdt_pc_set[0]) |->
+      ((pdt_cand0 == PDT_CAND_BRANCH && pdt_src == PDT_BR0) ||
+       (pdt_cand0 == PDT_CAND_JAL    && pdt_src == PDT_JAL0) ||
+       (pdt_cand0 == PDT_CAND_JALR   && pdt_src == PDT_JALR0)))
+    else $error("FCOV: slot-0 PDT winner %s does not match candidate %s",
+                pdt_src.name(), pdt_cand0.name());
 
 `endif  // KUDU_FCOV_OFF
 
@@ -1054,14 +1086,15 @@ module kudu_sva_if
     else $error("SVA_IF: slot 1 valid disagrees with buffered data");
 
   // rtl/fetch_fifo64.sv:243-279,162: slot 0 fetch_err/ferr2w match the bus errors of the words it spans
+  // The model is X for a cycle after a speculative fetch returns X data (uninitialised memory); skip those cycles.
   AssertFetchErr0: assert property (@(posedge clk_i) disable iff (!rst_ni)
-    sd_ok_q && fetch_valid[0] |->
+    sd_ok_q && fetch_valid[0] && !$isunknown({exp_err0, exp_f2w0}) |->
       fetch_instr0.errs.fetch_err == exp_err0 && fetch_instr0.ferr2w == exp_f2w0)
     else $error("SVA_IF: slot 0 fetch_err/ferr2w disagrees with response errors");
 
   // rtl/fetch_fifo64.sv:243-279,175: slot 1 fetch_err/ferr2w match the bus errors of the words it spans
   AssertFetchErr1: assert property (@(posedge clk_i) disable iff (!rst_ni)
-    sd_ok_q && fetch_valid[1] |->
+    sd_ok_q && fetch_valid[1] && !$isunknown({exp_err1, exp_f2w1}) |->
       fetch_instr1.errs.fetch_err == exp_err1 && fetch_instr1.ferr2w == exp_f2w1)
     else $error("SVA_IF: slot 1 fetch_err/ferr2w disagrees with response errors");
 

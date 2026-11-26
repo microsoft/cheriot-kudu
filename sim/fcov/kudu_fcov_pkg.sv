@@ -179,6 +179,65 @@ package kudu_fcov_pkg;
     endcase
   endfunction
 
+  typedef enum logic [2:0] {
+    PC_MEMORY, PC_LOAD, PC_STORE, PC_DATA, PC_EXECUTE, PC_SEAL
+  } fcov_cperm_category_e;
+
+  function automatic fcov_cperm_category_e fcov_cperm_category(logic [5:0] cperms);
+    if ($isunknown(cperms[4:0])) return fcov_cperm_category_e'('x);
+    if (cperms[4:3] == 2'b11) return PC_MEMORY;
+    if (cperms[4:2] == 3'b101) return PC_LOAD;
+    if (cperms[4:0] == 5'b10000) return PC_STORE;
+    if (cperms[4:2] == 3'b100) return PC_DATA;
+    if (cperms[4:3] == 2'b01) return PC_EXECUTE;
+    return PC_SEAL;
+  endfunction
+
+  // Preserve variants only in the selected categories; Global has its own goals.
+  function automatic logic [4:0] fcov_cperm_profile(logic [5:0] cperms,
+                                                   logic [5:0] detailed);
+    fcov_cperm_category_e category;
+    category = fcov_cperm_category(cperms);
+    if (detailed[category]) return cperms[4:0];
+    case (category)
+      PC_MEMORY:  return 5'd24;
+      PC_LOAD:    return 5'd20;
+      PC_STORE:   return 5'd16;
+      PC_DATA:    return 5'd17;
+      PC_EXECUTE: return 5'd8;
+      PC_SEAL:    return 5'd0;
+      default:    return 'x;
+    endcase
+  endfunction
+
+  typedef enum logic [1:0] {
+    PR_EQUAL, PR_CS2_SUBSET, PR_CS1_SUBSET, PR_INCOMPARABLE
+  } fcov_permission_relation_e;
+
+  function automatic fcov_permission_relation_e fcov_permission_relation(
+      logic [cheri_pkg::PERMS_W-1:0] first, second);
+    if ($isunknown({first, second})) return fcov_permission_relation_e'('x);
+    if (first == second) return PR_EQUAL;
+    if ((first & second) == second) return PR_CS2_SUBSET;
+    if ((first & second) == first) return PR_CS1_SUBSET;
+    return PR_INCOMPARABLE;
+  endfunction
+
+  function automatic logic [3:0] fcov_store_permissions(logic [5:0] cs1, cs2);
+    logic [cheri_pkg::PERMS_W-1:0] perms;
+    perms = cheri_pkg::expand_perms(cs1);
+    return {perms[cheri_pkg::PERM_SD], perms[cheri_pkg::PERM_MC],
+            perms[cheri_pkg::PERM_SL], cs2[5]};
+  endfunction
+
+  function automatic logic [5:0] fcov_maskable_permissions(logic [5:0] cperms);
+    logic [cheri_pkg::PERMS_W-1:0] perms;
+    perms = cheri_pkg::expand_perms(cperms);
+    return {perms[cheri_pkg::PERM_GL], perms[cheri_pkg::PERM_LG],
+            perms[cheri_pkg::PERM_LM], perms[cheri_pkg::PERM_SD],
+            perms[cheri_pkg::PERM_MC], perms[cheri_pkg::PERM_SL]};
+  endfunction
+
   // Observed bus delay bucket. The plan requires these to be *measured* on the
   // bus rather than read back from a testbench parameter: a knob proves the
   // knob was set, counted cycles prove the core saw the delay.

@@ -60,17 +60,17 @@ def check_auipcc(report, hardware, work):
     expected = {name: Counter() for name in
                 ("tag", "reserved", "cperms", "otype", "cexp", "base", "top")}
     for n in range(64):
-        expected["tag"][f"tag_{n % 2}"] += 1
-        expected["reserved"][f"value_{(n // 2) % 2}"] += 1
-        expected["cperms"][f"permissions_{n:02x}"] += 1
-        otype = n % 8
-        otype_bin = ("unsealed" if otype == 0 else
-                     f"sentry_{otype}" if otype <= 5 else f"sealed_{otype}")
-        expected["otype"][otype_bin] += 1
+        # Sampled vectors are the legal ones; raw encodings run in debug mode.
+        expected["tag"]["valid"] += 1
+        expected["reserved"]["zero"] += 1
+        expected["cperms"][f"executable_{(n & 0x20) | 0x08 | (n & 0x07):02x}"] += 1
+        expected["otype"]["unsealed"] += 1
         expected["cexp"][f"exponent_{exponents[n % 10]:02x}"] += 1
-        expected["base"][bases[n % 10]] += 1
-        expected["top"][tops[n % 10]] += 1
-    goals = dict(tag=2, reserved=2, cperms=64, otype=8, cexp=32, base=7, top=7)
+        # Base and top mantissas are not encoding-checked, so they also
+        # sample the debug-mode pass.
+        expected["base"][bases[n % 10]] += 2
+        expected["top"][tops[n % 10]] += 2
+    goals = dict(tag=1, reserved=1, cperms=16, otype=1, cexp=26, base=7, top=7)
     for name in ("alu_fixture", "alu_fixture1"):
         alu = instance(report, "FC_MA_EX." + name)
         rows = row_map(alu)
@@ -81,7 +81,7 @@ def check_auipcc(report, hardware, work):
             observed = counts(alu, cp)
             require(observed == (dict(bins) if hardware else {}),
                     (work, name, cp, observed, bins if hardware else {}))
-        require(counts(alu, "cp_fwd") == {"source_0": 85, "source_1": 4},
+        require(counts(alu, "cp_fwd") == {"source_0": 149, "source_1": 4},
                 (work, name, counts(alu, "cp_fwd")))
     print(f"PASS hw{hardware}: both ALUs' AUIPCC field counts, gating and weights", flush=True)
 
@@ -102,7 +102,7 @@ def check(root):
         for name in ("cp_ex2", "cp_full", "cp_ex2_waw_match", "cp_fwd_rd_x0"):
             require(name not in arows, (work, "Removed ALU point still present", name))
         require(int(arows["cp_fwd"][0]) == 2, (work, arows["cp_fwd"]))
-        require(counts(alu, "cp_fwd") == {"source_0": 85, "source_1": 4}, work)
+        require(counts(alu, "cp_fwd") == {"source_0": 149, "source_1": 4}, work)
         require(counts(alu, "cp_flush_busy") == {"hit": 2}, work)
 
         require(counts(alu, "cp_shift_rotate_op") ==

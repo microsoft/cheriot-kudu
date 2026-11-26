@@ -6,7 +6,7 @@
 
 Runs three suites against one fresh build of the current rtl/:
 
-  mini   the ./run_mini_regression tests plus the directed CSR tests
+  mini   the ./run_mini_regression tests plus the directed CSR and dcache tests
   riscv  the riscv-tests suite (self-checking through tohost)
   bug    the KUDU-0xx reproducers in sim/tests_2/ that run on the stock
          testbench (see sim/testplan/direct_tests.md), plus sim/tests/step_exec
@@ -355,9 +355,10 @@ def finish_job(job, run_dir, code, text, status, keep_traces):
         job.verdict, job.detail = classify_bug(job, text, status)
     else:
         job.verdict, job.detail = "PASS", ""
-        if job.test.name in cov_regr.CSR_TESTS:
-            if "CSR test failed" in text or "CSR test passed" not in text:
-                job.verdict, job.detail = "FAIL", "CSR test did not report 'CSR test passed'"
+        kind = cov_regr.UART_VERDICTS.get(job.test.name)
+        if kind:
+            if kind + " failed" in text or kind + " passed" not in text:
+                job.verdict, job.detail = "FAIL", "{0} did not report '{0} passed'".format(kind)
         elif job.test.self_checking and "RISCV Test passed" not in text:
             job.verdict, job.detail = "FAIL", "tohost did not report 'RISCV Test passed'"
         if job.verdict == "PASS" and job.golden:

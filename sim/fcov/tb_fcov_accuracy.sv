@@ -49,6 +49,7 @@ module dcache;
   accuracy_level waw_fifo_i();
   logic lsu_req_done_i = 0, lsu_req_q = 0;
   lsu_req_info_t lsu_req_info_i = '0, lsu_req_info_q = '0;
+  logic [29:0] tags [4] = '{default: '0};
   kudu_fcov_dcache monitor(.*);
   task automatic tick;
     #5; clk_i = 1; #5; clk_i = 0;
@@ -128,7 +129,7 @@ module ls_pipeline;
   ls_fsm_e ls_fsm_cs = IDLE;
   logic split_misaligned_access = 0, handle_misaligned_q = 0;
   logic addr_incr_req = 0, lsu_busy = 0, trvk_en_o = 0;
-  logic trvk_outstanding_o = 0, tsafe_en_i = 0, debug_mode_i = 0, cheri_pmode_i = 0;
+  logic trvk_outstanding_o = 0, tsafe_en_i = CHERIoTEn, debug_mode_i = 0, cheri_pmode_i = 0;
   accuracy_lsif lsu_if_i();
   accuracy_lsu load_store_unit_i();
   accuracy_level waw_fifo_i();
@@ -188,6 +189,8 @@ module ls_pipeline;
     lsu_req = 0; lsu_req_info = '0; ls_fsm_cs = IDLE;
     // Every response guard, including the tagged-only second cross.
     for (int p = 0; p < 8192; p++) begin
+      // Clearing MC also clears LG and LM (cp_resp_clrperm).
+      if (p[12] && p[10:9] != 2'b11) continue;
       lsu_resp_valid = 0;
       save_mode(p[0]);
       cheri_pmode_i = p[1];
@@ -212,6 +215,8 @@ module ls_pipeline;
     for (int stored = 0; stored < 3; stored++)
       for (int p = 0; p < 16; p++)
         for (int cause = 0; cause < 6; cause++) begin
+          // Capability responses never carry ILLEGAL_INSN (cap_illegal).
+          if (cause == 5 && p[2]) continue;
           wb_write = 0; wb_read = 0;
           save_mode(p[0]);
           wb_input = '0;

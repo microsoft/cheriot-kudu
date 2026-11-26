@@ -247,8 +247,9 @@ contribute to its coverage.
 For **AUIPCC**, each ALU instance has seven **cp_auipcc_pcc_*** points over
 the inherited PCC: tag, reserved bit, compressed permissions, object type,
 compressed exponent, base mantissa and top mantissa. They use the same
-subfield bins as the architectural capability-source points: **122 goals
-per ALU**, with no additional crosses.
+subfield bins as the architectural capability-source points, except that the
+encodings that cannot reach the ALU are illegal: **59 goals per ALU**, with
+no additional crosses.
 
 **pcc_cap_i** is converted through
 **pcc2fullcap_lite(pcc_cap_i, instr_i.pc)**, explicit **reg_cap_t** extraction,
@@ -258,12 +259,20 @@ PCC bits as **mem_cap_t** or introduce the extra representability tag clearing
 of **pcc2regcap()**.
 
 Sampling requires **CHERIoTEn && cheri_pmode_i && us_valid_i &&
-alupl_rdy_o && !flush_i && instr_i.cheri_op.auipcc**. These are execution
+alupl_rdy_o && !flush_i && instr_i.cheri_op.auipcc**, and the tag,
+reserved, permission, otype and exponent points also require
+**!debug_mode_i**. Outside debug mode an untagged, sealed or non-executable
+PCC is an issue-time trap (ir_decoder.sv:583-584), so only a tagged,
+unsealed, executable-format PCC (cperms 0x08-0x0f, 0x28-0x2f) reaches the
+ALU. A tagged capability also never has the reserved bit set or an exponent
+above 24 (cexp 1-6). Debug mode skips the PCC check, so it is excluded. These are execution
 acceptance observations, not retired operands or results. RV32 hardware
 gives the points zero weight, and runtime PMODE=0 does not sample them.
 AUIPCC still has no architectural CS1 operand in **cg_isa_operands**.
 The native **run_ex_semantics.py** regression checks both ALU instances,
-the conversion and acceptance/mode/reset/flush guards.
+the conversion and acceptance/mode/reset/flush guards. It drives all 64 raw
+encodings in debug mode (only base/top sample) and 64 legal encodings in
+normal mode.
 
 Branch **cp_branch_target_match** is removed from both IR slots because the
 coverage campaign uses **ChkBranchJALAddr=0**. Its empty-bin filters and the
@@ -384,11 +393,17 @@ and fields within each family.
 | Instruction, integer operand bit length | Separate RS1/RS2 points for unsigned lengths 0--32, including CRRL/CRAM length inputs. |
 | Instruction, immediate class; optionally one source data axis | Signed/unsigned and compressed-format-specific extrema, zero, one, minus one, other positive and other negative values. |
 | Instruction, capability source address, CS1 tag | Separate actual CS1/CS2 register addresses; CS1=c0 cannot have tag 1. |
-| Instruction, CS1 field, CS1 tag | Reserved bit, compressed permissions, object type, encoded exponent, and base/top mantissa boundary classes. The CS1 address/tag cross already covers its tag marginal. |
-| Instruction, matching CS1/CS2 fields, CS1 tag | Tag, reserved, compressed permissions, object type, exponent, base and top are paired with the same field of the other source. Includes CSC and its compressed forms, CSEAL, CUNSEAL, CSETEQX, CSUB and CTESTSUBSET. |
+| Instruction, CS1 field, CS1 tag | Reserved bit, permission category, object type, encoded exponent, and base/top mantissa boundary classes. The CS1 address/tag cross already covers its tag marginal. |
+| Instruction, matching CS1/CS2 fields, CS1 tag | Tag, reserved, permission category, object type, exponent, base and top are paired with the same field of the other source. Includes CSC and its compressed forms, CSEAL, CUNSEAL, CSETEQX, CSUB and CTESTSUBSET. |
 | Instruction, CS1 field, integer RS2 class or size, CS1 tag | Every CS1 subfield is crossed with the seven scalar data classes and, separately, unsigned bit lengths 0--32. Includes CHERI scalar-operand instructions and CHERI-mode integer stores/atomics. |
 | Instruction, source tag, CD tag, CS1 tag | CD coverage retains only **cp_cd_tag** and tag-propagation goals. CS1 tag is not duplicated when already an axis. |
 | Instruction, CD tag without CS1 | Only source-free link/PCC results and read-only CSPECIALRW. |
+
+The generator adds illegal bins for tagged encodings that cannot exist:
+reserved bit set, and CEXP 1--6 (exponent above the root's 24). It also marks
+an untagged link capability from a capability-mode jump as illegal. Each is
+paired with a simulation-only assertion in **kudu_fcov_isa.sv**, and
+**isa_operand_reference.py** removes those bins from the expected goals.
 
 CHERI-family crosses include **cp_cs1_tag** wherever CS1 is actually used.
 CRRL/CRAM retain untagged scalar RS1 crosses, and AUIPCC has a separate
@@ -410,13 +425,43 @@ for both hardware builds. These are expanded goals, not source declarations.
 | Arithmetic | 8 | 22,465 | 22,465 |
 | Multiply/divide | 6 | 12,600 | 12,600 |
 | Bit manipulation | 8 | 33,348 | 33,348 |
-| Branch/control | 18 | 10,980 | 11,803 |
-| Memory | 30 | 7,505 | 59,069 |
-| Atomic | 27 | 16,001 | 115,782 |
+| Branch/control | 19 | 10,980 | 11,533 |
+| Memory | 31 | 7,505 | 34,909 |
+| Atomic | 28 | 16,001 | 68,502 |
 | System/CSR | 3 | 765 | 765 |
-| CHERI | 38 | 0 | 170,194 |
+| CHERI | 45 | 0 | 69,442 |
 | Instruction/saved mode | 1 | 128 | 290 |
-| **Total** | **139** | **103,792** | **426,316** |
+| **Total** | **149** | **103,792** | **253,854** |
+
+**Permission crosses.** All eleven operand crosses formerly using raw
+**cperms** now use six categories from **cheri_pkg::expand_perms**' encoding:
+**memory-capability** (low five bits 24--31), **load-capability** (20--23),
+**store-capability** (16), **data-only** (17--19), **execute** (8--15), and
+**sealing** (0--7). Bit 5 is **Global**, not another category. CS1/CS2
+permission-category pairs have 36 combinations, not 4,096. Every non-target
+category remains a separate goal; none is silently ignored or labelled an
+architectural error. In particular, execute capabilities also grant Load and
+Load/Store-Capability, so they can be valid load authorities.
+
+Ten focused crosses retain operation-relevant detail without multiplying it
+by scalar data/size axes:
+
+| Focus | Goals per instruction, including source tags |
+|---|---:|
+| Integer/capability loads and stores, LR/SC/AMO: all 16 memory-category encodings, one execute bin and one sealing bin; Global folded | 36 |
+| Indirect control: all eight execute variants, one bin for each other category | 26 |
+| CSEAL/CUNSEAL authority in CS2: all eight sealing variants, one bin for each other category, both source tags | 52 |
+| CGETPERM: each of the 12 expanded permission bits absent/present | 48 |
+| CANDPERM: each expanded permission bit crossed with its corresponding scalar-mask bit | 96 |
+| CTESTSUBSET/CSETEQUAL: equal, CS2 proper subset, CS1 proper subset, or incomparable expanded permission sets, including Global | 16 |
+| CSC and compressed forms: reachable Store/Load-Store-Capability/Store-Local combinations against stored-capability Global, both source tags | 40 |
+| CUNSEAL: both source Global bits and both source tags | 16 |
+
+Bit goals intentionally overlap: CGETPERM and CANDPERM contribute one hit
+per permission bit, not one hit per raw encoding. Other focused crosses
+contribute one hit per observation. Invalid, interrupt-only and issue-trap
+records do not contribute; execute faults retain captured source coverage.
+These changes require fresh databases, not merges into the old raw-value schema.
 
 Source-use and register restrictions remove impossible goals **statically**,
 not just through sampling guards: unary operations and LR have no RS2 goals;
@@ -458,7 +503,12 @@ That reference samples execution, not retirement, and includes crosses wider
 than four axes; neither behavior is copied. Kudu samples valid retirement
 records, including execute-stage faults whose source operands were captured,
 but excludes interrupt-only packets and issue-side traps from source/immediate
-goals. Recognized issue-side traps still fill the instruction/mode cross.
+goals. The exception is an issue-side CJALR fault (tag, seal or execute
+violation): its CS1 is the operand the fault was computed from, so it fills
+the control-family CS1 crosses (address/tag, permission, otype and bounds
+fields, target permissions), but not CD or immediate goals.
+**AssertIsaJumpFaultCause** (simulation) checks that the traced CS1 explains
+the fault. Recognized issue-side traps still fill the instruction/mode cross.
 The tap calls the tracer's **fill_cmt_info()**, retains older/faulting records
 in a commit-error cycle, and handles both normal AMO completion and first-phase
 AMO errors. The final FIFO path prevents pre-revocation CLC tags from filling
@@ -466,7 +516,7 @@ CD coverage. Helper operand points have zero weight; their qualified crosses
 carry the goals. Use fresh coverage databases after recompiling.
 
 **Operand regression and maintenance.** `generate_isa_operand_crosses.py`
-checks the explicit repetitive cross block; `--write` regenerates that block
+checks the generated family-cross and permission-point block; `--write` regenerates it
 after a schema change. Eligibility and metadata transformations remain in
 the SystemVerilog helpers. `check_isa_encoding_sets.py --classifiers` checks
 the generated schema and encoding identities as well as the shared classifiers.
@@ -493,6 +543,12 @@ They verify that removed CD metadata points are absent and that source-pair
 counts come from the correct operands. These are monitor regressions, not proof
 that the DUT has closed all coverage goals. Keep their databases separate from
 campaign databases.
+
+The **permissions** scenario additionally sweeps all 64 input encodings and
+all 64-by-64 capability-source pairs, both saved modes and source tags.
+Zero/all-one scalar masks exercise every per-bit CANDPERM combination.
+The checker verifies every focused denominator and exact bin count, including
+non-target categories, Global-sensitive cases and sampling exclusions.
 
 Review changes to that loop together with the coverage tap. Width/PC/queue
 checks can catch structural or accounting mistakes, but do not constitute an
@@ -721,8 +777,8 @@ encodings. CHERI check/error points sample only in CHERIoT mode; neither
 RV32 runtime case contributes zero-error/check-disabled hits, including
 PMODE=0 runs contributing shared coverage to the combined CHERIoT report.
 The JAL target-miss cause is filtered when **ChkBranchJALAddr** is disabled.
-JALR target coverage observes the raw sum from this block, so odd low-bit
-values are not declared illegal.
+JALR target coverage observes the masked target (**{r[31:1],1'b0}**), so odd
+low-bit values are illegal (**AssertSvaBrJalrTargetEven**).
 
 ## One issuer group, four sampling kinds
 
@@ -901,12 +957,32 @@ walks the WAW FIFO, or combines EX2 and WB into one context.
 | **lsu_req** | **load_store_unit_i.lsu_req_info_q**, while **outstanding_resp_q** is set |
 | **mult_ex2**, **mult_wb** | The respective valid saved instruction, CHERI operation and CJALR flag |
 
-The frontend cross is **s0_rdata0 x s0_rdata1 x ir0 x ir1 x special_event**.
+The frontend cross **x_s0_s1** is **s0_rdata0 x s0_rdata1 x ir0 x ir1**,
+capturing the S0/S1 relationship independently of special events.
+The frontend event coverpoints remain standalone.
 Each of the six execution instances has its own
-**ir0 x ir1 x special_event x ex_resident** cross. Categories are not reduced
-to the former eight coarse classes at S0 or EX; the two IR axes use only
-pipeline designations with a separate DIV category. Use per-configuration URG
-denominators, not source declaration counts.
+**ir0 x ir1 x special_event x ex_resident** cross.
+
+The S0 axis (**cp_s0_rdata0/1**) uses its own coarse execution-class
+category: **S_ALU** (every RV32 ALU form, including LUI, AUIPC/AUIPCC,
+shifts, bitmanip, and CHERI inspect/modify/seal operations), **S_MULDIV**,
+**S_BRANCH**, **S_JAL**, **S_JALR**, **S_LS** (integer and capability loads
+and stores), **S_AMO** (including LR/SC), **S_CSR** (including CSPECIALRW),
+**S_SYS**, **S_ILLEGAL** and **S_EMPTY**. With all features enabled,
+**x_s0_s1** has 10 x 11 + 1 = 111 S0 pairs and 57 IR pairs (6,327 goals).
+
+The EX axis (**cp_ex_resident**) uses a finer context category, mapped from
+the detailed instruction category:
+**C_ALU** (every RV32 ALU form, including LUI, shifts and bitmanip),
+**C_AUIPCC** (the AUIPC opcode: AUIPCC when PMODE=1, AUIPC when PMODE=0),
+**C_MUL**, **C_DIV**, **C_BRANCH**, **C_JAL**, **C_JALR**, **C_LOAD_INT**,
+**C_STORE_INT**, **C_LOAD_CAP**, **C_STORE_CAP**, **C_AMO**, **C_CSR**,
+**C_SCR**, **C_CHERI_INSPECT**, **C_CHERI_MODIFY** (including CSeal/CUnseal
+and AUICGP), **C_SYS** and **C_ILLEGAL**. The LSU splits loads from stores
+by the saved **is_load**; the ALU WB stage carries an AUIPC flag beside its
+detailed category. The two IR axes use only pipeline designations with a
+separate DIV category. Use per-configuration URG denominators, not source
+declaration counts.
 
 **cp_ir0/1** use the issuer's logical age-ordered decodes, not physical IRA/IRB.
 Each has eight bins: **IR_LOCAL**, **IR_ALU**, **IR_LS**, **IR_MULT**,
@@ -919,7 +995,8 @@ Multiplication variants also remain **IR_MULT**. An invalid slot uses
 This applies to both frontend and all six execution instances, including
 stalled instructions. Other instruction categories, branch outcomes, faults,
 breakpoints and sysctl flags no longer subdivide or override the IR bins.
-Interrupt/debug/error handling remains on the separate event axis.
+Interrupt/debug/error handling remains in standalone event coverpoints and
+the execution crosses' event axis.
 
 These are decoder designations, not resolved execution-pipeline selections.
 In particular, **PL_JALR** stays **IR_JALR**: it routes through ALU when
@@ -936,7 +1013,8 @@ issuer-detected CJALR errors. **ir0_err** is equivalent to **handle_err**;
 **ir1_err** observes a pending younger error without waiting for it to become
 IR0 or for exception handling to begin. Invalid slots cannot report stale errors.
 The per-bit bins overlap: multiple asserted
-conditions hit multiple bins and corresponding cross goals on the same edge.
+conditions hit multiple bins and corresponding execution cross goals on the
+same edge.
 They are not exact-onehot or priority-selected events.
 The uncrossed **cp_special_event_value** retains all 32 exact masks, including
 zero, in both frontend and execution groups with the same sampling event.
@@ -945,11 +1023,12 @@ Feature and execution-routing filters remove unsupported S0/EX categories.
 ALUs exclude loads, CSRs, MUL/DIV and local
 instructions; MULT accepts MUL/DIV, bounds/representability CHERI operations
 and CHERI CJALR; LSU accepts memory, atomic and CSR/SCR requests.
-Immediate bitmanip currently follows the RTL's **RV32M** gate, while register
-bitmanip follows **RV32B**. Resident categories are not re-gated by a later
+Bitmanip is part of the ALU category, so it needs no feature gate. Resident
+categories are not re-gated by a later
 live PMODE value. Cross exclusions enforce ordered S0/IR validity.
-**error_without_ir0/1** exclude the respective **ir0_err/ir1_err** bin when
-that slot is **IR_EMPTY**, since each error requires a valid slot. Other former
+In the execution crosses, **error_without_ir0/1** exclude the respective
+**ir0_err/ir1_err** bin when that slot is **IR_EMPTY**, since each error requires
+a valid slot. Other former
 fault/category exclusions are removed: pipeline designation alone cannot
 identify a fault.
 
@@ -979,8 +1058,8 @@ instructions stalled behind a busy pipeline. Remaining goals are not a proof
 of reachability under every software environment. This replaces the old
 **cg_context** schema; start a fresh database and preserve previous results.
 
-The event axis uses six overlapping bins rather than crossing all 32 exact
-masks; the separate raw-mask point has 32 standalone goals per instance.
+The execution event axis uses six overlapping bins rather than crossing all
+32 exact masks; the separate raw-mask point has 32 standalone goals per instance.
 Recompile into a fresh database.
 Run **python3 -B fcov/run_context_events.py** from **sim/** with the VCS
 modules loaded for the focused native regression. It extracts both production
@@ -1027,9 +1106,17 @@ hit bin. Read matches with weight **2 or greater** are illegal, backed by
 **$onehot0(rd_tag_match)**. For write matches, all six weight-2 masks share
 one **two_hits** bin; weight **3 or 4** is illegal, backed by
 **$countones(wr_tag_match) <= 2**.
-**cp_resp_inval_two_matches** and **cp_unaligned_two_matches** separately
-cover **resp_invalidate=1** and **unaligned_access_q=1** while exactly two
-bits of **wr_tag_match** are set. Both points may hit in the same cycle.
+**cp_resp_inval_two_matches** covers **resp_invalidate=1** while exactly two
+bits of **wr_tag_match** are set (a capability access matching both words).
+**cp_unaligned_two_matches** covers a misaligned integer access that
+straddles words **addr** and **addr+4** (a word at offset 1-3 or a halfword
+at offset 3, the accesses load_store_unit splits) while both words are held
+in valid lines. It samples at request acceptance (**lsu_req_i &&
+lsu_req_done_i**), before **unaligned_access_q** invalidates every line,
+and excludes CSR, capability, AMO/LR/SC and CHERI-faulting requests. Its
+eight bins are load/store by word offset 1/2/3 or halfword offset 3. The
+**addr+4** match compares **tags** directly, since **wr_tag_match** only
+covers the first word of an integer access.
 **cp_rd_hit** and **cp_rd_match_ok** sample only while **lsu_req_i** is
 asserted; their request input is connected by the existing wildcard bind.
 **cp_fwd_addr1** and **cp_fwd_data1** sample the corresponding **fwd_info_o**
@@ -1102,7 +1189,7 @@ tagged/untagged bins. The other fields sample only tagged capabilities.
 bin combining **2--23 and 25--30**. **cp_resp_cap_top_vs_base** has separate
 **equal**, **greater**, and **less** bins comparing **top8** with only
 **base9[7:0]**; **base9[8]** is ignored. There are no standalone top/base
-coverpoints. The remaining fields use automatic bins
+coverpoints. The remaining raw fields use automatic bins
 (one per value for fields up to six bits, up to 64 range bins for wider
 fields). All seven points have zero weight on RV32-only hardware.
 
@@ -1112,6 +1199,16 @@ alone does not disable a cross. **x_ls_rv32_1** remains shared.
 **x_ls_type_2** observes faulting requests, including both loads and stores.
 The permission crosses require a successful capability-load memory response;
 **x_resp_clrperm_2** additionally requires a tagged raw capability.
+It crosses the six-category **cp_resp_cap_perm_category** helper with the eight
+saved response masks: **48 goals**, rather than 512 raw-value combinations.
+The standalone **cp_resp_cap_cperms** still covers all 64 raw return values.
+**cp_resp_cap_perm_bits** independently covers absent, preserved and cleared
+states for each maskable expanded permission: Global, Load-Global,
+Load-Mutable, Store, Load/Store-Capability and Store-Local. Its 18 overlapping
+goals observe actual pre-/post-mask permissions, including sealed capabilities,
+category conversion and tag-clearing responses that suppress permission masking.
+The native LSU **permissions** scenario checks exact counts over all 64
+encodings, eight masks and sealed/unsealed cases, plus sampling exclusions.
 
 **x_access_err** crosses **cp_out_is_cap** with **cp_out_mcause** on the same
 valid, faulting WB FIFO head. Both current CHERI mode and that head's saved
@@ -1210,7 +1307,10 @@ bin. The current scoreboard FIFO has depth eight; occupancy is observed before
 the edge's updates. This tap uses the RTL's simulation-only level counter.
 
 The owner is bound as **u_fcov_top**, with one **cg_ma_top** group reported as
-**FC_MA_TOP**. It includes **cp_fatal_err** and its six state/transition bins.
+**FC_MA_TOP**. It includes **cp_fatal_err** and its five state/transition bins.
+The bus request points have no **ready_no_req** bin, there is no
+**cp_ibus_same_cycle_resp**, and **cp_fatal_err** has no
+**reset_after_fatal** bin; these were removed as non-goals.
 Explicit sampling keeps the other points on rising edges outside reset and
 samples only the fatal point on falling edges, including during reset after
 NBA updates. The fatal point is mode-gated and has zero weight on RV32 hardware.
@@ -1382,6 +1482,43 @@ should stay empty until its bug is fixed; then give it weight 1.
 | **x_inflight_fwd.risky_fwd**, **x_inflight_cap.cap_fwd** | **AssertNoFwdBehindRiskyReq** | No load forwarding behind a misaligned, capability or SC request |
 | **cp_dm_trap_m_write.written** | **AssertNoMTrapCsrWriteInDebug** | Debug entry or a trap in debug mode leaves mcause/mepc |
 | *(none; goal is the illegal decode)* | **AssertBNearMissIllegal** | B-extension near-miss encodings decode as illegal |
+
+**Unreachable-bin closure.** Bins that coverage closure never hit and that
+RTL analysis showed to be unreachable became illegal bins. Each has an SVA
+twin that JasperGold proves on KuduCfg1 with CHERIoT in PMODE 0 and 1. The
+exception is kudu_fcov_isa, which is not in the FV file list, so its
+immediate assertions are checked in simulation only.
+
+| Group | Illegal bin(s) | Assertion | Invariant |
+|---|---|---|---|
+| csr | mpp/priv/dcsr_prv reserved, **cp_entering**, **cp_stepie**, **cp_dcsr_nmip**, **cp_step_with_ie**, **x_dbg_csr_pmode** | **AssertDbgEnteringTiedOff**, **AssertNoDbgCsrWrInPmode** | Tied-off debug inputs and legalised privilege fields |
+| csr | **cp_mshwm_wr_to_store.same_cycle** | **AssertNoMshwmCsrWrWithLsuWr** | No MSHWM CSR write in the same cycle as an LSU update |
+| alu | **cp_ds.rdy_no_out**, **cp_wb.idle** | **AssertAluDsRdyValid**, **AssertAluWbIdleRdy** | Pipeline ready/valid handshake |
+| alu | **cp_auipcc_pcc_tag.untagged**, **cp_auipcc_pcc_cperms.not_executable**, **cp_auipcc_pcc_otype.sealed** | **AssertAuipccPccExecutable** | Outside debug mode AUIPCC's PCC is tagged, unsealed and executable |
+| alu | **cp_auipcc_pcc_reserved.set**, **cp_auipcc_pcc_cexp.above_max** | **AssertAuipccPccEncoding** (simulation) | Tagged capabilities never carry the reserved bit or an exponent above 24; this is a memory invariant, so formal with unconstrained memory cannot prove it |
+| branch | **cp_jalr_target_low** odd | **AssertSvaBrJalrTargetEven** | JALR target bit 0 is cleared |
+| mult | **cp_ds.rdy_no_out**, **cp_ex2.idle**, **cp_wb.idle**, **cp_out_we.no_write** | **AssertMultDsRdyValid**, **AssertMultEx2IdleRdy**, **AssertMultWbIdleRdy**, **AssertMultOutWe** | Pipeline handshake; every mult result writes |
+| mult | **x_setbounds_op_rounding.rndn_base_rounded** | **AssertMultRndnBaseExact** | CSetBoundsRoundDown never rounds the base |
+| cmplx | **cp_transition** wr_flush, write_hold; **cp_is_amo.not_amo** | **AssertCmplxWriteOneCycle**, **AssertSvaCmplxStart** | AMO write lasts one cycle; the complex unit only runs AMOs |
+| lsu | **cp_ds.rdy_no_out**, **cp_flush_busy.hit** | **AssertLsDsRdyValid**, **AssertLsNotBusyAtFlush** | Handshake; no flush while busy |
+| lsu | **x_ls_type_2** sc_scalar, align_cached_scalar | **AssertReqScFaultIsCap**, **AssertReqScalarAlignUncached** | Request classification |
+| lsu | **cp_resp_early_cheri_cause** store causes, **cp_resp_clrperm.no_mc_keeps_lg_lm**, **x_access_err.cap_illegal**, **cp_tsafe_en.off** | **AssertRespEarlyCheriCauseReachable**, **AssertRespClrpermMcImpliesLgLm**, **AssertIllegalInsnRespNotCap**, **AssertTsafeTiedOn** | LSU response encodings |
+| dcache | **x_inflight_fwd.word_st_same_miss** | **AssertWordStSameWordHit** | A word store to the same word hits |
+| isa | **cp_rd.x0**, shifted **cp_mem_rmask/wmask**, **cp_target_align.odd**, **cp_mode** 1-3 | **AssertIsaRdX0NoData**, **AssertIsaMemMaskUnshifted**, **AssertIsaTargetEven**, **AssertIsaModeTied** (simulation) | RVFI encodings |
+| isa | **tagged_reserved**, **tagged_above_max** in every generated cross with a CS1 reserved or exponent axis | **AssertIsaTaggedCapEncoding** (simulation) | Tagged CS1, CS2 and CD never carry the reserved bit or CEXP 1--6 (exponent 25--30); only CSetHigh sets the reserved bit and its result is untagged |
+| isa | **untagged_link** in **x_control_cs1_cd_tag** and **x_control_cd_no_cs1_tag** | **AssertIsaJumpLinkTagged** (simulation) | JAL/JALR and compressed forms in capability mode always write a tagged link capability |
+| lsu | **cp_resp_cap_rsvd.set**, **cp_resp_cap_cexp.above_max** | **AssertRespTaggedCapEncoding** (simulation) | A tagged capability returned from memory never carries the reserved bit or CEXP 1--6 |
+| id | **cp_flush.one_sided** (cp_hold removed) | **AssertIrFlushBothOrNone**, **AssertIrHoldTiedOff** | Both IR flushes come from pc_set; ir_hold is tied off |
+| if | **cp_busy.split**, **cp_redirect_align.misaligned**, **x_cp_pdt_priority_contention.src_ne_cand0** | **AssertIfBusyEqPrefetchBusy**, **AssertRedirectTargetEven**, **AssertPdtSrcMatchesCand0** | Wiring, even redirect targets, slot-0 PDT priority |
+| issue | **cp_producer.multi**, **cp_fwd_to_slot.ir1** | **AssertFwdActOneProducer**, **AssertIr1FwdSubsetIr0** | One forwarding producer per register |
+| issue | **x_operand_outcome_issue** raw_stall/same_bundle issued, **x_cheri_temporal_issue.stall_issued**, **cp_waw_hazard.ir0_waw** | **AssertIssuedOperandsReady**, **AssertCheriHazardNotIssued**, **AssertNoIr0WawHazard** | No issue over a hazard (AllowWaW=1) |
+| issue | **cp_recovery.pc_set_with_alt**, four **x_prediction_resolution_recovery** groups | **AssertAltFlushOnPcSet**, **AssertBpResolutionRecovery** | Mispredict recovery path (AltEnable=1) |
+| issue | **cp_fsm_trans.t_bad**, **cp_dbg_src_q.none**, five **x_dbg_src_cause** groups | **AssertFsmTransLegal**, **AssertDbgCauseFromSrc** | Controller FSM edges and debug-cause priority |
+
+kudu_fcov_issue takes the **AllowWaW** and **AltEnable** parameters from
+issuer through the bind. The configuration-dependent illegal bins use
+**with (...)** guards. They become normal bins when the parameter is off,
+for example **ordinary_pc_set** on KuduCfg2.
 
 ## Illegal bins
 

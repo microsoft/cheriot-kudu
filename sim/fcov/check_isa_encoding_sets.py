@@ -221,6 +221,7 @@ def check_encodings():
 
 def check_classifiers():
     import pyslang
+    import isa_operand_reference as ref
 
     comp = pyslang.ast.Compilation()
     rtl = HERE.parent.parent / "rtl"
@@ -285,17 +286,37 @@ def check_classifiers():
                  "ir_dec_t d; d = '0;", setup,
                  "return has_legal_cheri_op(d) == 1'b%d; endfunction" % want,
                  "localparam bit ok_qualifier%d = qualifier%d();" % (index, index)]
+    categories = {
+        "memory_capability": ("PC_MEMORY", 24), "load_capability": ("PC_LOAD", 20),
+        "store_capability": ("PC_STORE", 16), "data_only": ("PC_DATA", 17),
+        "execute": ("PC_EXECUTE", 8), "sealing": ("PC_SEAL", 0),
+    }
+    for code in range(64):
+        category = ref.permission_category(code)
+        symbol, representative = categories[category]
+        checks = [f"fcov_cperm_category(6'd{code}) == {symbol}"]
+        for mask, detailed in (
+                (15, {"memory_capability", "load_capability", "store_capability", "data_only"}),
+                (16, {"execute"}), (32, {"sealing"})):
+            profile = code & 31 if category in detailed else representative
+            checks.append(f"fcov_cperm_profile(6'd{code}, 6'd{mask}) == 5'd{profile}")
+        permissions = ref.permissions(code)
+        projection = sum(int(bit in permissions) << (5 - index)
+                         for index, bit in enumerate(("GL", "LG", "LM", "SD", "MC", "SL")))
+        checks.append(f"fcov_maskable_permissions(6'd{code}) == 6'd{projection}")
+        text.append(f"localparam bit ok_permission{code} = " + " && ".join(checks) + ";")
     text.append("endmodule")
     comp.addSyntaxTree(pyslang.syntax.SyntaxTree.fromText("\n".join(text)))
     top = next(t for t in comp.getRoot().topInstances if t.name == "fcov_isa_classifier_check")
     errors = [d for d in comp.getAllDiagnostics() if d.isError()]
     assert not errors, errors
     values = [s for s in top.body if s.name.startswith("ok")]
-    assert len(values) == len(cases) + 19 + len(qualifiers)
+    assert len(values) == len(cases) + 19 + len(qualifiers) + 64
     for symbol in values:
         assert str(symbol.value) == "1'b1", (symbol.name, str(symbol.value))
     print("PASS: actual SV functions, %d categories, 19 coarse mappings, "
-          "%d saved-metadata qualifiers" % (len(cases), len(qualifiers)))
+          "%d saved-metadata qualifiers, all 64 compressed permission encodings" %
+          (len(cases), len(qualifiers)))
 
 
 if __name__ == "__main__":

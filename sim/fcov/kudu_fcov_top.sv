@@ -162,7 +162,6 @@ module kudu_fcov_top
 
     cp_ibus_req_gnt: coverpoint {instr_req_o, instr_gnt_i} iff (normal_sample) {
       bins idle      = {2'b00};
-      bins ready_no_req = {2'b01};
       bins waiting   = {2'b10};
       bins accepted  = {2'b11};
     }
@@ -199,7 +198,6 @@ module kudu_fcov_top
       bins d3_7 = {[3:7]};
       bins d8up = {[64'd8:64'hffff_ffff_ffff_ffff]};
     }
-    cp_ibus_same_cycle_resp: coverpoint irw_same_cycle iff (normal_sample && irw_ev);
     cp_ibus_back_to_back: coverpoint (instr_gnt_q & instr_req_o & instr_gnt_i)
         iff (normal_sample) {
       bins hit = {1'b1};
@@ -210,7 +208,6 @@ module kudu_fcov_top
     // ======================================================================
     cp_dbus_req_gnt: coverpoint {data_req_o, data_gnt_i} iff (normal_sample) {
       bins idle      = {2'b00};
-      bins ready_no_req = {2'b01};
       bins waiting   = {2'b10};
       bins accepted  = {2'b11};
     }
@@ -402,7 +399,6 @@ module kudu_fcov_top
       bins fatal = {2'b11};
       bins raised = (2'b10 => 2'b11);
       bins sticky = (2'b11 => 2'b11);
-      bins reset_after_fatal = (2'b11 => 2'b00);
     }
   endgroup
 

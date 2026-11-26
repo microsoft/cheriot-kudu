@@ -238,7 +238,8 @@ module kudu_fcov_lsu
     }
     cp_ds: coverpoint {lspl_valid_o, ds_rdy_i} {
       bins idle       = {2'b00};
-      bins rdy_no_out = {2'b01};
+      // committer lspl_rdy_o needs sbd_deq of a valid LS entry (AssertLsDsRdyValid).
+      illegal_bins rdy_no_out = {2'b01};
       bins stalled    = {2'b10};
       bins committed  = {2'b11};
     }
@@ -325,7 +326,12 @@ module kudu_fcov_lsu
     // SC response polarity and request association are covered by FC_MA_TOP.
 
     cp_flush:      coverpoint flush_i { bins hit = {1'b1}; }
-    cp_flush_busy: coverpoint (flush_i & (lsu_busy | lspl_valid_o)) { bins hit = {1'b1}; }
+    // A flush only follows a committed LS error, by which time the LSU and the
+    // WB FIFO are drained (AssertLsNotBusyAtFlush).
+    cp_flush_busy: coverpoint (flush_i & (lsu_busy | lspl_valid_o)) {
+      bins         none = {1'b0};
+      illegal_bins hit  = {1'b1};
+    }
     cp_debug_mode: coverpoint debug_mode_i;
     // Both runtime modes are goals only on CHERI-capable hardware.
     cp_pmode: coverpoint cheri_pmode_i iff (ls_pipeline.CHERIoTEn) {
@@ -391,6 +397,14 @@ module kudu_fcov_lsu
     x_ls_type_2 : cross cp_is_cap, cp_cache_ok, cp_cheri_req_cause
         iff (cheri_active && req_cheri_mode && lsu_req && lsu_req_info.lschk_err.any_fault) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      // check_ls_err sets .sc only for capability stores (AssertReqScFaultIsCap).
+      illegal_bins sc_scalar = binsof(cp_is_cap) intersect {1'b0} &&
+                               binsof(cp_cheri_req_cause.c_sc);
+      // Scalar .align only for LR/SC/AMO, which are never cache_ok
+      // (AssertReqScalarAlignUncached).
+      illegal_bins align_cached_scalar = binsof(cp_is_cap) intersect {1'b0} &&
+                                         binsof(cp_cache_ok) intersect {1'b1} &&
+                                         binsof(cp_cheri_req_cause.c_align);
     }
 
     x_ls_cap_1 : cross cp_is_load, cp_cap_addr_align
@@ -561,8 +575,9 @@ module kudu_fcov_lsu
       bins c_tag   = {5'h02};
       bins c_seal  = {5'h03};
       bins c_ld    = {5'h12};
-      bins c_sd    = {5'h13};
-      bins c_sc    = {5'h15};
+      // Only plain early loads skip the request-side check, so store causes
+      // cannot appear here (AssertRespEarlyCheriCauseReachable).
+      illegal_bins store_cause = {5'h13, 5'h15};
       illegal_bins other = default;
     }
 
@@ -591,7 +606,10 @@ module kudu_fcov_lsu
              ls_pipeline.load_store_unit_i.lsu_resp_info.is_cap) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
       bins none = {4'h0};
-      bins some[] = {[4'h1:4'hf]} with (item[2] == 1'b0);
+      // clrperm = {~MC,0,~LM,~LG}; expand_perms grants LG/LM only with MC, so
+      // clearing MC always clears LG and LM too (AssertRespClrpermMcImpliesLgLm).
+      bins some[] = {[4'h1:4'hf]} with (item[2] == 1'b0 && (!item[3] || item[1:0] == 2'b11));
+      illegal_bins no_mc_keeps_lg_lm = {[4'h8:4'hf]} with (item[2] == 1'b0 && item[1:0] != 2'b11);
     }
     cp_resp_is_load: coverpoint ls_pipeline.load_store_unit_i.lsu_req_info_q.is_load
         iff (lsu_resp_valid);
@@ -605,13 +623,51 @@ module kudu_fcov_lsu
       bins untagged = {1'b0};
       bins tagged_cap = {1'b1};
     }
+    // Memory never holds a tagged capability with RSVD set: only CSetHigh can
+    // set it, and its result is untagged (AssertRespTaggedCapEncoding).
     cp_resp_cap_rsvd: coverpoint resp_mem_cap.rsvd
         iff (resp_cap_sample && resp_mem_cap.valid) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      bins zero = {1'b0};
+      illegal_bins set = {1'b1};
     }
     cp_resp_cap_cperms: coverpoint resp_mem_cap.cperms
         iff (resp_cap_sample && resp_mem_cap.valid) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+    }
+    cp_resp_cap_perm_category: coverpoint fcov_cperm_category(resp_mem_cap.cperms)
+        iff (resp_cap_sample && resp_mem_cap.valid) {
+      option.weight = 0;
+      bins memory_capability = {PC_MEMORY};
+      bins load_capability = {PC_LOAD};
+      bins store_capability = {PC_STORE};
+      bins data_only = {PC_DATA};
+      bins execute = {PC_EXECUTE};
+      bins sealing = {PC_SEAL};
+    }
+    cp_resp_cap_perm_bits: coverpoint {
+        fcov_maskable_permissions(resp_mem_cap.cperms),
+        fcov_maskable_permissions(resp_reg_cap.cperms)}
+        iff (resp_cap_sample && resp_mem_cap.valid) {
+      option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      wildcard bins global_00 = {12'b0?????0?????};
+      wildcard bins global_10 = {12'b1?????0?????};
+      wildcard bins global_11 = {12'b1?????1?????};
+      wildcard bins load_global_00 = {12'b?0?????0????};
+      wildcard bins load_global_10 = {12'b?1?????0????};
+      wildcard bins load_global_11 = {12'b?1?????1????};
+      wildcard bins load_mutable_00 = {12'b??0?????0???};
+      wildcard bins load_mutable_10 = {12'b??1?????0???};
+      wildcard bins load_mutable_11 = {12'b??1?????1???};
+      wildcard bins store_00 = {12'b???0?????0??};
+      wildcard bins store_10 = {12'b???1?????0??};
+      wildcard bins store_11 = {12'b???1?????1??};
+      wildcard bins capability_00 = {12'b????0?????0?};
+      wildcard bins capability_10 = {12'b????1?????0?};
+      wildcard bins capability_11 = {12'b????1?????1?};
+      wildcard bins store_local_00 = {12'b?????0?????0};
+      wildcard bins store_local_10 = {12'b?????1?????0};
+      wildcard bins store_local_11 = {12'b?????1?????1};
     }
     cp_resp_cap_otype: coverpoint resp_mem_cap.otype
         iff (resp_cap_sample && resp_mem_cap.valid) {
@@ -623,8 +679,10 @@ module kudu_fcov_lsu
       bins zero = {5'd0};
       bins max_ = {5'd31};
       bins twenty_four = {5'd24};
-      bins one = {5'd1};
-      bins other = {[5'd2:5'd23], [5'd25:5'd30]};
+      bins other = {[5'd7:5'd23], [5'd25:5'd30]};
+      // CEXP = EXP ^ 31, so 1..6 is an exponent above the root's 24
+      // (AssertRespTaggedCapEncoding).
+      illegal_bins above_max = {[5'd1:5'd6]};
     }
     cp_resp_cap_top_vs_base: coverpoint {
         (resp_mem_cap.top8 > resp_mem_cap.base9[7:0]),
@@ -706,12 +764,16 @@ module kudu_fcov_lsu
     x_access_err : cross cp_out_is_cap, cp_out_mcause
         iff (cheri_active && wb_cheri_mode && lspl_valid_o && lspl_output_o.err) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      // ILLEGAL_INSN comes only from CSR requests, which never set is_cap
+      // (AssertIllegalInsnRespNotCap).
+      illegal_bins cap_illegal = binsof(cp_out_is_cap) intersect {1'b1} &&
+                                 binsof(cp_out_mcause.illegal);
     }
     x_resp_clrperm_1: cross cp_resp_cap_valid, cp_resp_clrperm
         iff (resp_cap_sample) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
     }
-    x_resp_clrperm_2: cross cp_resp_cap_cperms, cp_resp_clrperm
+    x_resp_clrperm_2: cross cp_resp_cap_perm_category, cp_resp_clrperm
         iff (resp_cap_sample && resp_mem_cap.valid) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
     }
@@ -761,8 +823,12 @@ module kudu_fcov_lsu
     // ======================================================================
     // 12.3 Temporal safety
     // ======================================================================
+    // kudu_top ties cheri_tsafe_en = CHERIoTEn (AssertTsafeTiedOn); revisit
+    // if it becomes a real input or CSR.
     cp_tsafe_en: coverpoint tsafe_en_i iff (cheri_active) {
       option.weight = ls_pipeline.CHERIoTEn ? 1 : 0;
+      bins         on  = {1'b1};
+      illegal_bins off = {1'b0};
     }
     // trvk_en / outstanding scalar coverage lives in the bound trvk module.
   endgroup
@@ -782,8 +848,54 @@ module kudu_fcov_lsu
      resp_lschk_err.any_fault &&
      !ls_pipeline.load_store_unit_i.lsu_req_info_q.lschk_err.any_fault) |->
     (resp_err_cause[4:0] inside
-     {5'h00, 5'h01, 5'h02, 5'h03, 5'h12, 5'h13, 5'h15}))
-    else $error("FCOV: LSU response CHERI cause outside check_ls_err encoding");
+     {5'h00, 5'h01, 5'h02, 5'h03, 5'h12}))
+    else $error("FCOV: LSU response-only CHERI cause is not a plain-load cause");
+
+  // Twins of the cg_ma_lsu illegal bins that mark structural invariants.
+  // Sim-only, like AssertAuipccPccEncoding: memory holds no such tagged capability.
+  AssertRespTaggedCapEncoding: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (resp_cap_sample && resp_mem_cap.valid) |->
+    (!resp_mem_cap.rsvd && !(resp_mem_cap.cexp inside {[5'd1:5'd6]})))
+    else $error("FCOV: loaded tagged capability with RSVD set or CEXP 1..6");
+
+  AssertLsDsRdyValid: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) ds_rdy_i |-> lspl_valid_o)
+    else $error("FCOV: committer ready for LS pipeline without LS output valid");
+
+  AssertLsNotBusyAtFlush: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) flush_i |-> !(lsu_busy || lspl_valid_o))
+    else $error("FCOV: LSU busy or WB FIFO valid at flush");
+
+  AssertReqScFaultIsCap: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (cheri_active && req_cheri_mode && lsu_req && lsu_req_info.lschk_err.any_fault &&
+     (req_err_cause[4:0] == 5'h15)) |-> lsu_req_info.is_cap)
+    else $error("FCOV: SC (store-cap) fault on a scalar request");
+
+  AssertReqScalarAlignUncached: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (cheri_active && req_cheri_mode && lsu_req && lsu_req_info.lschk_err.any_fault &&
+     (req_err_cause[4:0] == 5'h00) && !lsu_req_info.is_cap) |-> !lsu_req_info.cache_ok)
+    else $error("FCOV: scalar alignment fault on a cacheable request");
+
+  AssertRespClrpermMcImpliesLgLm: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (cheri_active && resp_cheri_mode && lsu_resp_valid &&
+     ls_pipeline.load_store_unit_i.lsu_resp_info.is_cap &&
+     ls_pipeline.load_store_unit_i.lsu_req_info_q.clrperm[3]) |->
+    (ls_pipeline.load_store_unit_i.lsu_req_info_q.clrperm[1:0] == 2'b11))
+    else $error("FCOV: clrperm clears MC but keeps LG/LM");
+
+  AssertIllegalInsnRespNotCap: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (cheri_active && wb_cheri_mode && lspl_valid_o && lspl_output_o.err &&
+     (lspl_output_o.mcause == EXC_CAUSE_ILLEGAL_INSN)) |-> !lspl_output_o.is_cap)
+    else $error("FCOV: illegal-instruction LS response marked as capability");
+
+  AssertTsafeTiedOn: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) cheri_active |-> tsafe_en_i)
+    else $error("FCOV: tsafe_en low with CHERI active; update cp_tsafe_en");
 
   AssertRespCapTagMatchesClrperm: assert property (
     @(posedge clk_i) disable iff (!rst_ni)
@@ -828,7 +940,9 @@ endmodule
 module kudu_fcov_dcache
   import super_pkg::*;
   import kudu_fcov_pkg::*;
-(
+#(
+  parameter int unsigned TagHi = 31
+) (
   input logic       clk_i,
   input logic       rst_ni,
 
@@ -836,6 +950,7 @@ module kudu_fcov_dcache
   input logic       lsu_req_i,
   input pl_fwd_t    fwd_info_o,
   input logic [3:0] line_valid,
+  input logic [TagHi-2:0] tags [4],
   input logic [3:0] rd_tag_match,
   input logic [3:0] wr_tag_match,
   input logic       cache_rd_hit,
@@ -893,6 +1008,29 @@ module kudu_fcov_dcache
   assign ld_fwd_sample = cache_enable_i && lsu_req_i && lsu_req_done_i && lsu_req_q &&
       lsu_req_info_i.is_load && lsu_req_info_i.cache_ok && !lsu_req_info_i.is_cap &&
       !unaligned_access && (lsu_req_info_i.amo_flag == 4'b0000);
+
+  // A misaligned integer access that straddles words addr and addr+4 (the
+  // accesses load_store_unit splits), accepted while both words are cached.
+  // Lines are checked at acceptance, before unaligned_access_q invalidates them.
+  typedef enum logic [1:0] {UA_WORD1, UA_WORD2, UA_WORD3, UA_HALF3} fcov_straddle_e;
+  fcov_straddle_e straddle_kind;
+  logic           straddle_req, next_word_cached, straddle_both_cached;
+
+  always_comb begin
+    straddle_kind = fcov_straddle_e'(lsu_req_info_i.addr[1:0] - 2'd1);
+    if (lsu_req_info_i.data_type == 2'b01) straddle_kind = UA_HALF3;
+    next_word_cached = 1'b0;
+    for (int i = 0; i < 4; i++)
+      if (line_valid[i] && tags[i] == lsu_req_info_i.addr[TagHi:2] + 1'b1)
+        next_word_cached = 1'b1;
+  end
+  assign straddle_req = lsu_req_i && lsu_req_done_i && !lsu_req_info_i.is_csr &&
+      !lsu_req_info_i.is_cap && (lsu_req_info_i.amo_flag == 4'b0000) &&
+      !lsu_req_info_i.lschk_err.any_fault &&
+      (((lsu_req_info_i.data_type == 2'b00) && (lsu_req_info_i.addr[1:0] != 2'b00)) ||
+       ((lsu_req_info_i.data_type == 2'b01) && (lsu_req_info_i.addr[1:0] == 2'b11)));
+  assign straddle_both_cached = straddle_req && cache_enable_i && (|rd_tag_match) &&
+                                next_word_cached;
 
   // ==========================================================================
   // 12.4 Forwarding cache
@@ -954,9 +1092,17 @@ module kudu_fcov_dcache
         iff ($countones(wr_tag_match) == 2) {
       bins hit = {1'b1};
     }
-    cp_unaligned_two_matches: coverpoint unaligned_access_q
-        iff ($countones(wr_tag_match) == 2) {
-      bins hit = {1'b1};
+    // Both words of a straddling access are cached; read/write x misaligned type.
+    cp_unaligned_two_matches: coverpoint {lsu_req_info_i.is_load, straddle_kind}
+        iff (straddle_both_cached) {
+      bins store_word_off1 = {{1'b0, UA_WORD1}};
+      bins store_word_off2 = {{1'b0, UA_WORD2}};
+      bins store_word_off3 = {{1'b0, UA_WORD3}};
+      bins store_half_off3 = {{1'b0, UA_HALF3}};
+      bins load_word_off1  = {{1'b1, UA_WORD1}};
+      bins load_word_off2  = {{1'b1, UA_WORD2}};
+      bins load_word_off3  = {{1'b1, UA_WORD3}};
+      bins load_half_off3  = {{1'b1, UA_HALF3}};
     }
     cp_waw_match:    coverpoint waw_act_match     { bins hit = {1'b1}; }
 
@@ -999,6 +1145,11 @@ module kudu_fcov_dcache
                                  binsof(cp_inflight_cls.load)) &&
                                 binsof(cp_inflight_rel.same) && binsof(cp_inflight_hit.hit);
       ignore_bins cap = binsof(cp_inflight_cls.cap);
+      // A same-word load behind a full-word store always takes the bypass, so
+      // it always hits (AssertWordStSameWordHit).
+      illegal_bins word_st_same_miss = binsof(cp_inflight_cls.word_st) &&
+                                       binsof(cp_inflight_rel.same) &&
+                                       binsof(cp_inflight_hit.miss);
     }
     // A capability store/load spans two words: same word and the next.
     x_inflight_cap: cross cp_inflight_rel, cp_inflight_hit
@@ -1015,6 +1166,11 @@ module kudu_fcov_dcache
     (ld_fwd_sample && (inflight_cls inside {IF_UNAL, IF_CAP, IF_SC})) |-> !cache_rd_hit)
     else $error("FCOV: load forwarded while a %s request is in flight (KUDU-014/033/050)",
                 inflight_cls.name());
+
+  AssertWordStSameWordHit: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    (ld_fwd_sample && (inflight_cls == IF_WORD_ST) && (inflight_rel == REL_SAME)) |-> cache_rd_hit)
+    else $error("FCOV: same-word load behind a full-word store did not hit");
 
   AssertRdTagOneHot: assert property (
     @(posedge clk_i) disable iff (!rst_ni) $onehot0(rd_tag_match))

@@ -220,14 +220,17 @@ module kudu_fcov_id
       bins split = {1'b1};
     }
 
+    // ir_flush_i and ir_flush_s0_i are both driven by issuer.pc_set_o
+    // (kudu_top.sv:287-288); a one-sided flush cannot occur
+    // (AssertIrFlushBothOrNone).
     cp_flush:      coverpoint {ir_flush_s0_i, ir_flush_i} {
       bins none     = {2'b00};
-      bins full     = {2'b01};
-      bins stage0   = {2'b10};
       bins both     = {2'b11};
+      illegal_bins one_sided = {2'b01, 2'b10};
     }
     cp_flush_s0:   coverpoint flush_s0 { bins hit = {1'b1}; }
-    cp_hold:       coverpoint ir_hold_i { bins hit = {1'b1}; }
+    // ir_hold_i is tied off (issuer ir_hold_o = 1'b0); no coverpoint, checked
+    // by AssertIrHoldTiedOff.
 
     // The dual FIFO alternates which physical memory holds the older
     // instruction; both polarities must be seen or half the read mux is dead.
@@ -632,6 +635,15 @@ module kudu_fcov_id
                ira_dec_o.sysctl.wfi,    ira_dec_o.sysctl.dret,
                ira_dec_o.sysctl.mret}))
     else $error("FCOV: more than one sysctl bit decoded for one instruction");
+
+  // kudu_top wiring facts (free inputs in block-level FV of ir_stage).
+  AssertIrFlushBothOrNone: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) ir_flush_s0_i == ir_flush_i)
+    else $error("FCOV: one-sided IR flush (s0=%0b full=%0b)", ir_flush_s0_i, ir_flush_i);
+
+  AssertIrHoldTiedOff: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) !ir_hold_i)
+    else $error("FCOV: ir_hold_i asserted (expected tied off)");
 
 `endif  // KUDU_FCOV_OFF
 
@@ -1091,12 +1103,15 @@ module kudu_sva_id
     logic [RegW-1:0] rf_x1;
     assign rf_x1 = kudu_top.regfile_i.rf_reg_q[1];
 
+`ifndef DII_SIM
+    // DII backdoor RF initialization does not update the RA shadow.
     // rtl/ir_stage.sv:562-575: the RA shadow (the CJALR predicted target and predicted
     // PCC, cjalr_rcap_o) equals x1 in every field. Only the tag may be stale-set: the
     // shadow ignores revocation clears of x1 (rtl/regfile.sv:52); the full-cap compare
     // in rtl/branch_unit.sv:91-93 then turns the prediction into a mispredict.
     AssertCurRaMatchesRf: assert property (@(posedge clk_i) disable iff (!rst_ni)
       (((cur_ra ^ rf_x1) & ~RaTagMask) == '0) && ((rf_x1 & RaTagMask) == (cur_ra & rf_x1 & RaTagMask)));
+`endif
   end
 
 `endif  // KUDU_FCOV_OFF

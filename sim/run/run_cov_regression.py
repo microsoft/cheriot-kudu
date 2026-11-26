@@ -19,9 +19,10 @@ in a fresh build_<id>/ under --work_dir (default: temp_cov_regression).
 --list is read-only; --compile remains accepted but is no longer necessary.
 Each hardware build has its own raw and design database. RISC-V tests also
 add +RISCV_TEST_SUITE to select the tohost monitor instead of UART termination.
-The mini suite includes isa_test_csr (PMODE=1) and rv32_test_csr (PMODE=0),
-each with default and delayed memory. Their UART verdict must report
-"CSR test passed"; a failure message or missing verdict fails the run.
+The mini suite includes the directed tests isa_test_csr (PMODE=1),
+rv32_test_csr and rv32_test_dcache (PMODE=0), each with default and delayed
+memory. Their UART verdict must report "<kind> test passed" (UART_VERDICTS);
+a failure message or missing verdict fails the run.
 
 After compilation and preflight succeed, coverage-enabled runs delete the
 selected hardware output databases before the first simulation. Only this
@@ -99,7 +100,7 @@ RISCV_TESTS = [
 ]
 
 # Tests from ./run_mini_regression plus directed CSR coverage tests.
-MINI_RV32_TESTS = ["coremark.rv32o3", "rv32_test_csr"]
+MINI_RV32_TESTS = ["coremark.rv32o3", "rv32_test_csr", "rv32_test_dcache"]
 MINI_CHERIOT_TESTS = [
     "isa_test1",
     "isa_test1a",
@@ -108,7 +109,12 @@ MINI_CHERIOT_TESTS = [
     "isa_test_csr",
     "coremark.cheriot",
 ]
-CSR_TESTS = frozenset(("isa_test_csr", "rv32_test_csr"))
+# Directed tests that print "<kind> passed" or "<kind> failed" on the UART.
+UART_VERDICTS = {
+    "isa_test_csr": "CSR test",
+    "rv32_test_csr": "CSR test",
+    "rv32_test_dcache": "dcache test",
+}
 
 
 class Test(object):
@@ -147,7 +153,7 @@ def build_test_list(suites, riscv_timeout, build="all"):
             for variant, args in MINI_VARIANTS:
                 tests.append(
                     Test("mini", "cheriot", name, variant, ["+PMODE=0"] + list(args),
-                         self_checking=name in CSR_TESTS)
+                         self_checking=name in UART_VERDICTS)
                 )
         for name in MINI_CHERIOT_TESTS:
             for variant, args in MINI_VARIANTS:
@@ -155,7 +161,7 @@ def build_test_list(suites, riscv_timeout, build="all"):
                 extra = ["+INTR_RATE=4"] if name == "isa_test2a" else []
                 tests.append(
                     Test("mini", "cheriot", name, variant, ["+PMODE=1"] + extra + list(args),
-                         self_checking=name in CSR_TESTS)
+                         self_checking=name in UART_VERDICTS)
                 )
         tests.append(
             Test("mini", "cheriot", "dbg_test1", "default",
@@ -507,11 +513,12 @@ def run_test(test, run_dir, work_dir, cov_args, log_path):
     elif test.self_checking:
         # UART and tohost verdicts can report failure despite a zero exit code.
         output = log_path.read_text(errors="replace")
-        if test.name in CSR_TESTS:
-            if "CSR test failed" in output:
-                failure = "CSR test reported a failure"
-            elif "CSR test passed" not in output:
-                failure = "no CSR test verdict (timeout?)"
+        kind = UART_VERDICTS.get(test.name)
+        if kind:
+            if kind + " failed" in output:
+                failure = kind + " reported a failure"
+            elif kind + " passed" not in output:
+                failure = "no {} verdict (timeout?)".format(kind)
         elif "RISCV Test failed" in output:
             failure = "tohost reported a failure"
         elif "RISCV Test passed" not in output:

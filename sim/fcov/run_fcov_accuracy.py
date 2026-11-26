@@ -38,7 +38,7 @@ def bins(text, name, cross=False):
         # uncovered rows have COUNT AT_LEAST with no test attribution.
         if not fields or not (fields[0].startswith(("auto[", "way_", "n_", "some_", "c_"))
                               or fields[0] in ("none", "few", "many", "all_",
-                                              "untagged", "tagged_cap", "aligned")):
+                                              "untagged", "tagged_cap", "aligned", "sealing")):
             continue
         axes = 3 if name in ("x_ls_type_1", "x_ls_type_2") else 2 if cross else 1
         if len(fields) > axes and fields[axes].isdigit():
@@ -82,7 +82,7 @@ def check(root):
         rows = {row[0]: row[1:] for line in lsu.splitlines()
                 if re.match(r"^(?:cp_|x_)\w+\s+\d", line)
                 for row in [line.split()]}
-        for name, goals in zip(names, (8, 28, 16, 12, 16, 512)):
+        for name, goals in zip(names, (8, 25, 16, 11, 10, 30)):
             require(int(rows[name][0]) == goals, (work, name, "goals", rows[name]))
             require(rows[name][5] == str(hw), (work, name, "weight", rows[name]))
         require(rows["cp_out_is_cap"][5] == "0", (work, "helper weight"))
@@ -102,14 +102,15 @@ def check(root):
                         if cap and not csr and not busy:
                             expected[names[2]][(f"auto[{load}]", "aligned")] += 1
             for tag in (0, 1):
-                for perm in ("none", "some_1", "some_2", "some_3",
-                             "some_8", "some_9", "some_a", "some_b"):
+                for perm in ("none", "some_1", "some_2", "some_3", "some_b"):
                     expected[names[4]][("tagged_cap" if tag else "untagged", perm)] = 1
                     if tag:
-                        expected[names[5]][("auto[3]", perm)] = 1
+                        expected[names[5]][("sealing", perm)] = 1
             for tag in (0, 1):
                 for index, cause in enumerate(("load_align", "load_fault", "store_align",
                                                "store_fault", "cheri", "illegal")):
+                    if tag and cause == "illegal":
+                        continue
                     expected[names[3]][(f"auto[{tag}]", cause)] = 21 + 3 * (tag + index)
         for name in names:
             actual = {key: value for key, value in bins(lsu, name, True).items() if value}

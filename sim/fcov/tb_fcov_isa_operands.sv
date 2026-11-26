@@ -89,11 +89,11 @@ module tracer;
     foreach (instr_trace_fifo[i]) instr_trace_fifo[i] = '0;
     foreach (final_fifo[i]) final_fifo[i] = '0;
     if (!$value$plusargs("CASE=%s", test_case)) test_case = "semantics";
-    if (test_case == "pairs") begin
+    if (test_case inside {"pairs", "permissions"}) begin
       int fd, fields, mode, kind, rs1, rs2;
       logic [31:0] word32;
       mem_cap_t source1, source2;
-      fd = $fopen("../pairs.hex", "r");
+      fd = $fopen($sformatf("../%s.hex", test_case), "r");
       if (!fd) $fatal(1, "cannot open source-pair vectors");
       while (!$feof(fd)) begin
         fields = $fscanf(fd, "%h %h %h %h %h %h %h\n",
@@ -119,7 +119,8 @@ module tracer;
           foreach (family_words[w]) begin
             foreach (scalar_values[v]) begin
               prepare(family_words[w], 1'(mode));
-              capability = '{1'(tag), 1'b1, 6'h35, 3'd0, 5'd19,
+              // RSVD is set only untagged: a tagged RSVD is an illegal bin.
+              capability = '{1'(tag), 1'(!tag), 6'h35, 3'd0, 5'd19,
                              8'h81, 9'h101, scalar_values[v]};
               t.rvfi.rs1_addr = 8;
               t.rvfi.rs2_addr = 9;
@@ -209,7 +210,7 @@ module tracer;
         assert (monitor.operand_size(32'hffffffff >> (32 - size)) == size) else $fatal;
       end
     end else if (test_case == "cd") begin
-      capability = '{1'b1, 1'b1, 6'h35, 3'd5, 5'd19, 8'h81, 9'h101, 32'h80000000};
+      capability = '{1'b1, 1'b0, 6'h35, 3'd5, 5'd19, 8'h81, 9'h101, 32'h80000000};
       // CMOVE preserves each field; the live mode pin is deliberately zero.
       prepare(32'hfea181db, 1);
       t.rvfi.rs1_rdata = MemW'(capability);
@@ -285,6 +286,7 @@ module tracer;
       monitor.sample_entry(t, 1);
       t.rvfi.trap = 0;
       t.rvfi.rd_addr = 0;
+      t.rvfi.rd_wdata = 0;  // RVFI reports zero data for x0 (cp_rd.x0 is illegal)
       monitor.sample_entry(t, 1);
       // A preserved grouped mantissa bin must retain its diagonal goal.
       capability.base9 = 3;
@@ -327,7 +329,7 @@ module tracer;
         #12;
         rst_ni = 1;
         tsafe_en_i = 1;
-        capability = '{1'b1, 1'b1, 6'h35, 3'd0, 5'd19, 8'h81, 9'h101, 32'h80000000};
+        capability = '{1'b1, 1'b0, 6'h35, 3'd0, 5'd19, 8'h81, 9'h101, 32'h80000000};
         @(negedge clk_i);
         cheri_pmode_i = 1;
         wr_ptr = 0;
@@ -441,7 +443,7 @@ module tracer;
       prepare(32'h00008086, 0);
       monitor.sample_entry(t, 0);
       if (kudu_top.CHERIoTEn) begin
-        capability = '{1'b1, 1'b1, 6'h35, 3'd5, 5'd19, 8'h81, 9'h101, 32'h80000000};
+        capability = '{1'b1, 1'b0, 6'h35, 3'd5, 5'd19, 8'h81, 9'h101, 32'h80000000};
         prepare(32'h160201db, 1);
         t.rvfi.rs1_rdata = MemW'(capability);
         t.rvfi.rs2_rdata = MemW'(capability ^ 65'h10000000000000000);

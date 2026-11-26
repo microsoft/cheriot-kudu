@@ -80,17 +80,31 @@ module kudu_fcov_alu
     instr_nobrk = instr_i;
     instr_nobrk.is_brkpt = 1'b0;
   end
+  // The AUIPC opcode (AUIPCC in PMODE=1) has its own instruction-context
+  // category, so carry that flag alongside the detailed category.
+  logic ex2_auipc, wb_auipc;
   if (SingleStage) begin : gen_category_bypass
     assign ex2_category = fcov_instr_cat(instr_nobrk);
+    assign ex2_auipc = instr_i.insn[6:0] == OPCODE_AUIPC;
   end else begin : gen_category_ex2
     always_ff @(posedge clk_i or negedge rst_ni) begin
-      if (!rst_ni) ex2_category <= IC_ALU_RI;
-      else if (!flush_i && ex2_rdy) ex2_category <= fcov_instr_cat(instr_nobrk);
+      if (!rst_ni) begin
+        ex2_category <= IC_ALU_RI;
+        ex2_auipc <= 1'b0;
+      end else if (!flush_i && ex2_rdy) begin
+        ex2_category <= fcov_instr_cat(instr_nobrk);
+        ex2_auipc <= instr_i.insn[6:0] == OPCODE_AUIPC;
+      end
     end
   end
   always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) wb_category <= IC_ALU_RI;
-    else if (!flush_i && wb_rdy) wb_category <= ex2_category;
+    if (!rst_ni) begin
+      wb_category <= IC_ALU_RI;
+      wb_auipc <= 1'b0;
+    end else if (!flush_i && wb_rdy) begin
+      wb_category <= ex2_category;
+      wb_auipc <= ex2_auipc;
+    end
   end
 
   covergroup cg_ma_alu @(posedge clk_i iff rst_ni);
@@ -170,27 +184,38 @@ module kudu_fcov_alu
       bins capability[] = {[0:CHERIoTEn]};
     }
 
-    cp_auipcc_pcc_tag: coverpoint auipcc_pcc.valid iff (auipcc_accepted) {
+    // Outside debug mode an instruction whose PCC is untagged, sealed or not
+    // executable is an issue-time trap (ir_decoder.sv:583-584) and never
+    // reaches the ALU. Debug mode skips that check, so it is excluded here.
+    // AssertAuipccPccExecutable / AssertAuipccPccEncoding are the twins.
+    cp_auipcc_pcc_tag: coverpoint auipcc_pcc.valid iff (auipcc_accepted && !debug_mode_i) {
       option.weight = CHERIoTEn ? 1 : 0;
-      bins tag[] = {0, 1};
+      bins valid = {1};
+      illegal_bins untagged = {0};
     }
-    cp_auipcc_pcc_reserved: coverpoint auipcc_pcc.rsvd iff (auipcc_accepted) {
+    // A tagged capability never has the reserved bit set (memory invariant).
+    cp_auipcc_pcc_reserved: coverpoint auipcc_pcc.rsvd iff (auipcc_accepted && !debug_mode_i) {
       option.weight = CHERIoTEn ? 1 : 0;
-      bins value[] = {0, 1};
+      bins zero = {0};
+      illegal_bins set = {1};
     }
-    cp_auipcc_pcc_cperms: coverpoint auipcc_pcc.cperms iff (auipcc_accepted) {
+    // cperms[4:3] == 2'b01 is the executable format (cheri_pkg.sv:184).
+    cp_auipcc_pcc_cperms: coverpoint auipcc_pcc.cperms iff (auipcc_accepted && !debug_mode_i) {
       option.weight = CHERIoTEn ? 1 : 0;
-      bins permissions[] = {[0:63]};
+      bins executable[] = {[8:15], [40:47]};
+      illegal_bins not_executable = {[0:7], [16:39], [48:63]};
     }
-    cp_auipcc_pcc_otype: coverpoint auipcc_pcc.otype iff (auipcc_accepted) {
+    cp_auipcc_pcc_otype: coverpoint auipcc_pcc.otype iff (auipcc_accepted && !debug_mode_i) {
       option.weight = CHERIoTEn ? 1 : 0;
       bins unsealed = {0};
-      bins sentry[] = {[1:5]};
-      bins sealed[] = {[6:7]};
+      illegal_bins sealed = {[1:7]};
     }
-    cp_auipcc_pcc_cexp: coverpoint auipcc_pcc.cexp iff (auipcc_accepted) {
+    // cexp = exp ^ 31 for exp 0..24 (cheri_pkg.sv:753), 0 when denormal, so
+    // 1..6 would be an exponent above 24 (memory invariant).
+    cp_auipcc_pcc_cexp: coverpoint auipcc_pcc.cexp iff (auipcc_accepted && !debug_mode_i) {
       option.weight = CHERIoTEn ? 1 : 0;
-      bins exponent[] = {[0:31]};
+      bins exponent[] = {0, [7:31]};
+      illegal_bins above_max = {[1:6]};
     }
     cp_auipcc_pcc_base: coverpoint auipcc_pcc.base9 iff (auipcc_accepted) {
       option.weight = CHERIoTEn ? 1 : 0;
@@ -221,13 +246,16 @@ module kudu_fcov_alu
     }
     cp_ds: coverpoint {alupl_valid_o, ds_rdy_i} {
       bins idle       = {2'b00};
-      bins rdy_no_out = {2'b01};
+      // committer.sv: ALU ready is a dequeue of an entry whose pl_valid is this
+      // ALU (AssertAluDsRdyValid).
+      illegal_bins rdy_no_out = {2'b01};
       bins stalled    = {2'b10};
       bins committed  = {2'b11};
     }
 
     cp_wb: coverpoint {wb_valid, wb_rdy} {
-      bins idle     = {2'b00};
+      // alu_pipeline.sv: wb_rdy = ~wb_valid | ds_rdy_i (AssertAluWbIdleRdy).
+      illegal_bins idle = {2'b00};
       bins ready    = {2'b01};
       bins stalled  = {2'b10};
       bins advanced = {2'b11};
@@ -392,9 +420,11 @@ module kudu_fcov_branch_unit
         bins correct = {2'b10};
         bins wrong_target = {2'b11};
       }
-      // This block produces the raw sum, before any downstream bit-0 masking.
+      // compute_jalr_target clears bit 0 (branch_unit.sv), so odd low bits are
+      // illegal (AssertSvaBrJalrTarget, AssertSvaBrJalrTargetEven).
       cp_jalr_target_low: coverpoint jalr_target[1:0] iff (dec.is_jalr) {
-        bins low_bits[] = {[2'd0:2'd3]};
+        bins         low_bits[] = {2'd0, 2'd2};
+        illegal_bins odd        = {2'd1, 2'd3};
       }
       cp_jalr_immediate: coverpoint dec.insn[31:20] iff (dec.is_jalr) {
         bins zero = {12'h000};
@@ -696,9 +726,10 @@ module kudu_fcov_mult
     // settings have to be exercised or the constant-time mode is untested.
     cp_ind_timing: coverpoint cpu_ctrl_i.data_ind_timing;
 
-    // A divide in flight while a new instruction is offered is the multi-cycle
-    // backpressure case that stalls issue.
-    cp_div_busy_stall: coverpoint (md_div_en & us_valid_i & ~multpl_rdy_o) {
+    // A divide still in flight in EX2 while a new instruction is offered is the
+    // multi-cycle backpressure case that stalls issue.  (md_div_en already
+    // contains ex2_rdy == multpl_rdy_o, so it cannot be used here.)
+    cp_div_busy_stall: coverpoint (ex2_valid & is_div & ~div_done_q & us_valid_i & ~multpl_rdy_o) {
       bins hit = {1'b1};
     }
 
@@ -880,18 +911,22 @@ module kudu_fcov_mult
     }
     cp_ds: coverpoint {multpl_valid_o, ds_rdy_i} {
       bins idle       = {2'b00};
-      bins rdy_no_out = {2'b01};
+      // committer.sv: mult ready is a dequeue of a valid mult entry
+      // (AssertMultDsRdyValid).
+      illegal_bins rdy_no_out = {2'b01};
       bins stalled    = {2'b10};
       bins committed  = {2'b11};
     }
     cp_ex2: coverpoint {ex2_valid, ex2_rdy} {
-      bins idle     = {2'b00};
+      // mult_pipeline.sv: ex2_rdy = ~ex2_valid | ... (AssertMultEx2IdleRdy).
+      illegal_bins idle = {2'b00};
       bins ready    = {2'b01};
       bins stalled  = {2'b10};
       bins advanced = {2'b11};
     }
     cp_wb: coverpoint {wb_valid, wb_rdy} {
-      bins idle     = {2'b00};
+      // mult_pipeline.sv: wb_rdy = ~wb_valid | ds_rdy_i (AssertMultWbIdleRdy).
+      illegal_bins idle = {2'b00};
       bins ready    = {2'b01};
       bins stalled  = {2'b10};
       bins advanced = {2'b11};
@@ -916,7 +951,13 @@ module kudu_fcov_mult
       bins no_err = {1'b0};
       illegal_bins err = {1'b1};
     }
-    cp_out_we:     coverpoint multpl_output_o.we     iff (multpl_valid_o);
+    // Every mult-pipeline op (M-ext, CJALR, CSetBounds*) decodes rf_we=1;
+    // rf_we is cleared only together with any_err, which is never issued
+    // (AssertMultOutWe).
+    cp_out_we:     coverpoint multpl_output_o.we     iff (multpl_valid_o) {
+      bins         write    = {1'b1};
+      illegal_bins no_write = {1'b0};
+    }
 
     // 
     // Cross coverage 
@@ -938,6 +979,10 @@ module kudu_fcov_mult
     }
     x_setbounds_op_rounding: cross cp_setbounds_op, cp_setbounds_rounding {
       option.weight = CHERIoTEn ? 1 : 0;
+      // RoundDown uses exp = min(explen, count_tz(addr)) (cheri_pkg.sv), so the
+      // base is always exact (AssertMultRndnBaseExact).
+      illegal_bins rndn_base_rounded = binsof(cp_setbounds_op.setboundsrounddown) &&
+          (binsof(cp_setbounds_rounding.base) || binsof(cp_setbounds_rounding.top_and_base));
     }
     x_setbounds_op_exp_path: cross cp_setbounds_op, cp_setbounds_exp_path {
       option.weight = CHERIoTEn ? 1 : 0;
@@ -1023,17 +1068,19 @@ module kudu_fcov_cmplx
     }
 
     // Native transition bins over consecutive samples of the current state.
-    // WAIT_RD -> IDLE is a read error or flush; WRITE -> IDLE is only a flush.
+    // WAIT_RD -> IDLE is a read error or flush.  AMO_WRITE always lasts one
+    // cycle: the read has been granted and committed, so lsu_if is idle, and no
+    // commit error can be pending (AssertCmplxWriteOneCycle).
     cp_transition: coverpoint cmplx_fsm_cs {
       bins start_req    = (CU_IDLE        => CU_AMO_WAIT_RD);
       bins read_abort   = (CU_AMO_WAIT_RD => CU_IDLE);
       bins read_ok      = (CU_AMO_WAIT_RD => CU_AMO_WRITE);
       bins wr_issued    = (CU_AMO_WRITE   => CU_AMO_WAIT_WR);
-      bins wr_flush     = (CU_AMO_WRITE   => CU_IDLE);
+      illegal_bins wr_flush   = (CU_AMO_WRITE => CU_IDLE);
       bins wr_done      = (CU_AMO_WAIT_WR => CU_IDLE);
       bins idle_hold    = (CU_IDLE        => CU_IDLE);
       bins wait_rd_hold = (CU_AMO_WAIT_RD => CU_AMO_WAIT_RD);
-      bins write_hold   = (CU_AMO_WRITE   => CU_AMO_WRITE);
+      illegal_bins write_hold = (CU_AMO_WRITE => CU_AMO_WRITE);
       bins wait_wr_hold = (CU_AMO_WAIT_WR => CU_AMO_WAIT_WR);
       illegal_bins bad_transition = (CU_IDLE        => CU_AMO_WRITE, CU_AMO_WAIT_WR),
                                     (CU_AMO_WAIT_RD => CU_AMO_WAIT_WR),
@@ -1042,7 +1089,11 @@ module kudu_fcov_cmplx
     }
 
     cp_start:    coverpoint cmplx_instr_start_i { bins hit = {1'b1}; }
-    cp_is_amo:   coverpoint instr_is_amo iff (cmplx_instr_start_i);
+    // Start is only given for ir0.is_cmplx == amo_insn (AssertSvaCmplxStart).
+    cp_is_amo:   coverpoint instr_is_amo iff (cmplx_instr_start_i) {
+      bins         amo     = {1'b1};
+      illegal_bins not_amo = {1'b0};
+    }
     cp_done:     coverpoint cmplx_instr_done_o { bins hit = {1'b1}; }
     cp_req:      coverpoint cmplx_lsu_req_valid_o { bins hit = {1'b1}; }
     cp_sbd_wr:   coverpoint cmplx_sbd_wr_o { bins hit = {1'b1}; }
@@ -1112,7 +1163,10 @@ module kudu_sva_alu
   input pl_fwd_t     fwd_info_o,
   input logic        ds_rdy_i,
   input logic        alupl_valid_o,
-  input pl_out_t     alupl_output_o
+  input pl_out_t     alupl_output_o,
+  input logic        wb_valid,
+  input logic        wb_rdy,
+  input logic        debug_mode_i
 );
 
 `ifndef KUDU_FCOV_OFF
@@ -1462,6 +1516,40 @@ module kudu_sva_alu
     @(posedge clk_i) disable iff (!rst_ni) alupl_valid_o |-> !alupl_output_o.err)
     else $error("FCOV: alu_pipeline raised .err; committer error capture (F-03) is unsafe");
 
+  // Pairs with kudu_fcov_alu cp_ds.rdy_no_out (committer only acks a valid entry).
+  AssertAluDsRdyValid: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) ds_rdy_i |-> alupl_valid_o)
+    else $error("FCOV: committer acked an ALU pipeline with no output");
+
+  // Pairs with kudu_fcov_alu cp_wb.idle (alu_pipeline.sv: wb_rdy = ~wb_valid | ds_rdy_i).
+  AssertAluWbIdleRdy: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) !wb_valid |-> wb_rdy)
+    else $error("FCOV: empty ALU WB stage not ready");
+
+  if (CHERIoTEn) begin : g_auipcc
+    logic     auipcc_acc;
+    mem_cap_t auipcc_mcap;
+
+    assign auipcc_acc  = cheri_pmode_i && us_valid_i && alupl_rdy_o && !flush_i &&
+                         instr_i.cheri_op.auipcc && !debug_mode_i;
+    assign auipcc_mcap = reg2mcap(reg_cap_t'(pcc2fullcap_lite(pcc_cap_i, instr_i.pc)));
+
+    // Pairs with kudu_fcov_alu cp_auipcc_pcc_tag/cperms/otype (ir_decoder.sv:583-584).
+    AssertAuipccPccExecutable: assert property (
+      @(posedge clk_i) disable iff (!rst_ni)
+      auipcc_acc |-> auipcc_mcap.valid && auipcc_mcap.cperms[4:3] == 2'b01 &&
+                     auipcc_mcap.otype == '0)
+      else $error("FCOV: AUIPCC executed with an untagged, sealed or non-executable PCC");
+
+    // Pairs with kudu_fcov_alu cp_auipcc_pcc_reserved/cexp. Holds only because
+    // memory never returns a tagged capability with these encodings, so it is
+    // checked in simulation; formal with unconstrained memory can violate it.
+    AssertAuipccPccEncoding: assert property (
+      @(posedge clk_i) disable iff (!rst_ni)
+      auipcc_acc |-> !auipcc_mcap.rsvd && !(auipcc_mcap.cexp inside {[1:6]}))
+      else $error("FCOV: AUIPCC PCC has the reserved bit or an exponent above 24");
+  end
+
 `endif  // KUDU_FCOV_OFF
 
 endmodule
@@ -1553,6 +1641,10 @@ module kudu_sva_branch_unit
     AssertSvaBrJalrTarget: assert property (@(posedge clk_i) disable iff (!rst_ni)
       !$isunknown({a, imm_i}) |-> kudu_fcov_pkg::sva_xok(jalr_target == ((a + imm_i) & ~32'h1)));
 
+    // Pairs with kudu_fcov_branch_unit cp_jalr_target_low.odd.
+    AssertSvaBrJalrTargetEven: assert property (@(posedge clk_i) disable iff (!rst_ni)
+      kudu_fcov_pkg::sva_xok(!jalr_target[0]));
+
     // rtl/branch_unit.sv:94-96, branch_predict.sv:147-160, ir_stage.sv:198-208 -- an accepted JALR prediction targets the real rs1+imm.
     AssertSvaBrJalrPredTarget: assert property (@(posedge clk_i) disable iff (!rst_ni)
       eval_valid && issued && dec.is_jalr && !mis[3] |-> dec.ptarget[31:0] == jalr_target);
@@ -1614,7 +1706,11 @@ module kudu_sva_mult
   input logic        cjalr_set_mie_o,
   input logic        cjalr_clr_mie_o,
   input logic        md_mult_valid,
-  input logic        md_div_valid
+  input logic        md_div_valid,
+  input logic        ex2_valid,
+  input logic        ex2_rdy,
+  input logic        wb_valid,
+  input logic        wb_rdy
 );
 
 `ifndef KUDU_FCOV_OFF
@@ -1641,7 +1737,8 @@ module kudu_sva_mult
   logic [1:0]  sb_cnt_q;
   logic        sb_wp_q, sb_rp_q;
   logic        sb_push, sb_pop, out_chk, is_md;
-  logic [31:0] a, b, res;
+  logic [31:0] a, b, div_nz, res;
+  logic signed [63:0] a_sx, d_sx;
   logic signed [65:0] prod_ss, prod_su, prod_uu;
   logic [2:0]  f3;
 
@@ -1686,6 +1783,13 @@ module kudu_sva_mult
   assign prod_ss = $signed({a[31], a}) * $signed({b[31], b});
   assign prod_su = $signed({a[31], a}) * $signed({1'b0, b});
   assign prod_uu = $signed({1'b0, a}) * $signed({1'b0, b});
+  // VCS evaluates every arm of the DIV/REM reference whatever the antecedent or funct3, and its
+  // 32-bit signed -2^31 / -1 (and x/0) traps on the host (SIGFPE). Divide signed operands
+  // sign-extended to 64 bits, which cannot overflow, and never by zero; those edge cases are
+  // checked by AssertSvaMultDivZero/AssertSvaMultDivOvf instead.
+  assign div_nz  = (b == 32'h0) ? 32'h1 : b;
+  assign a_sx    = {{32{a[31]}}, a};
+  assign d_sx    = {{32{div_nz[31]}}, div_nz};
 
   // rtl/mult_pipeline.sv:316-325 -- the two-stage pipeline never accepts more than it holds.
   AssertSvaMultNoOverflow: assert property (@(posedge clk_i) disable iff (!rst_ni)
@@ -1732,9 +1836,9 @@ module kudu_sva_mult
   // rtl/mult_pipeline.sv:181-200 + multdiv32.sv:636-770 -- DIV/DIVU/REM/REMU quotient/remainder (b != 0, no overflow).
   AssertSvaMultDiv: assert property (@(posedge clk_i) disable iff (!rst_ni)
     out_chk && is_md && f3[2] && b != 32'h0 && !(!f3[0] && a == 32'h8000_0000 && b == 32'hffff_ffff) |->
-      res == ((f3 == 3'b100) ? 32'($signed(a) / $signed(b)) :
-              (f3 == 3'b101) ? a / b :
-              (f3 == 3'b110) ? 32'($signed(a) % $signed(b)) : a % b));
+      res == ((f3 == 3'b100) ? 32'(a_sx / d_sx) :
+              (f3 == 3'b101) ? a / div_nz :
+              (f3 == 3'b110) ? 32'(a_sx % d_sx) : a % div_nz));
 
   // multdiv32.sv:636-770 -- division by zero: quotient all ones, remainder = dividend (RISC-V M table 7.1).
   AssertSvaMultDivZero: assert property (@(posedge clk_i) disable iff (!rst_ni)
@@ -1826,6 +1930,36 @@ module kudu_sva_mult
   AssertMdOneHot: assert property (
     @(posedge clk_i) disable iff (!rst_ni) !(md_mult_valid && md_div_valid))
     else $error("FCOV: mult and div both valid");
+
+  // Pairs with kudu_fcov_mult cp_ds.rdy_no_out (committer only acks a valid entry).
+  AssertMultDsRdyValid: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) ds_rdy_i |-> multpl_valid_o)
+    else $error("FCOV: committer acked the mult pipeline with no output");
+
+  // Pairs with kudu_fcov_mult cp_ex2.idle.
+  AssertMultEx2IdleRdy: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) !ex2_valid |-> ex2_rdy)
+    else $error("FCOV: empty mult EX2 stage not ready");
+
+  // Pairs with kudu_fcov_mult cp_wb.idle.
+  AssertMultWbIdleRdy: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) !wb_valid |-> wb_rdy)
+    else $error("FCOV: empty mult WB stage not ready");
+
+  // Pairs with kudu_fcov_mult cp_out_we.no_write.
+  AssertMultOutWe: assert property (
+    @(posedge clk_i) disable iff (!rst_ni) multpl_valid_o |-> multpl_output_o.we)
+    else $error("FCOV: mult pipeline retired an instruction without rf write");
+
+  // Pairs with kudu_fcov_mult x_setbounds_op_rounding.rndn_base_rounded:
+  // the RoundDown base (addr) is a multiple of 2^exp, exp = min(explen, expb).
+  AssertMultRndnBaseExact: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    ex2_valid && mult_pipeline.ex2_reg.cheri_op.csetboundsrndn |->
+      ((mult_pipeline.ex1_tfcap_q.addr &
+        ~(32'hffff_ffff << ((mult_pipeline.setbounds_req_q.explen > mult_pipeline.setbounds_req_q.expb) ?
+                            mult_pipeline.setbounds_req_q.expb : mult_pipeline.setbounds_req_q.explen))) == 32'h0))
+    else $error("FCOV: CSetBoundsRoundDown with a non-representable base");
 
   AssertCjalrMie: assert property (
     @(posedge clk_i) disable iff (!rst_ni) !(cjalr_set_mie_o && cjalr_clr_mie_o))
@@ -1971,6 +2105,12 @@ module kudu_sva_cmplx
     (cmplx_fsm_cs == CU_AMO_WRITE   |=> cmplx_fsm_cs != CU_AMO_WAIT_RD) and
     (cmplx_fsm_cs == CU_AMO_WAIT_WR |=> cmplx_fsm_cs inside {CU_IDLE, CU_AMO_WAIT_WR}))
     else $error("FCOV: cmplx_unit took an illegal FSM transition");
+
+  // Pairs with kudu_fcov_cmplx cp_transition.wr_flush / write_hold.
+  AssertCmplxWriteOneCycle: assert property (
+    @(posedge clk_i) disable iff (!rst_ni)
+    cmplx_fsm_cs == CU_AMO_WRITE |=> cmplx_fsm_cs == CU_AMO_WAIT_WR)
+    else $error("FCOV: cmplx_unit AMO_WRITE did not advance to WAIT_WR in one cycle");
 
 `endif  // KUDU_FCOV_OFF
 

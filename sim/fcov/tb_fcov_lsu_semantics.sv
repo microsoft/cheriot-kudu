@@ -47,7 +47,57 @@ module dcache;
   accuracy_fifo waw_fifo_i();
   logic lsu_req_done_i = 0, lsu_req_q = 0;
   lsu_req_info_t lsu_req_info_i = '0, lsu_req_info_q = '0;
+  logic [29:0] tags [4] = '{default: '0};
   kudu_fcov_dcache monitor(.*);
+
+  task automatic tick;
+    #5; clk_i = 1; #5; clk_i = 0;
+  endtask
+
+  // One accepted request: valid lines 0 (addr word) and 2 (addr+4 word) as
+  // selected, so cp_unaligned_two_matches sees exactly the intended state.
+  task automatic straddle(input bit is_load, input logic [1:0] data_type,
+                          input logic [1:0] offset, input bit first, input bit next,
+                          input bit done = 1, input bit fault = 0, input bit cap = 0,
+                          input bit enable = 1);
+    lsu_req_info_i = '0;
+    lsu_req_info_i.is_load = is_load;
+    lsu_req_info_i.is_cap = cap;
+    lsu_req_info_i.data_type = data_type;
+    lsu_req_info_i.addr = 32'h8000_0100 | 32'(offset);
+    lsu_req_info_i.lschk_err.any_fault = fault;
+    tags[0] = lsu_req_info_i.addr[31:2];
+    tags[2] = lsu_req_info_i.addr[31:2] + 1'b1;
+    line_valid = {1'b0, next, 1'b0, first};
+    rd_tag_match = {3'b000, first};
+    cache_enable_i = enable;
+    lsu_req_i = 1;
+    lsu_req_done_i = done;
+    tick();
+    lsu_req_i = 0;
+    lsu_req_done_i = 0;
+    line_valid = 0;
+    rd_tag_match = 0;
+  endtask
+
+  // Each straddling direction/type once with both words cached, then
+  // near misses that must not count.
+  task automatic exercise;
+    tick(); rst_ni = 1;
+    for (int is_load = 0; is_load < 2; is_load++) begin
+      for (int offset = 1; offset < 4; offset++) straddle(is_load, 2'b00, offset, 1, 1);
+      straddle(is_load, 2'b01, 2'b11, 1, 1);
+    end
+    straddle(1, 2'b00, 2'b01, 0, 1);              // only addr+4 cached
+    straddle(0, 2'b00, 2'b10, 1, 0);              // only addr cached
+    straddle(1, 2'b01, 2'b01, 1, 1);              // halfword within one word
+    straddle(0, 2'b00, 2'b00, 1, 1);              // aligned word
+    straddle(1, 2'b00, 2'b11, 1, 1, .done(0));    // not accepted
+    straddle(0, 2'b01, 2'b11, 1, 1, .fault(1));   // CHERI fault, no bus access
+    straddle(1, 2'b00, 2'b01, 1, 1, .cap(1));     // capability access
+    straddle(0, 2'b00, 2'b01, 1, 1, .enable(0));  // cache disabled
+    cache_enable_i = 0;
+  endtask
 endmodule
 
 module ls_pipeline;
@@ -60,7 +110,7 @@ module ls_pipeline;
   localparam bit CHERIoTEn = 0;
 `endif
   logic clk_i = 0, rst_ni = 0;
-  logic us_valid_i = 0, lspl_rdy_o = 0, ds_rdy_i = 1, lspl_valid_o = 0;
+  logic us_valid_i = 0, lspl_rdy_o = 0, ds_rdy_i = 0, lspl_valid_o = 0;
   logic flush_i = 0, sel_ira_i = 0, cmplx_lsu_req_valid_i = 0;
   lsu_req_info_t lsu_req_info = '0;
   logic lsu_req = 0, lsu_req_done = 0, lsu_resp_valid = 0, lsu_resp_err = 0;
@@ -73,7 +123,7 @@ module ls_pipeline;
   ls_fsm_e ls_fsm_cs = IDLE;
   logic split_misaligned_access = 0, handle_misaligned_q = 0;
   logic addr_incr_req = 0, lsu_busy = 0, trvk_en_o = 0;
-  logic trvk_outstanding_o = 0, tsafe_en_i = 0, debug_mode_i = 0, cheri_pmode_i = 0;
+  logic trvk_outstanding_o = 0, tsafe_en_i = CHERIoTEn, debug_mode_i = 0, cheri_pmode_i = 0;
   accuracy_lsif lsu_if_i();
   accuracy_lsu load_store_unit_i();
   accuracy_fifo waw_fifo_i();
@@ -146,14 +196,18 @@ module ls_pipeline;
         3: lsu_req_info.lschk_err.seal  = 1;   // 5'h03
         4: lsu_req_info.lschk_err.ld    = 1;   // 5'h12
         5: lsu_req_info.lschk_err.sd    = 1;   // 5'h13
-        default: lsu_req_info.lschk_err.sc = 1; // 5'h15
+        default: begin                         // 5'h15, capability stores only
+          lsu_req_info.lschk_err.sc = 1;
+          lsu_req_info.is_cap = 1;
+        end
       endcase
       tick();
     end
     cheri_pmode_i = 0; tick();
     lsu_req = 0; lsu_req_info = '0;
 
-    for (int cause = 0; cause < 7; cause++) begin
+    // Store causes cannot reach the response-side check (store_cause).
+    for (int cause = 0; cause < 5; cause++) begin
       save_mode(1);
       cheri_pmode_i = 1;
       lsu_resp_valid = 1;
@@ -165,9 +219,7 @@ module ls_pipeline;
         1: load_store_unit_i.ls_err_cause = 6'h01;
         2: load_store_unit_i.ls_err_cause = 6'h02;
         3: load_store_unit_i.ls_err_cause = 6'h03;
-        4: load_store_unit_i.ls_err_cause = 6'h12;
-        5: load_store_unit_i.ls_err_cause = 6'h13;
-        default: load_store_unit_i.ls_err_cause = 6'h15;
+        default: load_store_unit_i.ls_err_cause = 6'h12;
       endcase
       tick();
       lsu_resp_valid = 0;
@@ -181,16 +233,55 @@ module ls_pipeline;
       mem.top8 = p[0] ? 8'h40 : 8'hc0;
       cap_response(mem, 4'h0);
     end
-    mem.valid = 1; mem.cexp = 5'd1; mem.top8 = 8'hc0; mem.base9 = 9'h080;
+    mem.valid = 1; mem.cexp = 5'd7; mem.top8 = 8'hc0; mem.base9 = 9'h080;
     mem.cperms = 6'b111111; mem.otype = 0; cap_response(mem, 4'h1);
     cap_response(mem, 4'h2); cap_response(mem, 4'h3);
     mem.otype = 1; cap_response(mem, 4'h2); cap_response(mem, 4'h3);
-    cap_response(mem, 4'h8);
+    cap_response(mem, 4'hb);
     mem.valid = 0; cap_response(mem, 4'h0);
 
     for (int load = 0; load < 2; load++)
       for (int phase = 0; phase < 4; phase++)
         split_case(load[0], phase[1], phase[0]);
+  endtask
+
+  task automatic exercise_permissions;
+    mem_cap_t mem;
+    tick(); rst_ni = 1;
+    mem = '0;
+    mem.valid = 1;
+    for (int code = 0; code < 64; code++)
+      for (int sealed = 0; sealed < 2; sealed++)
+        for (int mask = 0; mask < 16; mask++) begin
+          // Clearing MC also clears LG and LM (cp_resp_clrperm).
+          if (mask[2] || (mask[3] && mask[1:0] != 2'b11)) continue;
+          mem.cperms = 6'(code);
+          mem.otype = 3'(sealed);
+          cap_response(mem, 4'(mask));
+        end
+    mem.valid = 0;
+    cap_response(mem, 4'h3);
+    mem.valid = 1;
+    for (int excluded = 0; excluded < 9; excluded++) begin
+      save_mode(excluded != 0);
+      cheri_pmode_i = excluded != 1;
+      lsu_resp_valid = excluded != 2;
+      load_store_unit_i.data_rvalid_i = excluded != 3;
+      load_store_unit_i.data_err_i = excluded == 4;
+      lsu_resp_err = excluded == 5;
+      load_store_unit_i.lsu_req_info_q.is_load = excluded != 6;
+      load_store_unit_i.lsu_req_info_q.clrperm = 4'h3;
+      load_store_unit_i.lsu_resp_info.is_cap = excluded != 7;
+      load_store_unit_i.data_rdata_i = mem;
+      load_store_unit_i.lsu_resp_info.wdata = mem2regcap(mem, 4'h3);
+      rst_ni = excluded != 8;
+      tick();
+      lsu_resp_valid = 0;
+      load_store_unit_i.data_rvalid_i = 0;
+      load_store_unit_i.data_err_i = 0;
+      lsu_resp_err = 0;
+      rst_ni = 1;
+    end
   endtask
 endmodule
 
@@ -269,11 +360,17 @@ module tb;
   cheri_trvk_stage trvk();
 `endif
   initial begin
-    lspl.exercise();
+    if ($test$plusargs("PERMISSIONS")) begin
+      lspl.exercise_permissions();
+      $display("PASS LSU permission coverage HW=%0d", lspl.CHERIoTEn);
+    end else begin
+      lspl.exercise();
+      cache.exercise();
 `ifdef CHERIoT
-    lspl.save_mode(1);
-    trvk.exercise();
+      lspl.save_mode(1);
+      trvk.exercise();
 `endif
+    end
     $display("PASS LSU semantics HW=%0d", lspl.CHERIoTEn);
     $finish;
   end

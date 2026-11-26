@@ -13,15 +13,21 @@ module kudu_fcov_context
   input logic clk_i, rst_ni
 );
 `ifndef KUDU_FCOV_OFF
+  // EX-resident axis: every RV32 ALU form (RI/RR/shift/bitmanip/LUI) is
+  // C_ALU, the AUIPC opcode (AUIPCC in PMODE=1) is separate, CSeal/CUnseal
+  // join C_CHERI_MODIFY, and loads and stores are split.
   typedef enum logic [4:0] {
-    C_ALU_RI = IC_ALU_RI, C_ALU_RR = IC_ALU_RR, C_ALU_SHIFT = IC_ALU_SHIFT,
-    C_BITMANIP = IC_BITMANIP, C_MUL = IC_MUL, C_DIV = IC_DIV,
-    C_BRANCH = IC_BRANCH, C_JAL = IC_JAL, C_JALR = IC_JALR,
-    C_LS_INT = IC_LS_INT, C_LS_CAP = IC_LS_CAP, C_AMO = IC_AMO,
-    C_CSR = IC_CSR, C_SCR = IC_SCR, C_CHERI_INSPECT = IC_CHERI_INSPECT,
-    C_CHERI_MODIFY = IC_CHERI_MODIFY, C_CHERI_SEAL = IC_CHERI_SEAL,
-    C_SYS = IC_SYS, C_ILLEGAL = IC_ILLEGAL, EMPTY = 31
+    C_ALU, C_AUIPCC, C_MUL, C_DIV, C_BRANCH, C_JAL, C_JALR,
+    C_LOAD_INT, C_STORE_INT, C_LOAD_CAP, C_STORE_CAP, C_AMO,
+    C_CSR, C_SCR, C_CHERI_INSPECT, C_CHERI_MODIFY, C_SYS, C_ILLEGAL,
+    EMPTY = 31
   } context_category_e;
+  // Coarser S0 axis: execution class only. All RV32 ALU forms, AUIPC(C) and
+  // CHERI inspect/modify/seal operations are S_ALU; CSPECIALRW is S_CSR.
+  typedef enum logic [3:0] {
+    S_ALU, S_MULDIV, S_BRANCH, S_JAL, S_JALR, S_LS, S_AMO, S_CSR, S_SYS,
+    S_ILLEGAL, S_EMPTY = 15
+  } s0_category_e;
   localparam int Alu0Wb = 0, Alu1Wb = 1, LsifDly = 2, LsuReq = 3,
                  MultEx2 = 4, MultWb = 5;
 
@@ -31,7 +37,8 @@ module kudu_fcov_context
     IR_EMPTY = 8, IR_DIV = 9
   } ir_context_e;
 
-  logic [4:0] s0_category[2], ex_category[6];
+  logic [3:0] s0_category[2];
+  logic [4:0] ex_category[6];
   logic [5:0] ex_cmplx_amo;
   ir_context_e ir_context[2];
   logic [4:0] special_event;
@@ -40,14 +47,60 @@ module kudu_fcov_context
 
   function automatic bit category_enabled(int c);
     if (c == int'(EMPTY)) return 1;
-    if (c < int'(IC_ALU_RI) || c > int'(IC_ILLEGAL)) return 0;
-    if (!CHERIoTEn && fcov_is_cheri_category(kudu_instr_cat_e'(c))) return 0;
-    if (!CFG.RV32M && c inside {int'(IC_MUL), int'(IC_DIV)}) return 0;
-    // The current decoder gates immediate bitmanip by RV32M, register forms
-    // by RV32B. Either enables at least one instruction in this category.
-    if (!CFG.RV32B && !CFG.RV32M && c == int'(IC_BITMANIP)) return 0;
-    if (!CFG.RV32A && c == int'(IC_AMO)) return 0;
+    if (c < int'(C_ALU) || c > int'(C_ILLEGAL)) return 0;
+    if (!CHERIoTEn && c inside {int'(C_LOAD_CAP), int'(C_STORE_CAP), int'(C_SCR),
+                                int'(C_CHERI_INSPECT), int'(C_CHERI_MODIFY)})
+      return 0;
+    if (!CFG.RV32M && c inside {int'(C_MUL), int'(C_DIV)}) return 0;
+    if (!CFG.RV32A && c == int'(C_AMO)) return 0;
     return 1;
+  endfunction
+
+  function automatic bit s0_enabled(int c);
+    if (c == int'(S_EMPTY)) return 1;
+    if (c < int'(S_ALU) || c > int'(S_ILLEGAL)) return 0;
+    if (!CFG.RV32M && c == int'(S_MULDIV)) return 0;
+    if (!CFG.RV32A && c == int'(S_AMO)) return 0;
+    return 1;
+  endfunction
+
+  function automatic s0_category_e s0_cat(kudu_instr_cat_e c);
+    case (c)
+      IC_ALU_RI, IC_ALU_RR, IC_ALU_SHIFT, IC_BITMANIP,
+      IC_CHERI_INSPECT, IC_CHERI_MODIFY, IC_CHERI_SEAL: return S_ALU;
+      IC_MUL, IC_DIV:      return S_MULDIV;
+      IC_BRANCH:           return S_BRANCH;
+      IC_JAL:              return S_JAL;
+      IC_JALR:             return S_JALR;
+      IC_LS_INT, IC_LS_CAP: return S_LS;
+      IC_AMO:              return S_AMO;
+      IC_CSR, IC_SCR:      return S_CSR;
+      IC_SYS:              return S_SYS;
+      default:             return S_ILLEGAL;
+    endcase
+  endfunction
+
+  // Maps a non-memory pipeline's detailed category onto the EX context axis
+  // (LSU-resident work is classified from its saved request). auipc is the
+  // AUIPC opcode, decoded as cheri_op.auipcc (CHERI_MODIFY) when PMODE=1.
+  function automatic context_category_e context_cat(kudu_instr_cat_e c, bit auipc);
+    if (auipc && c != IC_ILLEGAL) return C_AUIPCC;
+    case (c)
+      IC_ALU_RI, IC_ALU_RR, IC_ALU_SHIFT, IC_BITMANIP: return C_ALU;
+      IC_MUL:           return C_MUL;
+      IC_DIV:           return C_DIV;
+      IC_BRANCH:        return C_BRANCH;
+      IC_JAL:           return C_JAL;
+      IC_JALR:          return C_JALR;
+      IC_AMO:           return C_AMO;
+      IC_CSR:           return C_CSR;
+      IC_SCR:           return C_SCR;
+      IC_CHERI_INSPECT: return C_CHERI_INSPECT;
+      IC_CHERI_MODIFY,
+      IC_CHERI_SEAL:    return C_CHERI_MODIFY;
+      IC_SYS:           return C_SYS;
+      default:          return C_ILLEGAL;
+    endcase
   endfunction
 
   function automatic bit ir_enabled(int value);
@@ -69,36 +122,37 @@ module kudu_fcov_context
     if (c == int'(EMPTY)) return 1;
     case (stage)
       Alu0Wb, Alu1Wb:
-        return kudu_instr_cat_e'(c) inside {
-          IC_ALU_RI, IC_ALU_RR, IC_ALU_SHIFT, IC_BITMANIP, IC_JAL, IC_JALR,
-          IC_CHERI_INSPECT, IC_CHERI_MODIFY, IC_CHERI_SEAL};
+        return context_category_e'(c) inside {
+          C_ALU, C_AUIPCC, C_JAL, C_JALR, C_CHERI_INSPECT, C_CHERI_MODIFY};
       LsifDly, LsuReq:
-        return kudu_instr_cat_e'(c) inside {IC_LS_INT, IC_LS_CAP, IC_AMO, IC_CSR, IC_SCR};
+        return context_category_e'(c) inside {C_LOAD_INT, C_STORE_INT, C_LOAD_CAP,
+                                              C_STORE_CAP, C_AMO, C_CSR, C_SCR};
       MultEx2, MultWb:
-        return kudu_instr_cat_e'(c) inside {IC_MUL, IC_DIV, IC_CHERI_INSPECT,
-                                           IC_CHERI_MODIFY} ||
-               (CHERIoTEn && c == int'(IC_JALR));
+        return context_category_e'(c) inside {C_MUL, C_DIV, C_CHERI_INSPECT,
+                                              C_CHERI_MODIFY} ||
+               (CHERIoTEn && c == int'(C_JALR));
       default: return 0;
     endcase
   endfunction
 
-  function automatic kudu_instr_cat_e classify_request(lsu_req_info_t req);
+  function automatic context_category_e classify_request(lsu_req_info_t req);
     // Complex AMO requests do not save the opcode; amo_flag identifies both
     // halves as well as LR/SC. CSR/SCR requests retain the original opcode.
-    if (|req.amo_flag) return IC_AMO;
+    if (|req.amo_flag) return C_AMO;
     if (req.is_csr)
-      return req.insn[6:0] == OPCODE_CHERI ? IC_SCR : IC_CSR;
-    return req.is_cap ? IC_LS_CAP : IC_LS_INT;
+      return req.insn[6:0] == OPCODE_CHERI ? C_SCR : C_CSR;
+    if (req.is_cap) return req.is_load ? C_LOAD_CAP : C_STORE_CAP;
+    return req.is_load ? C_LOAD_INT : C_STORE_INT;
   endfunction
 
-  function automatic kudu_instr_cat_e classify_mult(
+  function automatic context_category_e classify_mult(
       logic [31:0] insn, cheri_op_t cheri_op, bit is_cjalr);
     ir_dec_t d;
     d = '0;
     d.insn = insn;
     d.cheri_op = cheri_op;
     d.is_jalr = is_cjalr;
-    return fcov_instr_cat(d);
+    return context_cat(fcov_instr_cat(d), 0);
   endfunction
 
   assign ir0_dec = kudu_top.issuer_i.ir0_dec;
@@ -120,20 +174,20 @@ module kudu_fcov_context
       foreach (dec[i]) begin
         dec[i].is_brkpt = 0;
         s0_category[i] = kudu_top.ir_stage_i.s0_rd_valid[i] ?
-                         fcov_instr_cat(dec[i]) : EMPTY;
+                         s0_cat(fcov_instr_cat(dec[i])) : S_EMPTY;
       end
     end
 
     covergroup cg_frontend @(posedge clk_i iff rst_ni);
       option.per_instance = 1;
       option.name = "FC_MA_CONTEXT.frontend";
-      cp_s0_rdata0: coverpoint context_category_e'(s0_category[0]) {
-        bins category[] = {[C_ALU_RI:C_ILLEGAL], EMPTY}
-          with (category_enabled(int'(item)));
+      cp_s0_rdata0: coverpoint s0_category_e'(s0_category[0]) {
+        bins category[] = {[S_ALU:S_ILLEGAL], S_EMPTY}
+          with (s0_enabled(int'(item)));
       }
-      cp_s0_rdata1: coverpoint context_category_e'(s0_category[1]) {
-        bins category[] = {[C_ALU_RI:C_ILLEGAL], EMPTY}
-          with (category_enabled(int'(item)));
+      cp_s0_rdata1: coverpoint s0_category_e'(s0_category[1]) {
+        bins category[] = {[S_ALU:S_ILLEGAL], S_EMPTY}
+          with (s0_enabled(int'(item)));
       }
       cp_ir0: coverpoint ir_context[0] {
         bins pipeline[] = {[IR_LOCAL:IR_JALR], IR_DIV, IR_EMPTY};
@@ -150,15 +204,11 @@ module kudu_fcov_context
         wildcard bins commit_error = {5'b1????};
       }
       cp_special_event_value: coverpoint special_event { bins mask[] = {[0:31]}; }
-      x_s0_ir_special: cross cp_s0_rdata0, cp_s0_rdata1, cp_ir0, cp_ir1, cp_special_event {
-        ignore_bins s0_order = binsof(cp_s0_rdata0) intersect {EMPTY} &&
-                              !binsof(cp_s0_rdata1) intersect {EMPTY};
+      x_s0_s1: cross cp_s0_rdata0, cp_s0_rdata1, cp_ir0, cp_ir1 {
+        ignore_bins s0_order = binsof(cp_s0_rdata0) intersect {S_EMPTY} &&
+                              !binsof(cp_s0_rdata1) intersect {S_EMPTY};
         ignore_bins ir_order = binsof(cp_ir0) intersect {IR_EMPTY} &&
                               !binsof(cp_ir1) intersect {IR_EMPTY};
-        ignore_bins error_without_ir0 = binsof(cp_special_event.ir0_err) &&
-                                        binsof(cp_ir0) intersect {IR_EMPTY};
-        ignore_bins error_without_ir1 = binsof(cp_special_event.ir1_err) &&
-                                        binsof(cp_ir1) intersect {IR_EMPTY};
       }
     endgroup
     cg_frontend u_cg_frontend = new();
@@ -167,15 +217,17 @@ module kudu_fcov_context
       kudu_top.ir_stage_i.s0_rd_valid[1] |-> kudu_top.ir_stage_i.s0_rd_valid[0])
       else $error("FCOV context: s0_rdata1 valid without s0_rdata0");
   end else begin : gen_no_s0
-    assign s0_category = '{default: EMPTY};
+    assign s0_category = '{default: S_EMPTY};
   end
 
   always_comb begin
     ex_cmplx_amo = '0;
     ex_category[Alu0Wb] = kudu_top.alu_pipeline0_i.wb_valid ?
-      kudu_top.alu_pipeline0_i.u_fcov_alu.wb_category : EMPTY;
+      context_cat(kudu_top.alu_pipeline0_i.u_fcov_alu.wb_category,
+                  kudu_top.alu_pipeline0_i.u_fcov_alu.wb_auipc) : EMPTY;
     ex_category[Alu1Wb] = kudu_top.alu_pipeline1_i.wb_valid ?
-      kudu_top.alu_pipeline1_i.u_fcov_alu.wb_category : EMPTY;
+      context_cat(kudu_top.alu_pipeline1_i.u_fcov_alu.wb_category,
+                  kudu_top.alu_pipeline1_i.u_fcov_alu.wb_auipc) : EMPTY;
     // req_dly_valid also retains copies of bypassed early requests in IDLE
     // and DLY0_WGNT. Only DLY1 / DLY1_WGNT own delayed queued work.
     ex_category[LsifDly] =
@@ -222,7 +274,7 @@ module kudu_fcov_context
       }
       cp_special_event_value: coverpoint special_event { bins mask[] = {[0:31]}; }
       cp_ex_resident: coverpoint context_category_e'(ex_category[i]) {
-        bins category[] = {[C_ALU_RI:C_ILLEGAL], EMPTY}
+        bins category[] = {[C_ALU:C_ILLEGAL], EMPTY}
           with (ex_enabled(int'(item), i));
       }
       x_ir_special_ex: cross cp_ir0, cp_ir1, cp_special_event, cp_ex_resident

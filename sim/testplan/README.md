@@ -635,8 +635,9 @@ current/saved CHERI mode. This is not dcache-forwarding coverage.
 | Raw capability point | Goals |
 |---|---|
 | **cp_resp_cap_valid** | Separate tagged and untagged bins; observe the raw tag even when **clrperm[3]** will clear the resulting register tag |
-| **cp_resp_cap_rsvd**, **cp_resp_cap_cperms**, **cp_resp_cap_otype** | Per-value automatic bins for these small fields |
-| **cp_resp_cap_cexp** | Separate bins for **0, 31, 24, 1**, and one scored bin combining **2–23 and 25–30** |
+| **cp_resp_cap_rsvd** | Reserved bit 0; a tagged capability with the bit set is an illegal bin (**AssertRespTaggedCapEncoding**) |
+| **cp_resp_cap_cperms**, **cp_resp_cap_otype** | Per-value automatic bins for these small fields |
+| **cp_resp_cap_cexp** | Separate bins for **0, 31, 24**, and one scored bin combining **7–23 and 25–30**; **1–6** (exponent above 24) is illegal |
 | **cp_resp_cap_top_vs_base** | **top8 == base9[7:0]**, **top8 > base9[7:0]**, and **top8 < base9[7:0]**; ignore **base9[8]** |
 | **cp_resp_cap_addr** | Automatic range bins over the address field, not an exhaustive 32-bit value goal |
 
@@ -718,9 +719,11 @@ mask rather than counting ones as the sampled value:
 The paired assertions enforce **$onehot0(rd_tag_match)** and
 **$countones(wr_tag_match) <= 2**. Illegal masks are negative monitor-test
 stimulus, not passing DUT coverage targets.
-**cp_resp_inval_two_matches** and **cp_unaligned_two_matches** separately
-require exactly two write-match bits and, respectively, **resp_invalidate=1**
-or saved **unaligned_access_q=1**. Both may hit together.
+**cp_resp_inval_two_matches** requires exactly two write-match bits and
+**resp_invalidate=1**. **cp_unaligned_two_matches** requires a misaligned
+integer load or store that straddles two words (word offset 1/2/3 or
+halfword offset 3) to be accepted while valid lines hold both **addr** and
+**addr+4**; it has one bin per direction and misaligned type.
 
 **cp_rd_hit** and **cp_rd_match_ok** require **lsu_req_i=1**;
 **cp_rd_hit_q** retains its existing sampling.
