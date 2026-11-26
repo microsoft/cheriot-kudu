@@ -1,0 +1,32 @@
+diff --git a/src/sail_sv_backend/sail_plugin_sv.ml b/src/sail_sv_backend/sail_plugin_sv.ml
+index b3bd2c22..2c9bbdc0 100644
+--- a/src/sail_sv_backend/sail_plugin_sv.ml
++++ b/src/sail_sv_backend/sail_plugin_sv.ml
+@@ -105,6 +105,10 @@ let opt_nopacked = ref false
+ let opt_padding = ref false
+ let opt_nomem = ref false
+ 
++(* kudu-fv: loop unroll bound (was hard-coded 4); loops that run longer
++   reach imatch_failure, i.e. sail_reached_unreachable. *)
++let opt_unroll_loops = ref 4
++
+ let opt_unreachable = ref []
+ let opt_fun2wires = ref []
+ 
+@@ -153,6 +157,7 @@ let verilog_options =
+       "<functionname> Mark function as unreachable."
+     );
+     ("-sv_nomem", Arg.Set opt_nomem, " don't emit a dynamic memory implementation");
++    ("-sv_unroll_loops", Arg.Set_int opt_unroll_loops, "<n> unroll loops n times (default 4)");
+     ( "-sv_fun2wires",
+       Arg.String (fun str ->
+         match String.index_opt str ':' with
+@@ -311,7 +316,7 @@ module Verilog_config (C : JIB_CONFIG) : Jib_compile.CONFIG = struct
+ 
+   let optimize_anf _ aexp = aexp
+ 
+-  let unroll_loops = Some 4
++  let unroll_loops = Some !opt_unroll_loops
+   let specialize_calls = false
+   let make_call_precise = C.make_call_precise
+   let ignore_64 = true

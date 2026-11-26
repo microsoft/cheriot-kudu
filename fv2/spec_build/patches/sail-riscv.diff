@@ -1,0 +1,2329 @@
+diff --git a/model/riscv_insts_aext.sail b/model/riscv_insts_aext.sail
+new file mode 100644
+index 0000000..5fe1f20
+--- /dev/null
++++ b/model/riscv_insts_aext.sail
+@@ -0,0 +1,162 @@
++/*=======================================================================================*/
++/*  This Sail RISC-V architecture model, comprising all files and                        */
++/*  directories except where otherwise noted is subject the BSD                          */
++/*  two-clause license in the LICENSE file.                                              */
++/*                                                                                       */
++/*  SPDX-License-Identifier: BSD-2-Clause                                                */
++/*=======================================================================================*/
++
++/*
++ * kudu-fv: the A extension (LR.W, SC.W, AMO*.W), ported from sail-riscv
++ * 122bcb8 model/riscv_insts_aext.sail to the FV memory interface (the
++ * b0589c3 LOAD/STORE style: ext_data_get_addr with a byte width, no
++ * translateAddr or EA calls, MemException(addr, e)).  CHERIoT authority is
++ * the capability in cs1, checked by cheriot-sail's ext_data_get_addr
++ * (tag, seal, LD for LR, SD for SC, LD and SD for AMOs, bounds of 4 bytes).
++ * Upstream cheriot-sail does not compile this file.
++ *
++ * The reservation is held by the memory system, not by the core: the SC
++ * outcome is match_reservation(), which the SV build turns into an input
++ * port (-sv-fun2wires match_reservation); load_reservation and
++ * cancel_reservation are no-ops.  RV32 only, so only WORD is valid.
++ */
++
++function amo_width_valid(size : word_width) -> bool = {
++  match(size) {
++    WORD   => true,
++    _      => false
++  }
++}
++
++/* ****************************************************************** */
++union clause ast = LOADRES : (bool, bool, regidx, word_width, regidx)
++
++mapping clause encdec = LOADRES(aq, rl, rs1, size, rd) if amo_width_valid(size)
++  <-> 0b00010 @ bool_bits(aq) @ bool_bits(rl) @ 0b00000 @ rs1 @ 0b0 @ size_enc(size) @ rd @ 0b0101111 if amo_width_valid(size)
++
++function clause execute(LOADRES(aq, rl, rs1, width, rd)) = {
++  if haveAtomics() then {
++    match ext_data_get_addr(rs1, zeros(), Read(Data), 4) {
++      Ext_DataAddr_Error(e)  => { ext_handle_data_check_error(e); RETIRE_FAIL },
++      Ext_DataAddr_OK(vaddr) =>
++        /* "LR faults like a normal load, even though it's in the AMO major opcode space." */
++        if vaddr[1..0] != 0b00
++        then { handle_mem_exception(vaddr, E_Load_Addr_Align()); RETIRE_FAIL }
++        else match mem_read(Read(Data), vaddr, 4, aq, aq & rl, true) {
++          MemValue(result) => { load_reservation(vaddr); X(rd) = sign_extend(result); RETIRE_SUCCESS },
++          MemException(addr, e) => { handle_mem_exception(addr, e); RETIRE_FAIL }
++        }
++    }
++  } else {
++    handle_illegal();
++    RETIRE_FAIL
++  }
++}
++
++mapping clause assembly = LOADRES(aq, rl, rs1, size, rd)
++  <-> "lr." ^ size_mnemonic(size) ^ maybe_aq(aq) ^ maybe_rl(rl) ^ spc() ^ reg_name(rd) ^ sep() ^ "(" ^ reg_name(rs1) ^ ")"
++
++/* ****************************************************************** */
++union clause ast = STORECON : (bool, bool, regidx, regidx, word_width, regidx)
++
++mapping clause encdec = STORECON(aq, rl, rs2, rs1, size, rd) if amo_width_valid(size)
++  <-> 0b00011 @ bool_bits(aq) @ bool_bits(rl) @ rs2 @ rs1 @ 0b0 @ size_enc(size) @ rd @ 0b0101111 if amo_width_valid(size)
++
++function clause execute (STORECON(aq, rl, rs2, rs1, width, rd)) = {
++  if haveAtomics() then {
++    match ext_data_get_addr(rs1, zeros(), Write(Data), 4) {
++      Ext_DataAddr_Error(e)  => { ext_handle_data_check_error(e); RETIRE_FAIL },
++      Ext_DataAddr_OK(vaddr) =>
++        if vaddr[1..0] != 0b00
++        then { handle_mem_exception(vaddr, E_SAMO_Addr_Align()); RETIRE_FAIL }
++        else if match_reservation(vaddr) == false
++        then { X(rd) = zero_extend(0b1); cancel_reservation(); RETIRE_SUCCESS }
++        else {
++          let rs2_val = X(rs2);
++          match mem_write_value(vaddr, 4, rs2_val[31..0], aq & rl, rl, true) {
++            MemValue(true)  => { X(rd) = zero_extend(0b0); cancel_reservation(); RETIRE_SUCCESS },
++            MemValue(false) => { X(rd) = zero_extend(0b1); cancel_reservation(); RETIRE_SUCCESS },
++            MemException(addr, e) => { handle_mem_exception(addr, e); RETIRE_FAIL }
++          }
++        }
++    }
++  } else {
++    handle_illegal();
++    RETIRE_FAIL
++  }
++}
++
++mapping clause assembly = STORECON(aq, rl, rs2, rs1, size, rd)
++  <-> "sc." ^ size_mnemonic(size) ^ maybe_aq(aq) ^ maybe_rl(rl) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs2) ^ sep() ^ "(" ^ reg_name(rs1) ^ ")"
++
++/* ****************************************************************** */
++union clause ast = AMO : (amoop, bool, bool, regidx, regidx, word_width, regidx)
++
++mapping encdec_amoop : amoop <-> bits(5) = {
++  AMOSWAP <-> 0b00001,
++  AMOADD  <-> 0b00000,
++  AMOXOR  <-> 0b00100,
++  AMOAND  <-> 0b01100,
++  AMOOR   <-> 0b01000,
++  AMOMIN  <-> 0b10000,
++  AMOMAX  <-> 0b10100,
++  AMOMINU <-> 0b11000,
++  AMOMAXU <-> 0b11100
++}
++
++mapping clause encdec = AMO(op, aq, rl, rs2, rs1, size, rd) if amo_width_valid(size)
++  <-> encdec_amoop(op) @ bool_bits(aq) @ bool_bits(rl) @ rs2 @ rs1 @ 0b0 @ size_enc(size) @ rd @ 0b0101111 if amo_width_valid(size)
++
++function clause execute (AMO(op, aq, rl, rs2, rs1, width, rd)) = {
++  if haveAtomics() then {
++    match ext_data_get_addr(rs1, zeros(), ReadWrite(Data, Data), 4) {
++      Ext_DataAddr_Error(e)  => { ext_handle_data_check_error(e); RETIRE_FAIL },
++      Ext_DataAddr_OK(vaddr) =>
++        if vaddr[1..0] != 0b00
++        then { handle_mem_exception(vaddr, E_SAMO_Addr_Align()); RETIRE_FAIL }
++        else {
++          let rs2_val : xlenbits = X(rs2);
++          match mem_read(ReadWrite(Data, Data), vaddr, 4, aq, aq & rl, true) {
++            MemException(addr, e) => { handle_mem_exception(addr, e); RETIRE_FAIL },
++            MemValue(loaded) => {
++              let result : xlenbits =
++                match op {
++                  AMOSWAP => rs2_val,
++                  AMOADD  => rs2_val + loaded,
++                  AMOXOR  => rs2_val ^ loaded,
++                  AMOAND  => rs2_val & loaded,
++                  AMOOR   => rs2_val | loaded,
++                  AMOMIN  => if rs2_val <_s loaded then rs2_val else loaded,
++                  AMOMAX  => if rs2_val <_s loaded then loaded else rs2_val,
++                  AMOMINU => if rs2_val <_u loaded then rs2_val else loaded,
++                  AMOMAXU => if rs2_val <_u loaded then loaded else rs2_val
++                };
++              match mem_write_value(vaddr, 4, result, aq & rl, rl, true) {
++                MemValue(true)  => { X(rd) = loaded; RETIRE_SUCCESS },
++                MemValue(false) => { internal_error(__FILE__, __LINE__, "AMO got false from mem_write_value") },
++                MemException(addr, e) => { handle_mem_exception(addr, e); RETIRE_FAIL }
++              }
++            }
++          }
++        }
++    }
++  } else {
++    handle_illegal();
++    RETIRE_FAIL
++  }
++}
++
++mapping amo_mnemonic : amoop <-> string = {
++  AMOSWAP <-> "amoswap",
++  AMOADD  <-> "amoadd",
++  AMOXOR  <-> "amoxor",
++  AMOAND  <-> "amoand",
++  AMOOR   <-> "amoor",
++  AMOMIN  <-> "amomin",
++  AMOMAX  <-> "amomax",
++  AMOMINU <-> "amominu",
++  AMOMAXU <-> "amomaxu"
++}
++
++mapping clause assembly = AMO(op, aq, rl, rs2, rs1, width, rd)
++  <-> amo_mnemonic(op) ^ "." ^ size_mnemonic(width) ^ maybe_aq(aq) ^ maybe_rl(rl) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs2) ^ sep() ^ "(" ^ reg_name(rs1) ^ ")"
+diff --git a/model/riscv_insts_base.sail b/model/riscv_insts_base.sail
+index f19176c..21cd008 100644
+--- a/model/riscv_insts_base.sail
++++ b/model/riscv_insts_base.sail
+@@ -19,7 +19,7 @@ mapping encdec_uop : uop <-> bits(7) = {
+ }
+ 
+ mapping clause encdec = UTYPE(imm, rd, op)
+-  <-> imm @ encdec_r(rd) @ encdec_uop(op)
++  <-> imm @ rd @ encdec_uop(op)
+ 
+ function clause execute UTYPE(imm, rd, op) = {
+   let off : xlenbits = sign_extend(imm @ 0x000);
+@@ -43,12 +43,12 @@ mapping clause assembly = UTYPE(imm, rd, op)
+ union clause ast = RISCV_JAL : (bits(21), regidx)
+ 
+ mapping clause encdec = RISCV_JAL(imm_19 @ imm_7_0 @ imm_8 @ imm_18_13 @ imm_12_9 @ 0b0, rd)
+-  <-> imm_19 : bits(1) @ imm_18_13 : bits(6) @ imm_12_9 : bits(4) @ imm_8 : bits(1) @ imm_7_0 : bits(8) @ encdec_r(rd) @ 0b1101111
++  <-> imm_19 : bits(1) @ imm_18_13 : bits(6) @ imm_12_9 : bits(4) @ imm_8 : bits(1) @ imm_7_0 : bits(8) @ rd @ 0b1101111
+ 
+ /*
+ ideally we want some syntax like
+ 
+-mapping clause encdec = RISCV_JAL(imm @ 0b0, rd) <-> imm[19] @ imm[9..0] @ imm[10] @ imm[18..11] @ encdec_r(rd) @ 0b1101111
++mapping clause encdec = RISCV_JAL(imm @ 0b0, rd) <-> imm[19] @ imm[9..0] @ imm[10] @ imm[18..11] @ rd @ 0b1101111
+ 
+ match bv {
+   imm[19] @ imm[9..0] @ imm[10] @ imm[18..11] -> imm @ 0b0
+@@ -89,7 +89,7 @@ mapping clause assembly = RISCV_JAL(imm, rd)
+ union clause ast = RISCV_JALR : (bits(12), regidx, regidx)
+ 
+ mapping clause encdec = RISCV_JALR(imm, rs1, rd)
+-  <-> imm @ encdec_r(rs1) @ 0b000 @ encdec_r(rd) @ 0b1100111
++  <-> imm @ rs1 @ 0b000 @ rd @ 0b1100111
+ 
+ mapping clause assembly = RISCV_JALR(imm, rs1, rd)
+   <-> "jalr" ^ spc() ^ reg_name(rd) ^ sep() ^ hex_bits_signed_12(imm) ^ "(" ^ reg_name(rs1) ^ ")"
+@@ -109,7 +109,7 @@ mapping encdec_bop : bop <-> bits(3) = {
+ }
+ 
+ mapping clause encdec = BTYPE(imm7_6 @ imm5_0 @ imm7_5_0 @ imm5_4_1 @ 0b0, rs2, rs1, op)
+-  <-> imm7_6 : bits(1) @ imm7_5_0 : bits(6) @ encdec_r(rs2) @ encdec_r(rs1) @ encdec_bop(op) @ imm5_4_1 : bits(4) @ imm5_0 : bits(1) @ 0b1100011
++  <-> imm7_6 : bits(1) @ imm7_5_0 : bits(6) @ rs2 @ rs1 @ encdec_bop(op) @ imm5_4_1 : bits(4) @ imm5_0 : bits(1) @ 0b1100011
+ 
+ function clause execute (BTYPE(imm, rs2, rs1, op)) = {
+   let rs1_val = X(rs1);
+@@ -168,7 +168,7 @@ mapping encdec_iop : iop <-> bits(3) = {
+ }
+ 
+ mapping clause encdec = ITYPE(imm, rs1, rd, op)
+-  <-> imm @ encdec_r(rs1) @ encdec_iop(op) @ encdec_r(rd) @ 0b0010011
++  <-> imm @ rs1 @ encdec_iop(op) @ rd @ 0b0010011
+ 
+ function clause execute (ITYPE (imm, rs1, rd, op)) = {
+   let rs1_val = X(rs1);
+@@ -206,9 +206,9 @@ mapping encdec_sop : sop <-> bits(3) = {
+   RISCV_SRAI <-> 0b101
+ }
+ 
+-mapping clause encdec = SHIFTIOP(shamt, rs1, rd, RISCV_SLLI) <-> 0b000000 @ shamt @ encdec_r(rs1) @ 0b001 @ encdec_r(rd) @ 0b0010011 if sizeof(xlen) == 64 | shamt[5] == bitzero
+-mapping clause encdec = SHIFTIOP(shamt, rs1, rd, RISCV_SRLI) <-> 0b000000 @ shamt @ encdec_r(rs1) @ 0b101 @ encdec_r(rd) @ 0b0010011 if sizeof(xlen) == 64 | shamt[5] == bitzero
+-mapping clause encdec = SHIFTIOP(shamt, rs1, rd, RISCV_SRAI) <-> 0b010000 @ shamt @ encdec_r(rs1) @ 0b101 @ encdec_r(rd) @ 0b0010011 if sizeof(xlen) == 64 | shamt[5] == bitzero
++mapping clause encdec = SHIFTIOP(shamt, rs1, rd, RISCV_SLLI) <-> 0b000000 @ shamt @ rs1 @ 0b001 @ rd @ 0b0010011 if sizeof(xlen) == 64 | shamt[5] == bitzero
++mapping clause encdec = SHIFTIOP(shamt, rs1, rd, RISCV_SRLI) <-> 0b000000 @ shamt @ rs1 @ 0b101 @ rd @ 0b0010011 if sizeof(xlen) == 64 | shamt[5] == bitzero
++mapping clause encdec = SHIFTIOP(shamt, rs1, rd, RISCV_SRAI) <-> 0b010000 @ shamt @ rs1 @ 0b101 @ rd @ 0b0010011 if sizeof(xlen) == 64 | shamt[5] == bitzero
+ 
+ function clause execute (SHIFTIOP(shamt, rs1, rd, op)) = {
+   let rs1_val = X(rs1);
+@@ -240,16 +240,16 @@ mapping clause assembly = SHIFTIOP(shamt, rs1, rd, op)
+ /* ****************************************************************** */
+ union clause ast = RTYPE : (regidx, regidx, regidx, rop)
+ 
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_ADD)  <-> 0b0000000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b000 @ encdec_r(rd) @ 0b0110011
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SLT)  <-> 0b0000000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b010 @ encdec_r(rd) @ 0b0110011
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SLTU) <-> 0b0000000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b011 @ encdec_r(rd) @ 0b0110011
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_AND)  <-> 0b0000000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b111 @ encdec_r(rd) @ 0b0110011
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_OR)   <-> 0b0000000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b110 @ encdec_r(rd) @ 0b0110011
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_XOR)  <-> 0b0000000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b100 @ encdec_r(rd) @ 0b0110011
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SLL)  <-> 0b0000000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b001 @ encdec_r(rd) @ 0b0110011
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SRL)  <-> 0b0000000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b101 @ encdec_r(rd) @ 0b0110011
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SUB)  <-> 0b0100000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b000 @ encdec_r(rd) @ 0b0110011
+-mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SRA)  <-> 0b0100000 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b101 @ encdec_r(rd) @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_ADD)  <-> 0b0000000 @ rs2 @ rs1 @ 0b000 @ rd @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SLT)  <-> 0b0000000 @ rs2 @ rs1 @ 0b010 @ rd @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SLTU) <-> 0b0000000 @ rs2 @ rs1 @ 0b011 @ rd @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_AND)  <-> 0b0000000 @ rs2 @ rs1 @ 0b111 @ rd @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_OR)   <-> 0b0000000 @ rs2 @ rs1 @ 0b110 @ rd @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_XOR)  <-> 0b0000000 @ rs2 @ rs1 @ 0b100 @ rd @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SLL)  <-> 0b0000000 @ rs2 @ rs1 @ 0b001 @ rd @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SRL)  <-> 0b0000000 @ rs2 @ rs1 @ 0b101 @ rd @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SUB)  <-> 0b0100000 @ rs2 @ rs1 @ 0b000 @ rd @ 0b0110011
++mapping clause encdec = RTYPE(rs2, rs1, rd, RISCV_SRA)  <-> 0b0100000 @ rs2 @ rs1 @ 0b101 @ rd @ 0b0110011
+ 
+ function clause execute (RTYPE(rs2, rs1, rd, op)) = {
+   let rs1_val = X(rs1);
+@@ -298,7 +298,7 @@ union clause ast = LOAD : (bits(12), regidx, regidx, bool, word_width, bool, boo
+ /* unsigned loads are only present for widths strictly less than xlen,
+    signed loads also present for widths equal to xlen */
+ mapping clause encdec = LOAD(imm, rs1, rd, is_unsigned, size, false, false) if (size_bytes(size) < sizeof(xlen_bytes)) | (not(is_unsigned) & size_bytes(size) <= sizeof(xlen_bytes))
+-  <-> imm @ encdec_r(rs1) @ bool_bits(is_unsigned) @ size_enc(size) @ encdec_r(rd) @ 0b0000011 if (size_bytes(size) < sizeof(xlen_bytes)) | (not(is_unsigned) & size_bytes(size) <= sizeof(xlen_bytes))
++  <-> imm @ rs1 @ bool_bits(is_unsigned) @ size_enc(size) @ rd @ 0b0000011 if (size_bytes(size) < sizeof(xlen_bytes)) | (not(is_unsigned) & size_bytes(size) <= sizeof(xlen_bytes))
+ 
+ val extend_value : forall 'n, 0 < 'n <= xlen. (bool, bits('n)) -> xlenbits
+ function extend_value(is_unsigned, value) = if is_unsigned then zero_extend(value) else sign_extend(value)
+@@ -368,7 +368,7 @@ mapping clause assembly = LOAD(imm, rs1, rd, is_unsigned, size, aq, rl)
+ union clause ast = STORE : (bits(12), regidx, regidx, word_width, bool, bool)
+ 
+ mapping clause encdec = STORE(imm7 @ imm5, rs2, rs1, size, false, false)              if size_bytes(size) <= sizeof(xlen_bytes)
+-  <-> imm7 : bits(7) @ encdec_r(rs2) @ encdec_r(rs1) @ 0b0 @ size_enc(size) @ imm5 : bits(5) @ 0b0100011 if size_bytes(size) <= sizeof(xlen_bytes)
++  <-> imm7 : bits(7) @ rs2 @ rs1 @ 0b0 @ size_enc(size) @ imm5 : bits(5) @ 0b0100011 if size_bytes(size) <= sizeof(xlen_bytes)
+ 
+ /* NOTE: Currently, we only EA if address translation is successful.
+    This may need revisiting. */
+@@ -398,10 +398,10 @@ mapping clause assembly = STORE(imm, rs2, rs1, size, aq, rl)
+   <-> "s" ^ size_mnemonic(size) ^ maybe_aq(aq) ^ maybe_rl(rl) ^ spc() ^ reg_name(rs2) ^ sep() ^ hex_bits_signed_12(imm) ^ opt_spc() ^ "(" ^ opt_spc() ^ reg_name(rs1) ^ opt_spc() ^ ")"
+ 
+ /* ****************************************************************** */
+-union clause ast = FENCE : (bits(4), bits(4), bits(4), bits(5), bits(5))
++union clause ast = FENCE : (bits(4), bits(4))
+ 
+-mapping clause encdec = FENCE(pred, succ, g1, g2, g3)
+-  <-> g1 @ pred @ succ @ g2 @ 0b000 @ g3 @ 0b0001111
++mapping clause encdec = FENCE(pred, succ)
++  <-> 0b0000 @ pred @ succ @ 0b00000 @ 0b000 @ 0b00000 @ 0b0001111
+ 
+ function effective_fence_set(set : bits(4), fiom : bool) -> bits(4) = {
+   // The bits are IORW. If FIOM is set then I implies R and O implies W.
+@@ -410,7 +410,7 @@ function effective_fence_set(set : bits(4), fiom : bool) -> bits(4) = {
+   } else set
+ }
+ 
+-function clause execute (FENCE(pred, succ, g1, g2, g3)) = {
++function clause execute (FENCE(pred, succ)) = {
+   // If the FIOM bit in menvcfg/senvcfg is set then the I/O bits can imply R/W.
+   let fiom = is_fiom_active();
+   let pred = effective_fence_set(pred, fiom);
+@@ -460,14 +460,53 @@ mapping fence_bits : bits(4) <-> string = {
+   i : bits(1) @ o : bits(1) @ r : bits(1) @ w : bits(1) <-> bit_maybe_i(i) ^ bit_maybe_o(o) ^ bit_maybe_r(r) ^ bit_maybe_w(w)
+ }
+ 
++mapping clause assembly = FENCE(pred, succ)
++  <-> "fence" ^ spc() ^ fence_bits(pred) ^ sep() ^ fence_bits(succ)
++
+ /* ****************************************************************** */
+-union clause ast = FENCEI : (bits(12), bits(5), bits(5))
++union clause ast = FENCEI : unit
+ 
+-mapping clause encdec = FENCEI(g1, g2, g3)
+-  <-> g1 @ g2 @ 0b001 @ g3 @ 0b0001111
++mapping clause encdec = FENCEI()
++  <-> 0b000000000000 @ 0b00000 @ 0b001 @ 0b00000 @ 0b0001111
+ 
+ /* fence.i is a nop for the memory model */
+-function clause execute FENCEI(g1, g2, g3) = { /* __barrier(Barrier_RISCV_i); */ RETIRE_SUCCESS }
++function clause execute FENCEI() = { /* __barrier(Barrier_RISCV_i); */ RETIRE_SUCCESS }
++
++mapping clause assembly = FENCEI() <-> "fence.i"
++
++/* ****************************************************************** */
++/* kudu-fv: FENCE_TSO and SRET restored (lowRISC 2e3ab10 removed them);
++ * semantics as in CHERIoT-Platform sail-riscv cheriot-dii-read-from-file.
++ * SFENCE_VMA is deliberately not restored: upstream retires it as a NOP in
++ * M-mode, but Kudu (like Ibex) decodes it as illegal, and CHERIoT has no
++ * S-mode or address translation.  Without the clause it decodes as ILLEGAL. */
++union clause ast = FENCE_TSO : (bits(4), bits(4))
++
++mapping clause encdec = FENCE_TSO(pred, succ)
++  <-> 0b1000 @ pred @ succ @ 0b00000 @ 0b000 @ 0b00000 @ 0b0001111
++
++function clause execute (FENCE_TSO(pred, succ)) = {
++  match (pred, succ) {
++    (_ : bits(2) @ 0b11, _ : bits(2) @ 0b11) => sail_barrier(Barrier_RISCV_tso),
++    (_ : bits(2) @ 0b00, _ : bits(2) @ 0b00) => (),
++    _ => { print("FIXME: unsupported fence"); () }
++  };
++  RETIRE_SUCCESS
++}
++
++mapping clause assembly = FENCE_TSO(pred, succ)
++  <-> "fence.tso" ^ spc() ^ fence_bits(pred) ^ sep() ^ fence_bits(succ)
++
++/* ****************************************************************** */
++union clause ast = SRET : unit
++
++mapping clause encdec = SRET()
++  <-> 0b0001000 @ 0b00010 @ 0b00000 @ 0b000 @ 0b00000 @ 0b1110011
++
++/* No S-mode in CHERIoT: SRET is always illegal (upstream sret_illegal with haveSupMode() = false). */
++function clause execute SRET() = { handle_illegal(); RETIRE_FAIL }
++
++mapping clause assembly = SRET() <-> "sret"
+ 
+ /* ****************************************************************** */
+ union clause ast = ECALL : unit
+@@ -516,8 +555,7 @@ mapping clause encdec = EBREAK()
+   <-> 0b000000000001 @ 0b00000 @ 0b000 @ 0b00000 @ 0b1110011
+ 
+ function clause execute EBREAK() = {
+-  let v = if plat_mtval_has_ebreak_pc() then PC else 0x00000000;
+-  handle_mem_exception(v, E_Breakpoint());
++  handle_mem_exception(PC, E_Breakpoint());
+   RETIRE_FAIL
+ }
+ 
+@@ -532,9 +570,14 @@ mapping clause encdec = WFI()
+ function clause execute WFI() =
+   match cur_privilege {
+     Machine    => { platform_wfi(); RETIRE_SUCCESS },
+-    User => if   mstatus[TW] == 0b1
++    Supervisor => if   mstatus[TW] == 0b1
+                   then { handle_illegal(); RETIRE_FAIL }
+                   else { platform_wfi(); RETIRE_SUCCESS },
++    /* kudu-fv: without S-mode, a U-mode WFI traps only when mstatus.TW=1
++     * (privileged spec 3.1.6.6, as Kudu issuer.sv/cheriot-ibex). */
++    User       => if   mstatus[TW] == 0b1
++                  then { handle_illegal(); RETIRE_FAIL }
++                  else { platform_wfi(); RETIRE_SUCCESS }
+   }
+ 
+ mapping clause assembly = WFI() <-> "wfi"
+diff --git a/model/riscv_insts_begin.sail b/model/riscv_insts_begin.sail
+index 5768551..4287535 100644
+--- a/model/riscv_insts_begin.sail
++++ b/model/riscv_insts_begin.sail
+@@ -13,12 +13,6 @@
+ 
+ scattered union ast
+ 
+-val encdec_r : regidx <-> bits(5)
+-function encdec_r_backwards(bits) = struct { idx = bits }
+-function encdec_r_backwards_matches(bits) = not(haveE()) | (bits[4] == bitzero)
+-function encdec_r_forwards(ri) = ri.idx
+-function encdec_r_forwards_matches(bits) = true
+-
+ /* returns whether an instruction was retired, used for computing minstret */
+ val execute : ast -> Retired
+ scattered function execute
+diff --git a/model/riscv_insts_cext.sail b/model/riscv_insts_cext.sail
+index bf7ff40..23bafa5 100644
+--- a/model/riscv_insts_cext.sail
++++ b/model/riscv_insts_cext.sail
+@@ -83,33 +83,42 @@ mapping clause assembly = C_SW(uimm, rsc1, rsc2)
+ union clause ast = C_ADDI : (bits(6), regidx)
+ 
+ mapping clause encdec_compressed = C_ADDI(nzi5 @ nzi40, rsd)
+-  <-> 0b000 @ nzi5 : bits(1) @ encdec_r(rsd) @ nzi40 : bits(5) @ 0b01
++      if nzi5 @ nzi40 != 0b000000 & rsd != zreg
++  <-> 0b000 @ nzi5 : bits(1) @ rsd : regidx @ nzi40 : bits(5) @ 0b01
++      if nzi5 @ nzi40 != 0b000000 & rsd != zreg
+ 
+ function clause decompress C_ADDI(nzi, rsd) = {
+   let imm : bits(12) = sign_extend(nzi);
+-  let dst : regidx = if nzi == 0b000000 then zreg else rsd;
+-  Some(ITYPE(imm, rsd, dst, RISCV_ADDI))
++  Some(ITYPE(imm, rsd, rsd, RISCV_ADDI))
+ }
+ 
+ mapping clause assembly = C_ADDI(nzi, rsd)
++      if nzi != 0b000000 & rsd != zreg
+   <-> "c.addi" ^ spc() ^ reg_name(rsd) ^ sep() ^ hex_bits_signed_6(nzi)
++      if nzi != 0b000000 & rsd != zreg
+ 
+ /* ****************************************************************** */
+ union clause ast = C_JAL : (bits(11))
+ 
+ mapping clause encdec_compressed = C_JAL(i11 @ i10 @ i98 @ i7 @ i6 @ i5 @ i4 @ i31)
++      if sizeof(xlen) == 32
+   <-> 0b001 @ i11 : bits(1) @ i4 : bits(1) @ i98 : bits(2) @ i10 : bits(1) @ i6 : bits(1) @ i7 : bits(1) @ i31 : bits(3) @ i5 : bits(1) @ 0b01
++      if sizeof(xlen) == 32
+ 
+ function clause decompress C_JAL(imm) = Some(RISCV_JAL(sign_extend(imm @ 0b0), ra))
+ 
+ mapping clause assembly = C_JAL(imm)
++      if sizeof(xlen) == 32
+   <-> "c.jal" ^ spc() ^ hex_bits_signed_12(imm @ 0b0)
++      if sizeof(xlen) == 32
+ 
+ /* ****************************************************************** */
+ union clause ast = C_LI : (bits(6), regidx)
+ 
+ mapping clause encdec_compressed = C_LI(imm5 @ imm40, rd)
+-  <-> 0b010 @ imm5 : bits(1) @ encdec_r(rd) @ imm40 : bits(5) @ 0b01
++      if rd != zreg
++  <-> 0b010 @ imm5 : bits(1) @ rd : regidx @ imm40 : bits(5) @ 0b01
++      if rd != zreg
+ 
+ function clause decompress C_LI(imm, rd) = {
+   let imm : bits(12) = sign_extend(imm);
+@@ -117,7 +126,9 @@ function clause decompress C_LI(imm, rd) = {
+ }
+ 
+ mapping clause assembly = C_LI(imm, rd)
++      if rd != zreg
+   <-> "c.li" ^ spc() ^ reg_name(rd) ^ sep() ^ hex_bits_signed_6(imm)
++      if rd != zreg
+ 
+ /* ****************************************************************** */
+ union clause ast = C_ADDI16SP : (bits(6))
+@@ -141,9 +152,9 @@ mapping clause assembly = C_ADDI16SP(imm)
+ union clause ast = C_LUI : (bits(6), regidx)
+ 
+ mapping clause encdec_compressed = C_LUI(imm17 @ imm1612, rd)
+-      if imm17 @ imm1612 != 0b000000
+-  <-> 0b011 @ imm17 : bits(1) @ encdec_r(rd) @ imm1612 : bits(5) @ 0b01
+-      if imm17 @ imm1612 != 0b000000
++      if rd != zreg & rd != sp & imm17 @ imm1612 != 0b000000
++  <-> 0b011 @ imm17 : bits(1) @ rd : regidx @ imm1612 : bits(5) @ 0b01
++      if rd != zreg & rd != sp & imm17 @ imm1612 != 0b000000
+ 
+ function clause decompress C_LUI(imm, rd) = {
+   let res : bits(20) = sign_extend(imm);
+@@ -159,9 +170,9 @@ mapping clause assembly = C_LUI(imm, rd)
+ union clause ast = C_SRLI : (bits(6), cregidx)
+ 
+ mapping clause encdec_compressed = C_SRLI(nzui5 @ nzui40, rsd)
+-      if nzui5 == 0b0
++      if nzui5 @ nzui40 != 0b000000 & (sizeof(xlen) == 64 | nzui5 == 0b0)
+   <-> 0b100 @ nzui5 : bits(1) @ 0b00 @ rsd : cregidx @ nzui40 : bits(5) @ 0b01
+-      if nzui5 == 0b0
++      if nzui5 @ nzui40 != 0b000000 & (sizeof(xlen) == 64 | nzui5 == 0b0)
+ 
+ function clause decompress C_SRLI(shamt, rsd) = {
+   let rsd = creg2reg_idx(rsd);
+@@ -177,9 +188,9 @@ mapping clause assembly = C_SRLI(shamt, rsd)
+ union clause ast = C_SRAI : (bits(6), cregidx)
+ 
+ mapping clause encdec_compressed = C_SRAI(nzui5 @ nzui40, rsd)
+-      if nzui5 == 0b0
++      if nzui5 @ nzui40 != 0b000000 & (sizeof(xlen) == 64 | nzui5 == 0b0)
+   <-> 0b100 @ nzui5 : bits(1) @ 0b01 @ rsd : cregidx @ nzui40 : bits(5) @ 0b01
+-      if nzui5 == 0b0
++      if nzui5 @ nzui40 != 0b000000 & (sizeof(xlen) == 64 | nzui5 == 0b0)
+ 
+ function clause decompress C_SRAI(shamt, rsd) = {
+   let rsd = creg2reg_idx(rsd);
+@@ -302,23 +313,23 @@ mapping clause assembly = C_BNEZ(imm, rs)
+ union clause ast = C_SLLI : (bits(6), regidx)
+ 
+ mapping clause encdec_compressed = C_SLLI(nzui5 @ nzui40, rsd)
+-      if nzui5 == 0b0
+-  <-> 0b000 @ nzui5 : bits(1) @ encdec_r(rsd) @ nzui40 : bits(5) @ 0b10
+-      if nzui5 == 0b0
++      if nzui5 @ nzui40 != 0b000000 & rsd != zreg & (sizeof(xlen) == 64 | nzui5 == 0b0)
++  <-> 0b000 @ nzui5 : bits(1) @ rsd : regidx @ nzui40 : bits(5) @ 0b10
++      if nzui5 @ nzui40 != 0b000000 & rsd != zreg & (sizeof(xlen) == 64 | nzui5 == 0b0)
+ 
+ function clause decompress C_SLLI(shamt, rsd) = Some(SHIFTIOP(shamt, rsd, rsd, RISCV_SLLI))
+ 
+ mapping clause assembly = C_SLLI(shamt, rsd)
+-      if shamt != 0b000000
++      if shamt != 0b000000 & rsd != zreg
+   <-> "c.slli" ^ spc() ^ reg_name(rsd) ^ sep() ^ hex_bits_6(shamt)
+-      if shamt != 0b000000
++      if shamt != 0b000000 & rsd != zreg
+ 
+ /* ****************************************************************** */
+ union clause ast = C_LWSP : (bits(6), regidx)
+ 
+ mapping clause encdec_compressed = C_LWSP(ui76 @ ui5 @ ui42, rd)
+       if rd != zreg
+-  <-> 0b010 @ ui5 : bits(1) @ encdec_r(rd) @ ui42 : bits(3) @ ui76 : bits(2) @ 0b10
++  <-> 0b010 @ ui5 : bits(1) @ rd : regidx @ ui42 : bits(3) @ ui76 : bits(2) @ 0b10
+       if rd != zreg
+ 
+ function clause decompress C_LWSP(uimm, rd) = {
+@@ -335,7 +346,7 @@ mapping clause assembly = C_LWSP(uimm, rd)
+ union clause ast = C_SWSP : (bits(6), regidx)
+ 
+ mapping clause encdec_compressed = C_SWSP(ui76 @ ui52, rs2)
+-  <-> 0b110 @ ui52 : bits(4) @ ui76 : bits(2) @ encdec_r(rs2) @ 0b10
++  <-> 0b110 @ ui52 : bits(4) @ ui76 : bits(2) @ rs2 : regidx @ 0b10
+ 
+ function clause decompress C_SWSP(uimm, rs2) = {
+   let imm : bits(12) = zero_extend(uimm @ 0b00);
+@@ -350,7 +361,7 @@ union clause ast = C_JR : (regidx)
+ 
+ mapping clause encdec_compressed = C_JR(rs1)
+       if rs1 != zreg
+-  <-> 0b100 @ 0b0 @ encdec_r(rs1) @ 0b00000 @ 0b10
++  <-> 0b100 @ 0b0 @ rs1 : regidx @ 0b00000 @ 0b10
+       if rs1 != zreg
+ 
+ function clause decompress C_JR(rs1) = Some(RISCV_JALR(zero_extend(0b0), rs1, zreg))
+@@ -365,7 +376,7 @@ union clause ast = C_JALR : (regidx)
+ 
+ mapping clause encdec_compressed = C_JALR(rs1)
+       if rs1 != zreg
+-  <-> 0b100 @ 0b1 @ encdec_r(rs1) @ 0b00000 @ 0b10
++  <-> 0b100 @ 0b1 @ rs1 : regidx @ 0b00000 @ 0b10
+       if rs1 != zreg
+ 
+ function clause decompress C_JALR(rs1) = Some(RISCV_JALR(zero_extend(0b0), rs1, ra))
+@@ -379,9 +390,9 @@ mapping clause assembly = C_JALR(rs1)
+ union clause ast = C_MV : (regidx, regidx)
+ 
+ mapping clause encdec_compressed = C_MV(rd, rs2)
+-      if rs2 != zreg
+-  <-> 0b100 @ 0b0 @ encdec_r(rd) @ encdec_r(rs2) @ 0b10
+-      if rs2 != zreg
++      if rd != zreg & rs2 != zreg
++  <-> 0b100 @ 0b0 @ rd : regidx @ rs2 : regidx @ 0b10
++      if rd != zreg & rs2 != zreg
+ 
+ function clause decompress C_MV(rd, rs2) = Some(RTYPE(rs2, zreg, rd, RISCV_ADD))
+ 
+@@ -404,13 +415,13 @@ mapping clause assembly = C_EBREAK() <-> "c.ebreak"
+ union clause ast = C_ADD : (regidx, regidx)
+ 
+ mapping clause encdec_compressed = C_ADD(rsd, rs2)
+-      if rs2 != zreg
+-  <-> 0b100 @ 0b1 @ encdec_r(rsd) @ encdec_r(rs2) @ 0b10
+-      if rs2 != zreg
++      if rsd != zreg & rs2 != zreg
++  <-> 0b100 @ 0b1 @ rsd : regidx @ rs2 : regidx @ 0b10
++      if rsd != zreg & rs2 != zreg
+ 
+ function clause decompress C_ADD(rsd, rs2) = Some(RTYPE(rs2, rsd, rsd, RISCV_ADD))
+ 
+ mapping clause assembly = C_ADD(rsd, rs2)
+-      if rs2 != zreg
++      if rsd != zreg & rs2 != zreg
+   <-> "c.add" ^ spc() ^ reg_name(rsd) ^ sep() ^ reg_name(rs2)
+-      if rs2 != zreg
++      if rsd != zreg & rs2 != zreg
+diff --git a/model/riscv_insts_hints.sail b/model/riscv_insts_hints.sail
+index 8c5440e..ceddcf2 100644
+--- a/model/riscv_insts_hints.sail
++++ b/model/riscv_insts_hints.sail
+@@ -27,7 +27,7 @@ union clause ast = C_ADDI_HINT : (regidx)
+ 
+ mapping clause encdec_compressed = C_ADDI_HINT(rsd)
+       if rsd != zreg
+-  <-> 0b000 @ 0b0 @ encdec_r(rsd) @ 0b00000 @ 0b01
++  <-> 0b000 @ 0b0 @ rsd : regidx @ 0b00000 @ 0b01
+       if rsd != zreg
+ 
+ function clause execute (C_ADDI_HINT(rsd)) = RETIRE_SUCCESS
+@@ -68,7 +68,7 @@ union clause ast = C_MV_HINT : (regidx)
+ 
+ mapping clause encdec_compressed = C_MV_HINT(rs2)
+       if rs2 != zreg
+-  <-> 0b100 @ 0b0 @ 0b00000 @ encdec_r(rs2) @ 0b10
++  <-> 0b100 @ 0b0 @ 0b00000 @ rs2 : regidx @ 0b10
+       if rs2 != zreg
+ 
+ function clause execute (C_MV_HINT(rs2)) = RETIRE_SUCCESS
+@@ -83,7 +83,7 @@ union clause ast = C_ADD_HINT : (regidx)
+ 
+ mapping clause encdec_compressed = C_ADD_HINT(rs2)
+       if rs2 != zreg
+-  <-> 0b100 @ 0b1 @ 0b00000 @ encdec_r(rs2) @ 0b10
++  <-> 0b100 @ 0b1 @ 0b00000 @ rs2 : regidx @ 0b10
+       if rs2 != zreg
+ 
+ function clause execute (C_ADD_HINT(rs2)) = RETIRE_SUCCESS
+@@ -98,7 +98,7 @@ union clause ast = C_SLLI_HINT : (bits(6), regidx)
+ 
+ mapping clause encdec_compressed = C_SLLI_HINT(nzui5 @ nzui40, rsd)
+       if (nzui5 @ nzui40 == 0b000000 | rsd == zreg) & (sizeof(xlen) == 64 | nzui5 == 0b0)
+-  <-> 0b000 @ nzui5 : bits(1) @ encdec_r(rsd) @ nzui40 : bits(5) @ 0b10
++  <-> 0b000 @ nzui5 : bits(1) @ rsd : regidx @ nzui40 : bits(5) @ 0b10
+       if (nzui5 @ nzui40 == 0b000000 | rsd == zreg) & (sizeof(xlen) == 64 | nzui5 == 0b0)
+ 
+ function clause execute (C_SLLI_HINT(shamt, rsd)) = RETIRE_SUCCESS
+@@ -139,7 +139,7 @@ union clause ast = FENCE_RESERVED : (bits(4), bits(4), bits(4), regidx, regidx)
+ 
+ mapping clause encdec = FENCE_RESERVED(fm, pred, succ, rs, rd)
+       if (fm != 0b0000 & fm != 0b1000) | rs != 0b00000 | rd != 0b00000
+-  <-> fm : bits(4) @ pred : bits(4) @ succ : bits(4) @ encdec_r(rs) @ 0b000 @ encdec_r(rd) @ 0b0001111
++  <-> fm : bits(4) @ pred : bits(4) @ succ : bits(4) @ rs : regidx @ 0b000 @ rd : regidx @ 0b0001111
+       if (fm != 0b0000 & fm != 0b1000) | rs != 0b00000 | rd != 0b00000
+ 
+ function clause execute (FENCE_RESERVED(fm, pred, succ, rs, rd)) = RETIRE_SUCCESS
+@@ -155,7 +155,7 @@ union clause ast = FENCEI_RESERVED : (bits(12), regidx, regidx)
+ 
+ mapping clause encdec = FENCEI_RESERVED(imm, rs, rd)
+       if imm != 0b000000000000 | rs != zreg | rd != zreg
+-  <-> imm : bits(12) @ encdec_r(rs) @ 0b001 @ encdec_r(rd) @ 0b0001111
++  <-> imm : bits(12) @ rs : regidx @ 0b001 @ rd : regidx @ 0b0001111
+       if imm != 0b000000000000 | rs != zreg | rd != zreg
+ 
+ function clause execute FENCEI_RESERVED(imm, rs, rd) = RETIRE_SUCCESS
+diff --git a/model/riscv_insts_mext.sail b/model/riscv_insts_mext.sail
+index 2263e9e..ed3930c 100644
+--- a/model/riscv_insts_mext.sail
++++ b/model/riscv_insts_mext.sail
+@@ -21,7 +21,7 @@ mapping encdec_mul_op : mul_op <-> bits(3) = {
+ }
+ 
+ mapping clause encdec = MUL(rs2, rs1, rd, mul_op)                    if haveMulDiv() | haveZmmul()
+-  <-> 0b0000001 @ encdec_r(rs2) @ encdec_r(rs1) @ encdec_mul_op(mul_op) @ encdec_r(rd) @ 0b0110011 if haveMulDiv() | haveZmmul()
++  <-> 0b0000001 @ rs2 @ rs1 @ encdec_mul_op(mul_op) @ rd @ 0b0110011 if haveMulDiv() | haveZmmul()
+ 
+ function clause execute (MUL(rs2, rs1, rd, mul_op)) = {
+   let rs1_val = X(rs1);
+@@ -50,7 +50,7 @@ mapping clause assembly = MUL(rs2, rs1, rd, mul_op)
+ union clause ast = DIV : (regidx, regidx, regidx, bool)
+ 
+ mapping clause encdec = DIV(rs2, rs1, rd, s)                           if haveMulDiv()
+-  <-> 0b0000001 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b10 @ bool_not_bits(s) @ encdec_r(rd) @ 0b0110011 if haveMulDiv()
++  <-> 0b0000001 @ rs2 @ rs1 @ 0b10 @ bool_not_bits(s) @ rd @ 0b0110011 if haveMulDiv()
+ 
+ function clause execute (DIV(rs2, rs1, rd, s)) = {
+   let rs1_val = X(rs1);
+@@ -76,7 +76,7 @@ mapping clause assembly = DIV(rs2, rs1, rd, s)
+ union clause ast = REM : (regidx, regidx, regidx, bool)
+ 
+ mapping clause encdec = REM(rs2, rs1, rd, s)                           if haveMulDiv()
+-  <-> 0b0000001 @ encdec_r(rs2) @ encdec_r(rs1) @ 0b11 @ bool_not_bits(s) @ encdec_r(rd) @ 0b0110011 if haveMulDiv()
++  <-> 0b0000001 @ rs2 @ rs1 @ 0b11 @ bool_not_bits(s) @ rd @ 0b0110011 if haveMulDiv()
+ 
+ function clause execute (REM(rs2, rs1, rd, s)) = {
+   let rs1_val = X(rs1);
+diff --git a/model/riscv_insts_zba.sail b/model/riscv_insts_zba.sail
+new file mode 100644
+index 0000000..4f078d3
+--- /dev/null
++++ b/model/riscv_insts_zba.sail
+@@ -0,0 +1,94 @@
++/*=======================================================================================*/
++/*  This Sail RISC-V architecture model, comprising all files and                        */
++/*  directories except where otherwise noted is subject the BSD                          */
++/*  two-clause license in the LICENSE file.                                              */
++/*                                                                                       */
++/*  SPDX-License-Identifier: BSD-2-Clause                                                */
++/*=======================================================================================*/
++
++/* ****************************************************************** */
++union clause ast = RISCV_SLLIUW : (bits(6), regidx, regidx)
++
++mapping clause encdec = RISCV_SLLIUW(shamt, rs1, rd) if haveZba() & sizeof(xlen) == 64
++  <-> 0b000010 @ shamt @ rs1 @ 0b001 @ rd @ 0b0011011 if haveZba() & sizeof(xlen) == 64
++
++mapping clause assembly = RISCV_SLLIUW(shamt, rs1, rd)
++  <-> "slli.uw" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ hex_bits_6(shamt)
++
++function clause execute (RISCV_SLLIUW(shamt, rs1, rd)) = {
++  let rs1_val = X(rs1);
++  let result : xlenbits = zero_extend(rs1_val[31..0]) << shamt;
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = ZBA_RTYPEUW : (regidx, regidx, regidx, bropw_zba)
++
++mapping clause encdec = ZBA_RTYPEUW(rs2, rs1, rd, RISCV_ADDUW) if haveZba() & sizeof(xlen) == 64
++  <-> 0b0000100 @ rs2 @ rs1 @ 0b000 @ rd @ 0b0111011 if haveZba() & sizeof(xlen) == 64
++
++mapping clause encdec = ZBA_RTYPEUW(rs2, rs1, rd, RISCV_SH1ADDUW) if haveZba() & sizeof(xlen) == 64
++  <-> 0b0010000 @ rs2 @ rs1 @ 0b010 @ rd @ 0b0111011 if haveZba() & sizeof(xlen) == 64
++
++mapping clause encdec = ZBA_RTYPEUW(rs2, rs1, rd, RISCV_SH2ADDUW) if haveZba() & sizeof(xlen) == 64
++  <-> 0b0010000 @ rs2 @ rs1 @ 0b100 @ rd @ 0b0111011 if haveZba() & sizeof(xlen) == 64
++
++mapping clause encdec = ZBA_RTYPEUW(rs2, rs1, rd, RISCV_SH3ADDUW) if haveZba() & sizeof(xlen) == 64
++  <-> 0b0010000 @ rs2 @ rs1 @ 0b110 @ rd @ 0b0111011 if haveZba() & sizeof(xlen) == 64
++
++mapping zba_rtypeuw_mnemonic : bropw_zba <-> string = {
++  RISCV_ADDUW    <-> "add.uw",
++  RISCV_SH1ADDUW <-> "sh1add.uw",
++  RISCV_SH2ADDUW <-> "sh2add.uw",
++  RISCV_SH3ADDUW <-> "sh3add.uw"
++}
++
++mapping clause assembly = ZBA_RTYPEUW(rs2, rs1, rd, op)
++  <-> zba_rtypeuw_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (ZBA_RTYPEUW(rs2, rs1, rd, op)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  let shamt : bits(2) = match op {
++    RISCV_ADDUW    => 0b00,
++    RISCV_SH1ADDUW => 0b01,
++    RISCV_SH2ADDUW => 0b10,
++    RISCV_SH3ADDUW => 0b11
++  };
++  let result : xlenbits = (zero_extend(rs1_val[31..0]) << shamt) + rs2_val;
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = ZBA_RTYPE : (regidx, regidx, regidx, brop_zba)
++
++mapping clause encdec = ZBA_RTYPE(rs2, rs1, rd, RISCV_SH1ADD) if haveZba()
++  <-> 0b0010000 @ rs2 @ rs1 @ 0b010 @ rd @ 0b0110011 if haveZba()
++mapping clause encdec = ZBA_RTYPE(rs2, rs1, rd, RISCV_SH2ADD) if haveZba()
++  <-> 0b0010000 @ rs2 @ rs1 @ 0b100 @ rd @ 0b0110011 if haveZba()
++mapping clause encdec = ZBA_RTYPE(rs2, rs1, rd, RISCV_SH3ADD) if haveZba()
++  <-> 0b0010000 @ rs2 @ rs1 @ 0b110 @ rd @ 0b0110011 if haveZba()
++
++mapping zba_rtype_mnemonic : brop_zba <-> string = {
++  RISCV_SH1ADD <-> "sh1add",
++  RISCV_SH2ADD <-> "sh2add",
++  RISCV_SH3ADD <-> "sh3add"
++}
++
++mapping clause assembly = ZBA_RTYPE(rs2, rs1, rd, op)
++  <-> zba_rtype_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (ZBA_RTYPE(rs2, rs1, rd, op)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  let shamt : bits(2) = match op {
++    RISCV_SH1ADD => 0b01,
++    RISCV_SH2ADD => 0b10,
++    RISCV_SH3ADD => 0b11
++  };
++  let result : xlenbits = (rs1_val << shamt) + rs2_val;
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
+diff --git a/model/riscv_insts_zbb.sail b/model/riscv_insts_zbb.sail
+new file mode 100644
+index 0000000..d39afc0
+--- /dev/null
++++ b/model/riscv_insts_zbb.sail
+@@ -0,0 +1,332 @@
++/*=======================================================================================*/
++/*  This Sail RISC-V architecture model, comprising all files and                        */
++/*  directories except where otherwise noted is subject the BSD                          */
++/*  two-clause license in the LICENSE file.                                              */
++/*                                                                                       */
++/*  SPDX-License-Identifier: BSD-2-Clause                                                */
++/*=======================================================================================*/
++
++/* ****************************************************************** */
++union clause ast = RISCV_RORIW : (bits(5), regidx, regidx)
++
++mapping clause encdec = RISCV_RORIW(shamt, rs1, rd) if (haveZbb() | haveZbkb()) & sizeof(xlen) == 64
++  <-> 0b0110000 @ shamt @ rs1 @ 0b101 @ rd @ 0b0011011 if (haveZbb() | haveZbkb()) & sizeof(xlen) == 64
++
++mapping clause assembly = RISCV_RORIW(shamt, rs1, rd)
++  <-> "roriw" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ hex_bits_5(shamt)
++
++function clause execute (RISCV_RORIW(shamt, rs1, rd)) = {
++  let rs1_val = (X(rs1))[31..0];
++  let result : xlenbits = sign_extend(rs1_val >>> shamt);
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_RORI : (bits(6), regidx, regidx)
++
++mapping clause encdec = RISCV_RORI(shamt, rs1, rd) if (haveZbb() | haveZbkb()) & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++  <-> 0b011000 @ shamt @ rs1 @ 0b101 @ rd @ 0b0010011 if (haveZbb() | haveZbkb()) & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++
++mapping clause assembly = RISCV_RORI(shamt, rs1, rd)
++  <-> "rori" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ hex_bits_6(shamt)
++
++function clause execute (RISCV_RORI(shamt, rs1, rd)) = {
++  let rs1_val = X(rs1);
++  let result : xlenbits = if sizeof(xlen) == 32
++                          then rs1_val >>> shamt[4..0]
++                          else rs1_val >>> shamt;
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = ZBB_RTYPEW : (regidx, regidx, regidx, bropw_zbb)
++
++mapping clause encdec = ZBB_RTYPEW(rs2, rs1, rd, RISCV_ROLW) if (haveZbb() | haveZbkb()) & sizeof(xlen) == 64
++  <-> 0b0110000 @ rs2 @ rs1 @ 0b001 @ rd @ 0b0111011 if (haveZbb() | haveZbkb()) & sizeof(xlen) == 64
++
++mapping clause encdec = ZBB_RTYPEW(rs2, rs1, rd, RISCV_RORW) if (haveZbb() | haveZbkb()) & sizeof(xlen) == 64
++  <-> 0b0110000 @ rs2 @ rs1 @ 0b101 @ rd @ 0b0111011 if (haveZbb() | haveZbkb()) & sizeof(xlen) == 64
++
++mapping zbb_rtypew_mnemonic : bropw_zbb <-> string = {
++  RISCV_ROLW <-> "rolw",
++  RISCV_RORW <-> "rorw"
++}
++
++mapping clause assembly = ZBB_RTYPEW(rs2, rs1, rd, op)
++  <-> zbb_rtypew_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (ZBB_RTYPEW(rs2, rs1, rd, op)) = {
++  let rs1_val = (X(rs1))[31..0];
++  let shamt = (X(rs2))[4..0];
++  let result : bits(32) = match op {
++    RISCV_ROLW => rs1_val <<< shamt,
++    RISCV_RORW => rs1_val >>> shamt
++  };
++  X(rd) = sign_extend(result);
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = ZBB_RTYPE : (regidx, regidx, regidx, brop_zbb)
++
++mapping clause encdec = ZBB_RTYPE(rs2, rs1, rd, RISCV_ANDN) if haveZbb() | haveZbkb()
++  <-> 0b0100000 @ rs2 @ rs1 @ 0b111 @ rd @ 0b0110011 if haveZbb() | haveZbkb()
++
++mapping clause encdec = ZBB_RTYPE(rs2, rs1, rd, RISCV_ORN) if haveZbb() | haveZbkb()
++  <-> 0b0100000 @ rs2 @ rs1 @ 0b110 @ rd @ 0b0110011 if haveZbb() | haveZbkb()
++
++mapping clause encdec = ZBB_RTYPE(rs2, rs1, rd, RISCV_XNOR) if haveZbb() | haveZbkb()
++  <-> 0b0100000 @ rs2 @ rs1 @ 0b100 @ rd @ 0b0110011 if haveZbb() | haveZbkb()
++
++mapping clause encdec = ZBB_RTYPE(rs2, rs1, rd, RISCV_MAX) if haveZbb()
++  <-> 0b0000101 @ rs2 @ rs1 @ 0b110 @ rd @ 0b0110011 if haveZbb()
++
++mapping clause encdec = ZBB_RTYPE(rs2, rs1, rd, RISCV_MAXU) if haveZbb()
++  <-> 0b0000101 @ rs2 @ rs1 @ 0b111 @ rd @ 0b0110011 if haveZbb()
++
++mapping clause encdec = ZBB_RTYPE(rs2, rs1, rd, RISCV_MIN) if haveZbb()
++  <-> 0b0000101 @ rs2 @ rs1 @ 0b100 @ rd @ 0b0110011 if haveZbb()
++
++mapping clause encdec = ZBB_RTYPE(rs2, rs1, rd, RISCV_MINU) if haveZbb()
++  <-> 0b0000101 @ rs2 @ rs1 @ 0b101 @ rd @ 0b0110011 if haveZbb()
++
++mapping clause encdec = ZBB_RTYPE(rs2, rs1, rd, RISCV_ROL) if haveZbb() | haveZbkb()
++  <-> 0b0110000 @ rs2 @ rs1 @ 0b001 @ rd @ 0b0110011 if haveZbb() | haveZbkb()
++
++mapping clause encdec = ZBB_RTYPE(rs2, rs1, rd, RISCV_ROR) if haveZbb() | haveZbkb()
++  <-> 0b0110000 @ rs2 @ rs1 @ 0b101 @ rd @ 0b0110011 if haveZbb() | haveZbkb()
++
++mapping zbb_rtype_mnemonic : brop_zbb <-> string = {
++  RISCV_ANDN <-> "andn",
++  RISCV_ORN  <-> "orn",
++  RISCV_XNOR <-> "xnor",
++  RISCV_MAX  <-> "max",
++  RISCV_MAXU <-> "maxu",
++  RISCV_MIN  <-> "min",
++  RISCV_MINU <-> "minu",
++  RISCV_ROL  <-> "rol",
++  RISCV_ROR  <-> "ror"
++}
++
++mapping clause assembly = ZBB_RTYPE(rs2, rs1, rd, op)
++  <-> zbb_rtype_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (ZBB_RTYPE(rs2, rs1, rd, op)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  let result : xlenbits = match op {
++    RISCV_ANDN => rs1_val & ~(rs2_val),
++    RISCV_ORN  => rs1_val | ~(rs2_val),
++    RISCV_XNOR => ~(rs1_val ^ rs2_val),
++    RISCV_MAX  => to_bits(sizeof(xlen), max(signed(rs1_val),   signed(rs2_val))),
++    RISCV_MAXU => to_bits(sizeof(xlen), max(unsigned(rs1_val), unsigned(rs2_val))),
++    RISCV_MIN  => to_bits(sizeof(xlen), min(signed(rs1_val),   signed(rs2_val))),
++    RISCV_MINU => to_bits(sizeof(xlen), min(unsigned(rs1_val), unsigned(rs2_val))),
++    RISCV_ROL  => if sizeof(xlen) == 32
++                  then rs1_val <<< rs2_val[4..0]
++                  else rs1_val <<< rs2_val[5..0],
++    RISCV_ROR  => if sizeof(xlen) == 32
++                  then rs1_val >>> rs2_val[4..0]
++                  else rs1_val >>> rs2_val[5..0]
++  };
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = ZBB_EXTOP : (regidx, regidx, extop_zbb)
++
++mapping clause encdec = ZBB_EXTOP(rs1, rd, RISCV_SEXTB) if haveZbb()
++  <-> 0b0110000 @ 0b00100 @ rs1 @ 0b001 @ rd @ 0b0010011 if haveZbb()
++
++mapping clause encdec = ZBB_EXTOP(rs1, rd, RISCV_SEXTH) if haveZbb()
++  <-> 0b0110000 @ 0b00101 @ rs1 @ 0b001 @ rd @ 0b0010011 if haveZbb()
++
++mapping clause encdec = ZBB_EXTOP(rs1, rd, RISCV_ZEXTH) if haveZbb() & sizeof(xlen) == 32
++  <-> 0b0000100 @ 0b00000 @ rs1 @ 0b100 @ rd @ 0b0110011 if haveZbb() & sizeof(xlen) == 32
++
++mapping clause encdec = ZBB_EXTOP(rs1, rd, RISCV_ZEXTH) if haveZbb() & sizeof(xlen) == 64
++  <-> 0b0000100 @ 0b00000 @ rs1 @ 0b100 @ rd @ 0b0111011 if haveZbb() & sizeof(xlen) == 64
++
++mapping zbb_extop_mnemonic : extop_zbb <-> string = {
++  RISCV_SEXTB <-> "sext.b",
++  RISCV_SEXTH <-> "sext.h",
++  RISCV_ZEXTH <-> "zext.h"
++}
++
++mapping clause assembly = ZBB_EXTOP(rs1, rd, op)
++  <-> zbb_extop_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (ZBB_EXTOP(rs1, rd, op)) = {
++  let rs1_val = X(rs1);
++  let result : xlenbits = match op {
++    RISCV_SEXTB => sign_extend(rs1_val[7..0]),
++    RISCV_SEXTH => sign_extend(rs1_val[15..0]),
++    RISCV_ZEXTH => zero_extend(rs1_val[15..0])
++  };
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_REV8 : (regidx, regidx)
++
++mapping clause encdec = RISCV_REV8(rs1, rd) if (haveZbb() | haveZbkb()) & sizeof(xlen) == 32
++  <-> 0b011010011000 @ rs1 @ 0b101 @ rd @ 0b0010011 if (haveZbb() | haveZbkb()) & sizeof(xlen) == 32
++
++mapping clause encdec = RISCV_REV8(rs1, rd) if (haveZbb() | haveZbkb()) & sizeof(xlen) == 64
++  <-> 0b011010111000 @ rs1 @ 0b101 @ rd @ 0b0010011 if (haveZbb() | haveZbkb()) & sizeof(xlen) == 64
++
++mapping clause assembly = RISCV_REV8(rs1, rd)
++  <-> "rev8" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_REV8(rs1, rd)) = {
++  let rs1_val = X(rs1);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (sizeof(xlen) - 8) by 8)
++    result[(i + 7) .. i] = rs1_val[(sizeof(xlen) - i - 1) .. (sizeof(xlen) - i - 8)];
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_ORCB : (regidx, regidx)
++
++mapping clause encdec = RISCV_ORCB(rs1, rd) if haveZbb()
++  <-> 0b001010000111 @ rs1 @ 0b101 @ rd @ 0b0010011 if haveZbb()
++
++mapping clause assembly = RISCV_ORCB(rs1, rd)
++  <-> "orc.b" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_ORCB(rs1, rd)) = {
++  let rs1_val = X(rs1);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (sizeof(xlen) - 8) by 8)
++    result[(i + 7) .. i] = if rs1_val[(i + 7) .. i] == zeros()
++                           then 0x00
++                           else 0xFF;
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_CPOP : (regidx, regidx)
++
++mapping clause encdec = RISCV_CPOP(rs1, rd) if haveZbb()
++  <-> 0b011000000010 @ rs1 @ 0b001 @ rd @ 0b0010011 if haveZbb()
++
++mapping clause assembly = RISCV_CPOP(rs1, rd)
++  <-> "cpop" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_CPOP(rs1, rd)) = {
++  let rs1_val = X(rs1);
++  var result : nat = 0;
++  foreach (i from 0 to (xlen_val - 1))
++    if rs1_val[i] == bitone then result = result + 1;
++  X(rd) = to_bits(sizeof(xlen), result);
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_CPOPW : (regidx, regidx)
++
++mapping clause encdec = RISCV_CPOPW(rs1, rd) if haveZbb() & sizeof(xlen) == 64
++  <-> 0b011000000010 @ rs1 @ 0b001 @ rd @ 0b0011011 if haveZbb() & sizeof(xlen) == 64
++
++mapping clause assembly = RISCV_CPOPW(rs1, rd)
++  <-> "cpopw" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_CPOPW(rs1, rd)) = {
++  let rs1_val = X(rs1);
++  var result : nat = 0;
++  foreach (i from 0 to 31)
++    if rs1_val[i] == bitone then result = result + 1;
++  X(rd) = to_bits(sizeof(xlen), result);
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_CLZ : (regidx, regidx)
++
++mapping clause encdec = RISCV_CLZ(rs1, rd) if haveZbb()
++  <-> 0b011000000000 @ rs1 @ 0b001 @ rd @ 0b0010011 if haveZbb()
++
++mapping clause assembly = RISCV_CLZ(rs1, rd)
++  <-> "clz" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_CLZ(rs1, rd)) = {
++  let rs1_val = X(rs1);
++  var result : nat = 0;
++  var done : bool = false;
++  foreach (i from (sizeof(xlen) - 1) downto 0)
++    if not(done) then if rs1_val[i] == bitzero
++                    then result = result + 1
++                    else done = true;
++  X(rd) = to_bits(sizeof(xlen), result);
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_CLZW : (regidx, regidx)
++
++mapping clause encdec = RISCV_CLZW(rs1, rd) if haveZbb() & sizeof(xlen) == 64
++  <-> 0b011000000000 @ rs1 @ 0b001 @ rd @ 0b0011011 if haveZbb() & sizeof(xlen) == 64
++
++mapping clause assembly = RISCV_CLZW(rs1, rd)
++  <-> "clzw" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_CLZW(rs1, rd)) = {
++  let rs1_val = X(rs1);
++  var result : nat = 0;
++  var done : bool = false;
++  foreach (i from 31 downto 0)
++    if not(done) then if rs1_val[i] == bitzero
++                    then result = result + 1
++                    else done = true;
++  X(rd) = to_bits(sizeof(xlen), result);
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_CTZ : (regidx, regidx)
++
++mapping clause encdec = RISCV_CTZ(rs1, rd) if haveZbb()
++  <-> 0b011000000001 @ rs1 @ 0b001 @ rd @ 0b0010011 if haveZbb()
++
++mapping clause assembly = RISCV_CTZ(rs1, rd)
++  <-> "ctz" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_CTZ(rs1, rd)) = {
++  let rs1_val = X(rs1);
++  var result : nat = 0;
++  var done : bool = false;
++  foreach (i from 0 to (sizeof(xlen) - 1))
++    if not(done) then if rs1_val[i] == bitzero
++                    then result = result + 1
++                    else done = true;
++  X(rd) = to_bits(sizeof(xlen), result);
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_CTZW : (regidx, regidx)
++
++mapping clause encdec = RISCV_CTZW(rs1, rd) if haveZbb() & sizeof(xlen) == 64
++  <-> 0b011000000001 @ rs1 @ 0b001 @ rd @ 0b0011011 if haveZbb() & sizeof(xlen) == 64
++
++mapping clause assembly = RISCV_CTZW(rs1, rd)
++  <-> "ctzw" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_CTZW(rs1, rd)) = {
++  let rs1_val = X(rs1);
++  var result : nat = 0;
++  var done : bool = false;
++  foreach (i from 0 to 31)
++    if not(done) then if rs1_val[i] == bitzero
++                    then result = result + 1
++                    else done = true;
++  X(rd) = to_bits(sizeof(xlen), result);
++  RETIRE_SUCCESS
++}
+diff --git a/model/riscv_insts_zbc.sail b/model/riscv_insts_zbc.sail
+new file mode 100644
+index 0000000..458b9fa
+--- /dev/null
++++ b/model/riscv_insts_zbc.sail
+@@ -0,0 +1,64 @@
++/*=======================================================================================*/
++/*  This Sail RISC-V architecture model, comprising all files and                        */
++/*  directories except where otherwise noted is subject the BSD                          */
++/*  two-clause license in the LICENSE file.                                              */
++/*                                                                                       */
++/*  SPDX-License-Identifier: BSD-2-Clause                                                */
++/*=======================================================================================*/
++
++/* ****************************************************************** */
++union clause ast = RISCV_CLMUL : (regidx, regidx, regidx)
++
++mapping clause encdec = RISCV_CLMUL(rs2, rs1, rd) if haveZbc() | haveZbkc()
++  <-> 0b0000101 @ rs2 @ rs1 @ 0b001 @ rd @ 0b0110011 if haveZbc() | haveZbkc()
++
++mapping clause assembly = RISCV_CLMUL(rs2, rs1, rd)
++  <-> "clmul" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (RISCV_CLMUL(rs2, rs1, rd)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (xlen_val - 1))
++    if rs2_val[i] == bitone then result = result ^ (rs1_val << i);
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_CLMULH : (regidx, regidx, regidx)
++
++mapping clause encdec = RISCV_CLMULH(rs2, rs1, rd) if haveZbc() | haveZbkc()
++  <-> 0b0000101 @ rs2 @ rs1 @ 0b011 @ rd @ 0b0110011 if haveZbc() | haveZbkc()
++
++mapping clause assembly = RISCV_CLMULH(rs2, rs1, rd)
++  <-> "clmulh" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (RISCV_CLMULH(rs2, rs1, rd)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (xlen_val - 1))
++    if rs2_val[i] == bitone then result = result ^ (rs1_val >> (xlen_val - i));
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_CLMULR : (regidx, regidx, regidx)
++
++mapping clause encdec = RISCV_CLMULR(rs2, rs1, rd) if haveZbc()
++  <-> 0b0000101 @ rs2 @ rs1 @ 0b010 @ rd @ 0b0110011 if haveZbc()
++
++mapping clause assembly = RISCV_CLMULR(rs2, rs1, rd)
++  <-> "clmulr" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (RISCV_CLMULR(rs2, rs1, rd)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (xlen_val - 1))
++    if rs2_val[i] == bitone then result = result ^ (rs1_val >> (xlen_val - i - 1));
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
+diff --git a/model/riscv_insts_zbkb.sail b/model/riscv_insts_zbkb.sail
+new file mode 100644
+index 0000000..f6246d1
+--- /dev/null
++++ b/model/riscv_insts_zbkb.sail
+@@ -0,0 +1,113 @@
++/*=======================================================================================*/
++/*  This Sail RISC-V architecture model, comprising all files and                        */
++/*  directories except where otherwise noted is subject the BSD                          */
++/*  two-clause license in the LICENSE file.                                              */
++/*                                                                                       */
++/*  SPDX-License-Identifier: BSD-2-Clause                                                */
++/*=======================================================================================*/
++
++/* ****************************************************************** */
++union clause ast = ZBKB_RTYPE : (regidx, regidx, regidx, brop_zbkb)
++
++mapping clause encdec = ZBKB_RTYPE(rs2, rs1, rd, RISCV_PACK) if haveZbkb()
++  <-> 0b0000100 @ rs2 @ rs1 @ 0b100 @ rd @ 0b0110011 if haveZbkb()
++
++mapping clause encdec = ZBKB_RTYPE(rs2, rs1, rd, RISCV_PACKH) if haveZbkb()
++  <-> 0b0000100 @ rs2 @ rs1 @ 0b111 @ rd @ 0b0110011 if haveZbkb()
++
++mapping zbkb_rtype_mnemonic : brop_zbkb <-> string = {
++  RISCV_PACK  <-> "pack",
++  RISCV_PACKH <-> "packh"
++}
++
++mapping clause assembly = ZBKB_RTYPE(rs2, rs1, rd, op)
++  <-> zbkb_rtype_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (ZBKB_RTYPE(rs2, rs1, rd, op)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  let result : xlenbits = match op {
++    RISCV_PACK  => rs2_val[(sizeof(xlen_bytes)*4 - 1)..0] @ rs1_val[(sizeof(xlen_bytes)*4 - 1)..0],
++    RISCV_PACKH => zero_extend(rs2_val[7..0] @ rs1_val[7..0])
++  };
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = ZBKB_PACKW : (regidx, regidx, regidx)
++
++mapping clause encdec = ZBKB_PACKW(rs2, rs1, rd) if haveZbkb() & sizeof(xlen) == 64
++  <-> 0b0000100 @ rs2 @ rs1 @ 0b100 @ rd @ 0b0111011 if haveZbkb() & sizeof(xlen) == 64
++
++mapping clause assembly = ZBKB_PACKW(rs2, rs1, rd)
++  <-> "packw" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (ZBKB_PACKW(rs2, rs1, rd)) = {
++  assert(sizeof(xlen) == 64);
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  let result : bits(32) = rs2_val[15..0] @ rs1_val[15..0];
++  X(rd) = sign_extend(result);
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_ZIP : (regidx, regidx)
++
++mapping clause encdec = RISCV_ZIP(rs1, rd) if haveZbkb() & sizeof(xlen) == 32
++  <-> 0b000010001111 @ rs1 @ 0b001 @ rd @ 0b0010011 if haveZbkb() & sizeof(xlen) == 32
++
++mapping clause assembly = RISCV_ZIP(rs1, rd)
++  <-> "zip" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_ZIP(rs1, rd)) = {
++  assert(sizeof(xlen) == 32);
++  let rs1_val = X(rs1);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (sizeof(xlen_bytes)*4 - 1)) {
++    result[i*2] = rs1_val[i];
++    result[i*2 + 1] = rs1_val[i + sizeof(xlen_bytes)*4];
++  };
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_UNZIP : (regidx, regidx)
++
++mapping clause encdec = RISCV_UNZIP(rs1, rd) if haveZbkb() & sizeof(xlen) == 32
++  <-> 0b000010001111 @ rs1 @ 0b101 @ rd @ 0b0010011 if haveZbkb() & sizeof(xlen) == 32
++
++mapping clause assembly = RISCV_UNZIP(rs1, rd)
++  <-> "unzip" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_UNZIP(rs1, rd)) = {
++  assert(sizeof(xlen) == 32);
++  let rs1_val = X(rs1);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (sizeof(xlen_bytes)*4 - 1)) {
++    result[i] = rs1_val[i*2];
++    result[i + sizeof(xlen_bytes)*4] = rs1_val[i*2 + 1];
++  };
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_BREV8 : (regidx, regidx)
++
++mapping clause encdec = RISCV_BREV8(rs1, rd) if haveZbkb()
++  <-> 0b011010000111 @ rs1 @ 0b101 @ rd @ 0b0010011 if haveZbkb()
++
++mapping clause assembly = RISCV_BREV8(rs1, rd)
++  <-> "brev8" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
++
++function clause execute (RISCV_BREV8(rs1, rd)) = {
++  let rs1_val = X(rs1);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (sizeof(xlen) - 8) by 8)
++    result[i+7..i] = reverse(rs1_val[i+7..i]);
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
+diff --git a/model/riscv_insts_zbkx.sail b/model/riscv_insts_zbkx.sail
+new file mode 100644
+index 0000000..d19a2b1
+--- /dev/null
++++ b/model/riscv_insts_zbkx.sail
+@@ -0,0 +1,53 @@
++/*=======================================================================================*/
++/*  This Sail RISC-V architecture model, comprising all files and                        */
++/*  directories except where otherwise noted is subject the BSD                          */
++/*  two-clause license in the LICENSE file.                                              */
++/*                                                                                       */
++/*  SPDX-License-Identifier: BSD-2-Clause                                                */
++/*=======================================================================================*/
++
++/* ****************************************************************** */
++union clause ast = RISCV_XPERM8 : (regidx, regidx, regidx)
++
++mapping clause encdec = RISCV_XPERM8(rs2, rs1, rd) if haveZbkx()
++  <-> 0b0010100 @ rs2 @ rs1 @ 0b100 @ rd @ 0b0110011 if haveZbkx()
++
++mapping clause assembly = RISCV_XPERM8(rs2, rs1, rd)
++  <-> "xperm8" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (RISCV_XPERM8(rs2, rs1, rd)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (sizeof(xlen) - 8) by 8) {
++    let index = unsigned(rs2_val[i+7..i]);
++    result[i+7..i] = if 8*index < sizeof(xlen)
++                     then rs1_val[8*index+7..8*index]
++                     else zeros()
++  };
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = RISCV_XPERM4 : (regidx, regidx, regidx)
++
++mapping clause encdec = RISCV_XPERM4(rs2, rs1, rd) if haveZbkx()
++  <-> 0b0010100 @ rs2 @ rs1 @ 0b010 @ rd @ 0b0110011 if haveZbkx()
++
++mapping clause assembly = RISCV_XPERM4(rs2, rs1, rd)
++  <-> "xperm4" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (RISCV_XPERM4(rs2, rs1, rd)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  var result : xlenbits = zeros();
++  foreach (i from 0 to (sizeof(xlen) - 4) by 4) {
++    let index = unsigned(rs2_val[i+3..i]);
++    result[i+3..i] = if 4*index < sizeof(xlen)
++                     then rs1_val[4*index+3..4*index]
++                     else zeros()
++  };
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
+diff --git a/model/riscv_insts_zbs.sail b/model/riscv_insts_zbs.sail
+new file mode 100644
+index 0000000..b535701
+--- /dev/null
++++ b/model/riscv_insts_zbs.sail
+@@ -0,0 +1,88 @@
++/*=======================================================================================*/
++/*  This Sail RISC-V architecture model, comprising all files and                        */
++/*  directories except where otherwise noted is subject the BSD                          */
++/*  two-clause license in the LICENSE file.                                              */
++/*                                                                                       */
++/*  SPDX-License-Identifier: BSD-2-Clause                                                */
++/*=======================================================================================*/
++
++/* ****************************************************************** */
++union clause ast = ZBS_IOP : (bits(6), regidx, regidx, biop_zbs)
++
++mapping clause encdec = ZBS_IOP(shamt, rs1, rd, RISCV_BCLRI) if haveZbs() & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++  <-> 0b010010 @ shamt @ rs1 @ 0b001 @ rd @ 0b0010011 if haveZbs() & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++
++mapping clause encdec = ZBS_IOP(shamt, rs1, rd, RISCV_BEXTI) if haveZbs() & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++  <-> 0b010010 @ shamt @ rs1 @ 0b101 @ rd @ 0b0010011 if haveZbs() & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++
++mapping clause encdec = ZBS_IOP(shamt, rs1, rd, RISCV_BINVI) if haveZbs() & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++  <-> 0b011010 @ shamt @ rs1 @ 0b001 @ rd @ 0b0010011 if haveZbs() & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++
++mapping clause encdec = ZBS_IOP(shamt, rs1, rd, RISCV_BSETI) if haveZbs() & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++  <-> 0b001010 @ shamt @ rs1 @ 0b001 @ rd @ 0b0010011 if haveZbs() & (sizeof(xlen) == 64 | shamt[5] == bitzero)
++
++mapping zbs_iop_mnemonic : biop_zbs <-> string = {
++  RISCV_BCLRI <-> "bclri",
++  RISCV_BEXTI <-> "bexti",
++  RISCV_BINVI <-> "binvi",
++  RISCV_BSETI <-> "bseti"
++}
++
++mapping clause assembly = ZBS_IOP(shamt, rs1, rd, op)
++  <-> zbs_iop_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ hex_bits_6(shamt)
++
++function clause execute (ZBS_IOP(shamt, rs1, rd, op)) = {
++  let rs1_val = X(rs1);
++  let mask : xlenbits = if sizeof(xlen) == 32
++                        then zero_extend(0b1) << shamt[4..0]
++                        else zero_extend(0b1) << shamt;
++  let result : xlenbits = match op {
++    RISCV_BCLRI => rs1_val & ~(mask),
++    RISCV_BEXTI => zero_extend(bool_to_bits((rs1_val & mask) != zeros())),
++    RISCV_BINVI => rs1_val ^ mask,
++    RISCV_BSETI => rs1_val | mask
++  };
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
++
++/* ****************************************************************** */
++union clause ast = ZBS_RTYPE : (regidx, regidx, regidx, brop_zbs)
++
++mapping clause encdec = ZBS_RTYPE(rs2, rs1, rd, RISCV_BCLR) if haveZbs()
++  <-> 0b0100100 @ rs2 @ rs1 @ 0b001 @ rd @ 0b0110011 if haveZbs()
++
++mapping clause encdec = ZBS_RTYPE(rs2, rs1, rd, RISCV_BEXT) if haveZbs()
++  <-> 0b0100100 @ rs2 @ rs1 @ 0b101 @ rd @ 0b0110011 if haveZbs()
++
++mapping clause encdec = ZBS_RTYPE(rs2, rs1, rd, RISCV_BINV) if haveZbs()
++  <-> 0b0110100 @ rs2 @ rs1 @ 0b001 @ rd @ 0b0110011 if haveZbs()
++
++mapping clause encdec = ZBS_RTYPE(rs2, rs1, rd, RISCV_BSET) if haveZbs()
++  <-> 0b0010100 @ rs2 @ rs1 @ 0b001 @ rd @ 0b0110011 if haveZbs()
++
++mapping zbs_rtype_mnemonic : brop_zbs <-> string = {
++  RISCV_BCLR    <-> "bclr",
++  RISCV_BEXT    <-> "bext",
++  RISCV_BINV    <-> "binv",
++  RISCV_BSET    <-> "bset"
++}
++
++mapping clause assembly = ZBS_RTYPE(rs2, rs1, rd, op)
++  <-> zbs_rtype_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
++
++function clause execute (ZBS_RTYPE(rs2, rs1, rd, op)) = {
++  let rs1_val = X(rs1);
++  let rs2_val = X(rs2);
++  let mask : xlenbits = if sizeof(xlen) == 32
++                        then zero_extend(0b1) << rs2_val[4..0]
++                        else zero_extend(0b1) << rs2_val[5..0];
++  let result : xlenbits = match op {
++    RISCV_BCLR => rs1_val & ~(mask),
++    RISCV_BEXT => zero_extend(bool_to_bits((rs1_val & mask) != zeros())),
++    RISCV_BINV => rs1_val ^ mask,
++    RISCV_BSET => rs1_val | mask
++  };
++  X(rd) = result;
++  RETIRE_SUCCESS
++}
+diff --git a/model/riscv_insts_zicsr.sail b/model/riscv_insts_zicsr.sail
+index 9eaa135..0ff349e 100644
+--- a/model/riscv_insts_zicsr.sail
++++ b/model/riscv_insts_zicsr.sail
+@@ -10,7 +10,7 @@
+ /* This file specifies the instructions in the 'Zicsr' extension.     */
+ 
+ /* ****************************************************************** */
+-union clause ast = CSR  : (csreg, bits(5), regidx, bool, csrop)
++union clause ast = CSR  : (csreg, regidx, regidx, bool, csrop)
+ 
+ mapping encdec_csrop : csrop <-> bits(2) = {
+   CSRRW <-> 0b01,
+@@ -19,7 +19,11 @@ mapping encdec_csrop : csrop <-> bits(2) = {
+ }
+ 
+ mapping clause encdec = CSR(csr, rs1, rd, is_imm, op)
+-  <-> csr @ rs1 @ bool_bits(is_imm) @ encdec_csrop(op) @ encdec_r(rd) @ 0b1110011
++  <-> csr @ rs1 @ bool_bits(is_imm) @ encdec_csrop(op) @ rd @ 0b1110011
++
++/* CHERIoT sail-riscv 122bcb8: the mcycle LFSR exists only in RVFI_DII builds;
++ * the formal spec is a non-DII build, so mcycle reads the counter. */
++function read_mcycle_value() -> xlenbits = mcycle[(sizeof(xlen) - 1) .. 0]
+ 
+ function readCSR csr : csreg -> xlenbits = {
+   let res : xlenbits =
+@@ -29,9 +33,9 @@ function readCSR csr : csreg -> xlenbits = {
+     (0xF12,  _) => marchid,
+     (0xF13,  _) => mimpid,
+     (0xF14,  _) => mhartid,
+-    (0xF15,  _) => mconfigptr,
+     (0x300,  _) => mstatus.bits,
+     (0x301,  _) => misa.bits,
++    (0x302,  _) => medeleg.bits,
+     (0x303,  _) => mideleg.bits,
+     (0x304,  _) => mie.bits,
+     (0x305,  _) => get_mtvec(),
+@@ -60,11 +64,39 @@ function readCSR csr : csreg -> xlenbits = {
+     (0x757, 32) => mseccfgh,                   // mseccfgh
+ 
+     /* machine mode counters */
+-    (0xB00,  _) => mcycle[(sizeof(xlen) - 1) .. 0],
++    (0xB00,  _) => read_mcycle_value(),
+     (0xB02,  _) => minstret[(sizeof(xlen) - 1) .. 0],
+     (0xB80, 32) => mcycle[63 .. 32],
+     (0xB82, 32) => minstret[63 .. 32],
+ 
++    /* trigger/debug */
++    (0x7a0,  _) => ~(tselect),  /* this indicates we don't have any trigger support */
++
++    /* supervisor mode */
++    (0x100,  _) => lower_mstatus(mstatus).bits,
++    (0x102,  _) => sedeleg.bits,
++    (0x103,  _) => sideleg.bits,
++    (0x104,  _) => lower_mie(mie, mideleg).bits,
++    (0x105,  _) => get_stvec(),
++    (0x106,  _) => zero_extend(scounteren.bits),
++    (0x10A,  _) => senvcfg.bits[sizeof(xlen) - 1 .. 0],
++    (0x140,  _) => sscratch,
++    (0x141,  _) => get_xret_target(Supervisor) & pc_alignment_mask(),
++    (0x142,  _) => scause.bits,
++    (0x143,  _) => stval,
++    (0x144,  _) => lower_mip(mip, mideleg).bits,
++
++    /* user mode counters */
++    (0xC00,  _) => mcycle[(sizeof(xlen) - 1) .. 0],
++    (0xC01,  _) => mtime[(sizeof(xlen) - 1) .. 0],
++    (0xC02,  _) => minstret[(sizeof(xlen) - 1) .. 0],
++    (0xC80, 32) => mcycle[63 .. 32],
++    (0xC81, 32) => mtime[63 .. 32],
++    (0xC82, 32) => minstret[63 .. 32],
++
++    /* user mode: Zkr */
++    (0x015,  _) => read_seed_csr(),
++
+     _           => /* check extensions */
+                    match ext_read_CSR(csr) {
+                      Some(res) => res,
+@@ -87,7 +119,7 @@ function writeCSR (csr : csreg, value : xlenbits) -> unit = {
+     (0x303,  _) => { mideleg = legalize_mideleg(mideleg, value); Some(mideleg.bits) },
+     (0x304,  _) => { mie = legalize_mie(mie, value); Some(mie.bits) },
+     (0x305,  _) => { Some(set_mtvec(value)) },
+-    (0x306,  _) => { Some(zero_extend(mcounteren.bits)) },
++    (0x306,  _) => { mcounteren = legalize_mcounteren(mcounteren, value); Some(zero_extend(mcounteren.bits)) },
+     (0x30A, 32) => { menvcfg = legalize_menvcfg(menvcfg, menvcfg.bits[63 .. 32] @ value); Some(menvcfg.bits[31 .. 0]) },
+     (0x30A, 64) => { menvcfg = legalize_menvcfg(menvcfg, value); Some(menvcfg.bits) },
+     (0x310, 32) => { Some(mstatush.bits) }, // ignore writes for now
+@@ -95,7 +127,11 @@ function writeCSR (csr : csreg, value : xlenbits) -> unit = {
+     (0x320,  _) => { mcountinhibit = legalize_mcountinhibit(mcountinhibit, value); Some(zero_extend(mcountinhibit.bits)) },
+     (0x340,  _) => { mscratch = value; Some(mscratch) },
+     (0x341,  _) => { Some(set_xret_target(Machine, value)) },
+-    (0x342,  _) => { mcause = legalize_mcause(value); Some(mcause.bits) },
++    // kudu-fv: mcause is WLRL; keep only the Interrupt bit and Cause[4:0],
++    // as Kudu and cheriot-ibex do (all legal CHERIoT cause codes fit in 5 bits).
++    (0x342,  _) => { mcause[IsInterrupt] = Mk_Mcause(value)[IsInterrupt];
++                     mcause[Cause]       = zero_extend(value[4 .. 0]);
++                     Some(mcause.bits) },
+     (0x343,  _) => { mtval = value; Some(mtval) },
+     (0x344,  _) => { mip = legalize_mip(mip, value); Some(mip.bits) },
+ 
+@@ -105,21 +141,41 @@ function writeCSR (csr : csreg, value : xlenbits) -> unit = {
+       pmpWriteCfgReg(idx, value); Some(pmpReadCfgReg(idx))
+     },
+ 
++    (0x747,  _) => { mseccfg = mseccfgWrite(mseccfg, value); Some(mseccfg.bits()) },
++    (0x757, 32) => { Some(mseccfgh) }, // ignore writes for now
++
+     // pmpaddrN. Unfortunately the PMP index does not nicely align with the CSR index bits.
+     (0x3B @ idx : bits(4),  _) => { let idx = unsigned(0b00 @ idx); pmpWriteAddrReg(idx, value); Some(pmpReadAddrReg(idx)) },
+     (0x3C @ idx : bits(4),  _) => { let idx = unsigned(0b01 @ idx); pmpWriteAddrReg(idx, value); Some(pmpReadAddrReg(idx)) },
+     (0x3D @ idx : bits(4),  _) => { let idx = unsigned(0b10 @ idx); pmpWriteAddrReg(idx, value); Some(pmpReadAddrReg(idx)) },
+     (0x3E @ idx : bits(4),  _) => { let idx = unsigned(0b11 @ idx); pmpWriteAddrReg(idx, value); Some(pmpReadAddrReg(idx)) },
+ 
+-    (0x747,  _) => { mseccfg = mseccfgWrite(mseccfg, value); Some(mseccfg.bits()) },
+-    (0x757, 32) => { Some(mseccfgh) }, // ignore writes for now
+-
+     /* machine mode counters */
+     (0xB00,  _) => { mcycle[(sizeof(xlen) - 1) .. 0] = value; Some(value) },
+     (0xB02,  _) => { minstret[(sizeof(xlen) - 1) .. 0] = value; minstret_increment = false; Some(value) },
+     (0xB80, 32) => { mcycle[63 .. 32] = value; Some(value) },
+     (0xB82, 32) => { minstret[63 .. 32] = value; minstret_increment = false; Some(value) },
+ 
++    /* trigger/debug */
++    (0x7a0,  _) => { tselect = value; Some(tselect) },
++
++    /* supervisor mode */
++    (0x100,  _) => { mstatus = legalize_sstatus(mstatus, value); Some(mstatus.bits) },
++    (0x102,  _) => { sedeleg = legalize_sedeleg(sedeleg, value); Some(sedeleg.bits) },
++    (0x103,  _) => { sideleg.bits = value; Some(sideleg.bits) }, /* TODO: does this need legalization? */
++    (0x104,  _) => { mie = legalize_sie(mie, mideleg, value); Some(mie.bits) },
++    (0x105,  _) => { Some(set_stvec(value)) },
++    (0x106,  _) => { scounteren = legalize_scounteren(scounteren, value); Some(zero_extend(scounteren.bits)) },
++    (0x10A,  _) => { senvcfg = legalize_senvcfg(senvcfg, zero_extend(value)); Some(senvcfg.bits[sizeof(xlen) - 1 .. 0]) },
++    (0x140,  _) => { sscratch = value; Some(sscratch) },
++    (0x141,  _) => { Some(set_xret_target(Supervisor, value)) },
++    (0x142,  _) => { scause.bits = value; Some(scause.bits) },
++    (0x143,  _) => { stval = value; Some(stval) },
++    (0x144,  _) => { mip = legalize_sip(mip, mideleg, value); Some(mip.bits) },
++
++    /* user mode: seed (entropy source). writes are ignored */
++    (0x015,  _) => write_seed_csr(),
++
+     _           => ext_write_CSR(csr, value)
+   };
+   match res {
+@@ -134,16 +190,14 @@ function clause execute CSR(csr, rs1, rd, is_imm, op) = {
+     CSRRW  => true,
+     _      => unsigned(rs1) != 0
+   };
+-  if not(is_imm) & haveE() & rs1[4] == bitone
+-  then { handle_illegal(); RETIRE_FAIL }
+-  else if not(check_CSR(csr, cur_privilege, isWrite))
++  if not(check_CSR(csr, cur_privilege, isWrite))
+   then { handle_illegal(); RETIRE_FAIL }
+   else if not(ext_check_CSR(csr, cur_privilege, isWrite))
+   then { ext_check_CSR_fail(); RETIRE_FAIL }
+   else {
+     let csr_val = readCSR(csr); /* could have side-effects, so technically shouldn't perform for CSRW[I] with rd == 0 */
+     if isWrite then {
+-      let rs1_val : xlenbits = if is_imm then zero_extend(rs1) else X(struct { idx = rs1 });
++      let rs1_val : xlenbits = if is_imm then zero_extend(rs1) else X(rs1);
+       let new_val : xlenbits = match op {
+         CSRRW => rs1_val,
+         CSRRS => csr_val | rs1_val,
+@@ -170,4 +224,4 @@ mapping csr_mnemonic : csrop <-> string = {
+ mapping clause assembly = CSR(csr, rs1, rd, true, op)
+   <-> csr_mnemonic(op) ^ "i" ^ spc() ^ reg_name(rd)  ^ sep() ^ csr_name_map(csr) ^ sep() ^ hex_bits_5(rs1)
+ mapping clause assembly = CSR(csr, rs1, rd, false, op)
+-  <-> csr_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ csr_name_map(csr) ^ sep() ^ reg_name(struct { idx = rs1 })
++  <-> csr_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ csr_name_map(csr) ^ sep() ^ reg_name(rs1)
+diff --git a/model/riscv_mem.sail b/model/riscv_mem.sail
+index 479b788..a701778 100644
+--- a/model/riscv_mem.sail
++++ b/model/riscv_mem.sail
+@@ -275,6 +275,10 @@ function checked_mem_write forall 'n, 0 < 'n <= max_mem_access . (
+ 
+   let wk = write_kind_of_flags(aq, rl, con);
+ 
++  /* kudu-fv: keep the extension hook (CHERIoT lowers MSHWM on stores); it
++   * always returns Ext_PhysAddr_OK in CHERIoT. */
++  let _ : Ext_PhysAddr_Check = ext_check_phys_mem_write(wk, paddr, width, data, meta);
++
+   let (fst_data, fst_be, snd_data, snd_be) = (match width {
+     1 => split_bits_byte(data, paddr[1..0]),
+     2 => split_bits_half(data, paddr[1..0]),
+diff --git a/model/riscv_platform.sail b/model/riscv_platform.sail
+index 3a166c5..3187629 100644
+--- a/model/riscv_platform.sail
++++ b/model/riscv_platform.sail
+@@ -28,12 +28,6 @@ val plat_mtval_has_illegal_inst_bits = {ocaml: "Platform.mtval_has_illegal_inst_
+                                         c: "plat_mtval_has_illegal_inst_bits",
+                                         lem: "plat_mtval_has_illegal_inst_bits"} : unit -> bool
+ 
+-/* whether mtval stores the bits of the ebreak instruction on EBREAK */
+-val plat_mtval_has_ebreak_pc = {ocaml: "Platform.plat_mtval_has_ebreak_pc",
+-                                        interpreter: "Platform.plat_mtval_has_ebreak_pc",
+-                                        c: "plat_mtval_has_ebreak_pc",
+-                                        lem: "plat_mtval_has_ebreak_pc"} : unit -> bool
+-
+ /* Platform initialization and ticking. */
+ 
+ function init_platform() -> unit = ()
+diff --git a/model/riscv_pmp_regs.sail b/model/riscv_pmp_regs.sail
+index c805e81..a63d962 100644
+--- a/model/riscv_pmp_regs.sail
++++ b/model/riscv_pmp_regs.sail
+@@ -128,10 +128,6 @@ function pmpWriteCfg(cfg: Pmpcfg_ent, v: bits(8)) -> Pmpcfg_ent = {
+ }
+ 
+ function pmpWriteCfgReg(n : range(0, 15), v : xlenbits) -> unit = {
+-  if n >= sys_pmp_count() then {
+-    return ();
+-  };
+-
+   if sizeof(xlen) == 32
+   then {
+     foreach (i from 0 to 3) {
+@@ -154,10 +150,6 @@ function pmpWriteAddr(locked: bool, tor_locked: bool, reg: xlenbits, v: xlenbits
+   else { if (locked | tor_locked) then reg else zero_extend(v[53..0]) }
+ 
+ function pmpWriteAddrReg(n : range(0, 63), v : xlenbits) -> unit = {
+-  if n >= sys_pmp_count() then {
+-    return ();
+-  };
+-
+   pmpaddr_n[n] = pmpWriteAddr(
+     pmpLocked(pmpcfg_n[n]),
+     if n + 1 < 64 then pmpTORLocked(pmpcfg_n[n + 1]) else false,
+diff --git a/model/riscv_regs.sail b/model/riscv_regs.sail
+index 04384c9..55b22cd 100644
+--- a/model/riscv_regs.sail
++++ b/model/riscv_regs.sail
+@@ -50,6 +50,10 @@ register x31 : regtype
+ 
+ val rX : forall 'n, 0 <= 'n < 32. regno('n) -> xlenbits
+ function rX r = {
++  /* CHERIoT sail-riscv 4d04efa/c7ed9c4 */
++  if rv32e_register_file & (r >= 16) then
++    throw Error_not_rv32e_register();
++
+   let v : regtype =
+     match r {
+       0 => zero_reg,
+@@ -148,52 +152,53 @@ function wX (r, in_v) = {
+ 
+ function rX_bits(i: bits(5)) -> xlenbits = rX(unsigned(i))
+ 
++/* kudu-fv: upstream (4d04efa/c7ed9c4) performs this check inside wX; it is
++ * hoisted into the only caller because wX is turned into SV wires
++ * (-sv-fun2wires wX), which would drop the check. */
+ function wX_bits(i: bits(5), data: xlenbits) -> unit = {
++  if rv32e_register_file & (unsigned(i) >= 16) then
++    throw Error_not_rv32e_register();
+   wX(unsigned(i)) = data
+ }
+ 
+-function rX_idx(r: regidx) -> xlenbits = rX_bits(r.idx)
+-
+-function wX_idx(r: regidx, v: xlenbits) -> unit = wX_bits(r.idx, v)
+-
+-overload X = {rX_bits, wX_bits, rX_idx, wX_idx, rX, wX}
++overload X = {rX_bits, wX_bits, rX, wX}
+ 
+ /* mappings for assembly */
+ 
+-val reg_name : regidx <-> string
++val reg_name : bits(5) <-> string
+ mapping reg_name = {
+-    struct { idx = 0b00000 } <-> "zero",
+-    struct { idx = 0b00001 } <-> "ra",
+-    struct { idx = 0b00010 } <-> "sp",
+-    struct { idx = 0b00011 } <-> "gp",
+-    struct { idx = 0b00100 } <-> "tp",
+-    struct { idx = 0b00101 } <-> "t0",
+-    struct { idx = 0b00110 } <-> "t1",
+-    struct { idx = 0b00111 } <-> "t2",
+-    struct { idx = 0b01000 } <-> "fp",
+-    struct { idx = 0b01001 } <-> "s1",
+-    struct { idx = 0b01010 } <-> "a0",
+-    struct { idx = 0b01011 } <-> "a1",
+-    struct { idx = 0b01100 } <-> "a2",
+-    struct { idx = 0b01101 } <-> "a3",
+-    struct { idx = 0b01110 } <-> "a4",
+-    struct { idx = 0b01111 } <-> "a5",
+-    struct { idx = 0b10000 } <-> "a6",
+-    struct { idx = 0b10001 } <-> "a7",
+-    struct { idx = 0b10010 } <-> "s2",
+-    struct { idx = 0b10011 } <-> "s3",
+-    struct { idx = 0b10100 } <-> "s4",
+-    struct { idx = 0b10101 } <-> "s5",
+-    struct { idx = 0b10110 } <-> "s6",
+-    struct { idx = 0b10111 } <-> "s7",
+-    struct { idx = 0b11000 } <-> "s8",
+-    struct { idx = 0b11001 } <-> "s9",
+-    struct { idx = 0b11010 } <-> "s10",
+-    struct { idx = 0b11011 } <-> "s11",
+-    struct { idx = 0b11100 } <-> "t3",
+-    struct { idx = 0b11101 } <-> "t4",
+-    struct { idx = 0b11110 } <-> "t5",
+-    struct { idx = 0b11111 } <-> "t6"
++    0b00000 <-> "zero",
++    0b00001 <-> "ra",
++    0b00010 <-> "sp",
++    0b00011 <-> "gp",
++    0b00100 <-> "tp",
++    0b00101 <-> "t0",
++    0b00110 <-> "t1",
++    0b00111 <-> "t2",
++    0b01000 <-> "fp",
++    0b01001 <-> "s1",
++    0b01010 <-> "a0",
++    0b01011 <-> "a1",
++    0b01100 <-> "a2",
++    0b01101 <-> "a3",
++    0b01110 <-> "a4",
++    0b01111 <-> "a5",
++    0b10000 <-> "a6",
++    0b10001 <-> "a7",
++    0b10010 <-> "s2",
++    0b10011 <-> "s3",
++    0b10100 <-> "s4",
++    0b10101 <-> "s5",
++    0b10110 <-> "s6",
++    0b10111 <-> "s7",
++    0b11000 <-> "s8",
++    0b11001 <-> "s9",
++    0b11010 <-> "s10",
++    0b11011 <-> "s11",
++    0b11100 <-> "t3",
++    0b11101 <-> "t4",
++    0b11110 <-> "t5",
++    0b11111 <-> "t6"
+ }
+ 
+ mapping creg_name : bits(3) <-> string = {
+diff --git a/model/riscv_step.sail b/model/riscv_step.sail
+index 5ff7e4b..e93ed77 100644
+--- a/model/riscv_step.sail
++++ b/model/riscv_step.sail
+@@ -25,10 +25,10 @@ function step(step_no : int) -> bool = {
+ 
+   let (retired, stepped) : (Retired, bool) =
+     match dispatchInterrupt(cur_privilege) {
+-      Some(intr, priv) => {
++      Some(intr, fast, priv) => {
+         if   get_config_print_instr()
+-        then print_bits("Handling interrupt: ", interruptType_to_bits(intr));
+-        handle_interrupt(intr, priv);
++        then print_bits("Handling interrupt: ", interruptType_to_bits(intr, fast));
++        handle_interrupt(intr, fast, priv);
+         (RETIRE_FAIL, false)
+       },
+       None() => {
+diff --git a/model/riscv_sys_control.sail b/model/riscv_sys_control.sail
+index 605010b..e08c3af 100644
+--- a/model/riscv_sys_control.sail
++++ b/model/riscv_sys_control.sail
+@@ -21,7 +21,6 @@ function is_CSR_defined (csr : csreg, p : Privilege) -> bool =
+     0xf12 => p == Machine, // marchdid
+     0xf13 => p == Machine, // mimpid
+     0xf14 => p == Machine, // mhartid
+-    0xf15 => p == Machine, // mconfigptr
+     /* machine mode: trap setup */
+     0x300 => p == Machine, // mstatus
+     0x301 => p == Machine, // misa
+@@ -45,20 +44,52 @@ function is_CSR_defined (csr : csreg, p : Privilege) -> bool =
+     0x3A @ idx : bits(4) => p == Machine & sys_pmp_count() > unsigned(idx) & (idx[0] == bitzero | sizeof(xlen) == 32),
+ 
+     // pmpaddrN. Unfortunately the PMP index does not nicely align with the CSR index bits.
+-    0x3B @ idx : bits(4) => p == Machine & sys_pmp_max_count() > unsigned(0b00 @ idx),
+-    0x3C @ idx : bits(4) => p == Machine & sys_pmp_max_count() > unsigned(0b01 @ idx),
+-    0x3D @ idx : bits(4) => p == Machine & sys_pmp_max_count() > unsigned(0b10 @ idx),
+-    0x3E @ idx : bits(4) => p == Machine & sys_pmp_max_count() > unsigned(0b11 @ idx),
+-
++    0x3B @ idx : bits(4) => p == Machine & sys_pmp_count() > unsigned(0b00 @ idx),
++    0x3C @ idx : bits(4) => p == Machine & sys_pmp_count() > unsigned(0b01 @ idx),
++    0x3D @ idx : bits(4) => p == Machine & sys_pmp_count() > unsigned(0b10 @ idx),
++    0x3E @ idx : bits(4) => p == Machine & sys_pmp_count() > unsigned(0b11 @ idx),
+     0x747 => p == Machine & sys_pmp_count() > 0, // mseccfg
+     0x757 => p == Machine & (sizeof(xlen) == 32) & sys_pmp_count() > 0, // mseccfgh
+-
+     0xB00 => p == Machine, // mcycle
+     0xB02 => p == Machine, // minstret
+ 
+     0xB80 => p == Machine & (sizeof(xlen) == 32), // mcycleh
+     0xB82 => p == Machine & (sizeof(xlen) == 32), // minstreth
+ 
++    /* disabled trigger/debug module */
++    0x7a0 => p == Machine,
++
++    /* supervisor mode: trap setup */
++    0x100 => haveSupMode() & (p == Machine | p == Supervisor), // sstatus
++    0x102 => haveSupMode() & haveNExt() & (p == Machine | p == Supervisor), // sedeleg
++    0x103 => haveSupMode() & haveNExt() & (p == Machine | p == Supervisor), // sideleg
++    0x104 => haveSupMode() & (p == Machine | p == Supervisor), // sie
++    0x105 => haveSupMode() & (p == Machine | p == Supervisor), // stvec
++    0x106 => haveSupMode() & (p == Machine | p == Supervisor), // scounteren
++    0x10A => haveSupMode() & (p == Machine | p == Supervisor), // senvcfg
++
++    /* supervisor mode: trap handling */
++    0x140 => haveSupMode() & (p == Machine | p == Supervisor), // sscratch
++    0x141 => haveSupMode() & (p == Machine | p == Supervisor), // sepc
++    0x142 => haveSupMode() & (p == Machine | p == Supervisor), // scause
++    0x143 => haveSupMode() & (p == Machine | p == Supervisor), // stval
++    0x144 => haveSupMode() & (p == Machine | p == Supervisor), // sip
++
++    /* supervisor mode: address translation */
++    0x180 => haveSupMode() & (p == Machine | p == Supervisor), // satp
++
++    /* user mode: counters */
++    0xC00 => haveUsrMode(),    // cycle
++    0xC01 => haveUsrMode(),    // time
++    0xC02 => haveUsrMode(),    // instret
++
++    0xC80 => haveUsrMode() & (sizeof(xlen) == 32),     // cycleh
++    0xC81 => haveUsrMode() & (sizeof(xlen) == 32),     // timeh
++    0xC82 => haveUsrMode() & (sizeof(xlen) == 32),     // instreth
++
++    /* user mode: Zkr */
++    0x015 => haveZkr(),
++
+     /* check extensions */
+     _     => ext_is_CSR_defined(csr, p)
+   }
+@@ -68,8 +99,15 @@ function check_CSR_access(csrrw, csrpr, p, isWrite) =
+     not(isWrite == true & csrrw == 0b11)  /* read/write */
+   & (privLevel_to_bits(p) >=_u csrpr)      /* privilege */
+ 
++function check_TVM_SATP(csr : csreg, p : Privilege) -> bool =
++  not(csr == 0x180 & p == Supervisor & mstatus[TVM] == 0b1)
++
+ function check_Counteren(csr : csreg, p : Privilege) -> bool =
+   match(csr, p) {
++    (0xC00, Supervisor) => mcounteren[CY] == 0b1,
++    (0xC01, Supervisor) => mcounteren[TM] == 0b1,
++    (0xC02, Supervisor) => mcounteren[IR] == 0b1,
++
+     (0xC00, User) => mcounteren[CY] == 0b1 & (not(haveSupMode()) | scounteren[CY] == 0b1),
+     (0xC01, User) => mcounteren[TM] == 0b1 & (not(haveSupMode()) | scounteren[TM] == 0b1),
+     (0xC02, User) => mcounteren[IR] == 0b1 & (not(haveSupMode()) | scounteren[IR] == 0b1),
+@@ -80,10 +118,31 @@ function check_Counteren(csr : csreg, p : Privilege) -> bool =
+               else true
+   }
+ 
++
++/* Seed may only be accessed if we are doing a write, and access has been
++ * allowed in the current priv mode
++ */
++function check_seed_CSR (csr : csreg, p : Privilege, isWrite : bool) -> bool = {
++  if not(csr == 0x015) then {
++    true
++  } else if not(isWrite) then {
++    /* Read-only access to the seed CSR is not allowed */
++    false
++  } else {
++    match (p) {
++      Machine => true,
++      Supervisor => false, /* TODO: base this on mseccfg */
++      User => false, /* TODO: base this on mseccfg */
++    }
++  }
++}
++
+ function check_CSR(csr : csreg, p : Privilege, isWrite : bool) -> bool =
+     is_CSR_defined(csr, p)
+   & check_CSR_access(csrAccess(csr), csrPriv(csr), p, isWrite)
++  & check_TVM_SATP(csr, p)
+   & check_Counteren(csr, p)
++  & check_seed_CSR(csr, p, isWrite)
+ 
+ /* Reservation handling for LR/SC.
+  *
+@@ -100,7 +159,11 @@ function check_CSR(csr : csreg, p : Privilege, isWrite : bool) -> bool =
+ val speculate_conditional = monadic {ocaml: "Platform.speculate_conditional", interpreter: "excl_res", c: "speculate_conditional", lem: "speculate_conditional_success"} : unit -> bool
+ 
+ val load_reservation = {ocaml: "Platform.load_reservation", interpreter: "Platform.load_reservation", c: "load_reservation", lem: "load_reservation"} : xlenbits -> unit
+-val match_reservation = {ocaml: "Platform.match_reservation", interpreter: "Platform.match_reservation", lem: "match_reservation", c: "match_reservation"} : xlenbits -> bool
++/* kudu-fv: the memory system holds the reservation; the SV build turns this
++ * into an input port (-sv-fun2wires match_reservation) driven by the SC
++ * response (Kudu data_sc_fail_i). */
++val match_reservation : xlenbits -> bool
++function match_reservation(addr) = true
+ val cancel_reservation = {ocaml: "Platform.cancel_reservation", interpreter: "Platform.cancel_reservation", c: "cancel_reservation", lem: "cancel_reservation"} : unit -> unit
+ 
+ /* Exception delegation: given an exception and the privilege at which
+@@ -123,6 +186,8 @@ function exception_delegatee(e : ExceptionType, p : Privilege) -> Privilege = {
+ 
+ /* Interrupts are prioritized in privilege order, and for each
+  * privilege, in the order: external, software, timers.
++ * kudu-fv: platform fast interrupts (30:16) come first, lowest index highest
++ * (as cheriot-ibex's sail-riscv fork, cheriot-ibex and Kudu).
+  */
+ function findPendingInterrupt(ip : xlenbits) -> option((InterruptType, FastInterruptId)) = {
+   let ip = Mk_Minterrupts(ip);
+@@ -211,16 +276,19 @@ function dispatchInterrupt(priv : Privilege) -> option((InterruptType, FastInter
+   /* If we don't have different privilege levels, we don't need to check delegation.
+    * Absence of U-mode implies absence of S-mode.
+    */
+-  assert(priv == Machine, "invalid current privilege");
+-
+-  if nmi_mode then None()
+-  else if nmi then Some(I_NM, 0, Machine)
+-  else {
++  /* CHERIoT sail-riscv 4b215f1: honour mstatus.MIE in the M-only case.
++   * kudu-fv: CHERIoT is M/U without S or N, so every interrupt is taken in
++   * M-mode. M interrupts are always enabled below M-mode, regardless of
++   * mstatus.MIE (privileged spec 3.1.6.1, as Kudu/cheriot-ibex); upstream
++   * asserted priv == Machine here instead. */
++  if priv != Machine | mstatus[MIE] == 0b1 then {
+     let enabled_pending = mip.bits & mie.bits;
+     match findPendingInterrupt(enabled_pending) {
+       Some((i, n)) => let r = (i, n, Machine) in Some(r),
+-      None()  => None()
++      None()       => None()
+     }
++  } else {
++    None()
+   }
+ }
+ 
+@@ -252,9 +320,15 @@ $endif
+ 
+ /* handle exceptional ctl flow by updating nextPC and operating privilege */
+ 
++/* FV only: set whenever trap_handler runs, cleared by the SV spec entry point.
++ * Replaces the mstack_cause sentinel that the fv2 harness used with lowRISC's
++ * Ibex NMI/MStack registers (bffa52d, not ported). */
++register spec_trap : bool
++
+ function trap_handler(del_priv : Privilege, intr : bool, c : exc_code, pc : xlenbits, info : option(xlenbits), ext : option(ext_exception))
+                      -> xlenbits = {
+   rvfi_trap();
++  spec_trap = true;
+   if   get_config_print_platform()
+   then print_platform("handling " ^ (if intr then "int#" else "exc#")
+                       ^ BitStr(c) ^ " at priv " ^ to_str(del_priv)
+@@ -264,11 +338,6 @@ function trap_handler(del_priv : Privilege, intr : bool, c : exc_code, pc : xlen
+ 
+   match (del_priv) {
+     Machine => {
+-       mstack[MPIE] = mstatus[MPIE];
+-       mstack[MPP] = mstatus[MPP];
+-       mstack_epc = MEPCC.address;
+-       mstack_cause = mcause;
+-
+        mcause[IsInterrupt] = bool_to_bits(intr);
+        mcause[Cause]       = zero_extend(c);
+ 
+@@ -317,17 +386,7 @@ function exception_handler(cur_priv : Privilege, ctl : ctl_result,
+       then print_platform("ret-ing from " ^ to_str(prev_priv) ^ " to " ^ to_str(cur_privilege));
+ 
+       cancel_reservation();
+-      let dst = prepare_xret_target(Machine) & pc_alignment_mask();
+-
+-      if nmi_mode then {
+-        nmi_mode = false;
+-        mstatus[MPIE] = mstack[MPIE];
+-        mstatus[MPP] = mstack[MPP];
+-        MEPCC = {null_cap with address = mstack_epc};
+-        mcause = mstack_cause;
+-      };
+-
+-      dst
++      prepare_xret_target(Machine) & pc_alignment_mask()
+     }
+   }
+ }
+@@ -346,12 +405,8 @@ function handle_exception(e: ExceptionType) -> unit = {
+   set_next_pc(exception_handler(cur_privilege, CTL_TRAP(t), PC))
+ }
+ 
+-function handle_interrupt(i : InterruptType, fast : FastInterruptId, del_priv : Privilege) -> unit = {
+-  if i == I_NM then {
+-    nmi_mode = true;
+-  };
++function handle_interrupt(i : InterruptType, fast : FastInterruptId, del_priv : Privilege) -> unit =
+   set_next_pc(trap_handler(del_priv, true, interruptType_to_bits(i, fast), PC, None(), None()))
+-}
+ 
+ /* state state initialization */
+ 
+@@ -359,15 +414,16 @@ function init_sys() -> unit = {
+   cur_privilege = Machine;
+ 
+   mhartid     = zero_extend(0b0);
+-  mconfigptr  = zero_extend(0b0);
+ 
+   misa[MXL] = arch_to_bits(if sizeof(xlen) == 32 then RV32 else RV64);
+-  misa[A]   = 0b1;                             /* atomics */
++  /* CHERIoT sail-riscv 64eadbb/c7ed9c4: E (not I) per rv32e_register_file, no A, U or S. */
++  misa[A]   = 0b0;                             /* atomics */
+   misa[C]   = bool_to_bits(sys_enable_rvc());  /* RVC */
+-  misa[I]   = 0b1;                             /* base integer ISA */
++  misa[I]   = bool_to_bits(not(rv32e_register_file));
++  misa[E]   = bool_to_bits(rv32e_register_file);
+   misa[M]   = 0b1;                             /* integer multiply/divide */
+-  misa[U]   = 0b1;                             /* user-mode */
+-  misa[S]   = 0b1;                             /* supervisor-mode */
++  misa[U]   = 0b0;                             /* user-mode */
++  misa[S]   = 0b0;                             /* supervisor-mode */
+   misa[V]   = bool_to_bits(sys_enable_vext()); /* vector extension */
+ 
+   if   sys_enable_fdext() & sys_enable_zfinx()
+@@ -380,7 +436,8 @@ function init_sys() -> unit = {
+   mstatus = set_mstatus_SXL(mstatus, misa[MXL]);
+   mstatus = set_mstatus_UXL(mstatus, misa[MXL]);
+   mstatus[SD]   = 0b0;
+-  mstatus[MPP] = privLevel_to_bits(lowest_supported_privLevel());
++  /* CHERIoT sail-riscv cf541be: MPP resets to M. */
++  mstatus[MPP] = 0b11;
+ 
+   /* set to little-endian mode */
+   if sizeof(xlen) == 64 then {
+@@ -392,7 +449,8 @@ function init_sys() -> unit = {
+   mie.bits     = zero_extend(0b0);
+   mideleg.bits = zero_extend(0b0);
+   medeleg.bits = zero_extend(0b0);
+-  mtvec.bits   = zero_extend(0b0);
++  /* CHERIoT sail-riscv 122bcb8: mtvec reset value for the mini trap handler. */
++  mtvec.bits   = zero_extend(0x807f0000);
+   mcause.bits  = zero_extend(0b0);
+   mepc            = zero_extend(0b0);
+   mtval           = zero_extend(0b0);
+@@ -422,4 +480,4 @@ function init_sys() -> unit = {
+ union MemoryOpResult ('a : Type) = {
+   MemValue     : 'a,
+   MemException : (bits(32), ExceptionType)
+-}
++}
+\ No newline at end of file
+diff --git a/model/riscv_sys_regs.sail b/model/riscv_sys_regs.sail
+index 2ebf35c..773233a 100644
+--- a/model/riscv_sys_regs.sail
++++ b/model/riscv_sys_regs.sail
+@@ -96,13 +96,11 @@ val sys_enable_next = {c: "sys_enable_next", ocaml: "Platform.enable_next", _: "
+    supervisor mode is implemented and non-bare addressing modes are supported. */
+ val sys_enable_writable_fiom = {c: "sys_enable_writable_fiom", ocaml: "Platform.enable_writable_fiom", _: "sys_enable_writable_fiom"} : unit -> bool
+ 
+-/* How many PMP entries are implemented */
++/* How many PMP entries are implemented. This must be 0, 16 or 64 (this is checked at runtime). */
+ val sys_pmp_count = {c: "sys_pmp_count", ocaml: "Platform.pmp_count", _: "sys_pmp_count"} : unit -> range(0, 64)
+ /* G parameter that specifies the PMP grain size. The grain size is 2^(G+2), e.g.
+    G=0 -> 4 bytes, G=10 -> 4096 bytes. */
+ val sys_pmp_grain = {c: "sys_pmp_grain", ocaml: "Platform.pmp_grain", _: "sys_pmp_grain"} : unit -> range(0, 63)
+-/* Max PMP count, is the number of hardwired to zero PMP registers + the number of real sys_pmp_count() */
+-val sys_pmp_max_count = {c: "sys_pmp_max_count", ocaml: "Platform.pmp_max_count", _: "sys_pmp_max_count"} : unit -> range(0, 64)
+ 
+ /* whether misa.v was enabled at boot */
+ val sys_enable_vext = {c: "sys_enable_vext", ocaml: "Platform.enable_vext", _: "sys_enable_vext"} : unit -> bool
+@@ -135,7 +133,6 @@ function haveMulDiv()  -> bool = misa[M] == 0b1
+ function haveSupMode() -> bool = misa[S] == 0b1
+ function haveUsrMode() -> bool = misa[U] == 0b1
+ function haveNExt()    -> bool = misa[N] == 0b1
+-function haveE()       -> bool = misa[E] == 0b1
+ /* see below for F and D (and Z*inx counterparts) extension tests */
+ 
+ /* BitManip extension support. */
+@@ -148,9 +145,12 @@ function haveZbs()  -> bool = true
+ function haveZfa()  -> bool = true
+ 
+ /* Scalar Cryptography extensions support. */
+-function haveZbkb() -> bool = true
++/* kudu-fv: Zbkb and Zbkx are off (Kudu implements Zba/Zbb/Zbc/Zbs only, so
++ * pack, packh, brev8, zip, unzip, xperm4 and xperm8 are illegal); the shared
++ * Zbb/Zbkb and Zbc/Zbkc encodings stay legal through haveZbb/haveZbc. */
++function haveZbkb() -> bool = false
+ function haveZbkc() -> bool = true
+-function haveZbkx() -> bool = true
++function haveZbkx() -> bool = false
+ 
+ /* Cryptography extension support. Note these will need updating once */
+ /* Sail can be dynamically configured with different extension support */
+@@ -268,12 +268,6 @@ function set_mstatus_UXL(m : Mstatus, a : arch_xlen) -> Mstatus = {
+   }
+ }
+ 
+-/* value to make mstatus.MPP when an illegal value is written */
+-val plat_illegal_mpp_default = {ocaml: "Platform.plat_illegal_mpp_default",
+-				interpreter: "Platform.plat_illegal_mpp_default",
+-				c: "plat_illegal_mpp_default",
+-				lem: "plat_illegal_mpp_default"} : unit -> bits(2)
+-
+ function legalize_mstatus(o : Mstatus, v : xlenbits) -> Mstatus = {
+   /*
+    * Populate all defined fields using the bits of v, stripping anything
+@@ -283,8 +277,10 @@ function legalize_mstatus(o : Mstatus, v : xlenbits) -> Mstatus = {
+   let m : Mstatus = Mk_Mstatus(zero_extend(v[22 .. 7] @ 0b0 @ v[5 .. 3] @ 0b0 @ v[1 .. 0]));
+ 
+   /* Legalize MPP */
++  /* kudu-fv: MPP is WARL; an unsupported value maps to Machine, as Kudu and
++   * cheriot-ibex do (upstream maps it to the lowest supported privilege). */
+   let m = [m with MPP = if have_privLevel(m[MPP]) then m[MPP]
+-                        else plat_illegal_mpp_default()];
++                        else privLevel_to_bits(Machine)];
+ 
+   /* We don't have any extension context yet. */
+   let m = [m with XS = extStatus_to_bits(Off)];
+@@ -361,7 +357,7 @@ function haveZdinx()   -> bool = sys_enable_zfinx()
+ /* interrupt processing state */
+ 
+ bitfield Minterrupts : xlenbits = {
+-  fastI : 30 .. 16, /* fast interrupts */
++  fastI : 30 .. 16, /* kudu-fv: platform fast interrupts */
+ 
+   MEI : 11, /* external interrupts */
+   SEI : 9,
+@@ -383,16 +379,19 @@ function legalize_mip(o : Minterrupts, v : xlenbits) -> Minterrupts = {
+   /* The only writable bits are the S-mode bits, and with the 'N'
+    * extension, the U-mode bits. */
+   let v = Mk_Minterrupts(v);
+-  let m = o;
++  let m = [o with SEI = v[SEI], STI = v[STI], SSI = v[SSI]];
+   if haveUsrMode() & haveNExt() then {
+     [m with UEI = v[UEI], UTI = v[UTI], USI = v[USI]]
+   } else m
+ }
+ 
+ function legalize_mie(o : Minterrupts, v : xlenbits) -> Minterrupts = {
++  /* kudu-fv: CHERIoT has no S-mode, so SEIE/STIE/SSIE are read-only zero.
++   * Bits 30:16 are the platform fast-interrupt enables, writable in Kudu and
++   * cheriot-ibex (dispatched by findPendingInterrupt). */
++  let m = Mk_Minterrupts([o.bits with 30 .. 16 = v[30 .. 16]]);
+   let v = Mk_Minterrupts(v);
+-  let m = [o with
+-    fastI = v[fastI],
++  let m = [m with
+     MEI = v[MEI],
+     MTI = v[MTI],
+     MSI = v[MSI]
+@@ -443,8 +442,12 @@ bitfield Mtvec : xlenbits = {
+ register mtvec : Mtvec  /* Trap Vector */
+ 
+ function legalize_tvec(o : Mtvec, v : xlenbits) -> Mtvec = {
+- // 256 byte aligned, always vectored
+- Mk_Mtvec(v[31..8] @ 0x01)
++ let v = Mk_Mtvec(v);
++ match (trapVectorMode_of_bits(v[Mode])) {
++   TV_Direct => v,
++   TV_Vector => v,
++   _         => [v with Mode = o[Mode]]
++ }
+ }
+ 
+ bitfield Mcause : xlenbits = {
+@@ -453,19 +456,6 @@ bitfield Mcause : xlenbits = {
+ }
+ register mcause : Mcause
+ 
+-/* value to make mstatus.MPP when an illegal value is written */
+-val plat_has_internal_interrupts = {ocaml: "Platform.plat_has_internal_interrupts",
+-				interpreter: "Platform.plat_has_internal_interrupts",
+-				c: "plat_has_internal_interrupts",
+-				lem: "plat_has_internal_interrupts"} : unit -> bool
+-
+-function legalize_mcause(v : xlenbits) -> Mcause = {
+-  if (v[31..30] == 0b11) & plat_has_internal_interrupts() then
+-    Mk_Mcause([v with 30..5 = sail_ones(26)])
+-  else
+-    Mk_Mcause([v with 30..5 = sail_zeros(26)])
+-}
+-
+ /* Interpreting the trap-vector address */
+ function tvec_addr(m : Mtvec, c : Mcause) -> option(xlenbits) = {
+   let base : xlenbits = m[Base] @ 0b00;
+@@ -478,15 +468,6 @@ function tvec_addr(m : Mtvec, c : Mcause) -> option(xlenbits) = {
+   }
+ }
+ 
+-/* NMI */
+-
+-register nmi : bool /* Pending NMI */
+-register nmi_mode : bool /* We are already handling an NMI */
+-
+-register mstack : Mstatus
+-register mstack_epc : xlenbits
+-register mstack_cause : Mcause
+-
+ /* Exception PC */
+ 
+ register mepc : xlenbits
+@@ -522,6 +503,16 @@ bitfield Counteren : bits(32) = {
+ register mcounteren : Counteren
+ register scounteren : Counteren
+ 
++function legalize_mcounteren(c : Counteren, v : xlenbits) -> Counteren = {
++  /* no HPM counters yet */
++  [c with IR = [v[2]], TM = [v[1]], CY = [v[0]]]
++}
++
++function legalize_scounteren(c : Counteren, v : xlenbits) -> Counteren = {
++  /* no HPM counters yet */
++  [c with IR = [v[2]], TM = [v[1]], CY = [v[0]]]
++}
++
+ bitfield Counterin : bits(32) = {
+   /* no HPM counters yet */
+   IR : 2,
+@@ -562,7 +553,6 @@ register mimpid : xlenbits
+ register marchid : xlenbits
+ /* TODO: this should be readonly, and always 0 for now */
+ register mhartid : xlenbits
+-register mconfigptr : xlenbits
+ 
+ /* S-mode registers */
+ 
+diff --git a/model/riscv_types.sail b/model/riscv_types.sail
+index 4e5acfa..1d781d3 100644
+--- a/model/riscv_types.sail
++++ b/model/riscv_types.sail
+@@ -22,7 +22,7 @@ type word = bits(32)
+ 
+ /* register identifiers */
+ 
+-struct regidx = { idx : bits(5) }
++type regidx  = bits(5)
+ type cregidx = bits(3)    /* identifiers in RVC instructions */
+ type csreg   = bits(12)   /* CSR addressing */
+ 
+@@ -35,12 +35,12 @@ function regidx_to_regno b = let 'r = unsigned(b) in r
+ 
+ /* mapping RVC register indices into normal indices */
+ val creg2reg_idx : cregidx -> regidx
+-function creg2reg_idx(creg) = struct { idx = 0b01 @ creg }
++function creg2reg_idx(creg) = 0b01 @ creg
+ 
+ /* some architecture and ABI relevant register identifiers */
+-let zreg : regidx = struct { idx = 0b00000 }  /* x0, zero register  */
+-let ra   : regidx = struct { idx = 0b00001 }  /* x1, return address */
+-let sp   : regidx = struct { idx = 0b00010 }  /* x2, stack pointer  */
++let zreg : regidx = 0b00000  /* x0, zero register  */
++let ra   : regidx = 0b00001  /* x1, return address */
++let sp   : regidx = 0b00010  /* x2, stack pointer  */
+ 
+ /* instruction fields */
+ 
+@@ -72,6 +72,8 @@ function arch_to_bits(a : Architecture) -> arch_xlen =
+ /* model-internal exceptions */
+ 
+ union exception = {
++  /* CHERIoT sail-riscv 4d04efa: access to x16-x31 on an RV32E register file. */
++  Error_not_rv32e_register : unit,
+   Error_not_implemented : string,
+   Error_internal_error  : unit
+ }
+@@ -149,9 +151,8 @@ enum InterruptType = {
+   I_S_External,
+   I_M_External,
+ 
+-  I_Fast,
+-
+-  I_NM
++  /* kudu-fv: platform fast interrupts (mip/mie 30:16), as cheriot-ibex/Kudu */
++  I_Fast
+ }
+ 
+ type FastInterruptId = range(0, 14)
+@@ -168,10 +169,7 @@ function interruptType_to_bits (i, fast) =
+     I_U_External => 0x08,
+     I_S_External => 0x09,
+     I_M_External => 0x0b,
+-
+-    I_Fast => 0x10 + fast,
+-
+-    I_NM => 0x1f
++    I_Fast       => 0x10 + fast
+   }
+ 
+ /* architectural exception definitions */

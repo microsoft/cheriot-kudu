@@ -1,0 +1,102 @@
+# Spec sources = upstream base + these diffs (squashed; history in the scratch forks).
+cheriot-sail base: ac58b3f809656a4ad8ffe876c279e95bb0898362 (lowRISC cheriot-sail 'formal' branch); kudu-fv HEAD b14d7ea245ea04c33eabb7ab147920838d7e47c4
+sail-riscv   base: 5fca3f99df74c82c09be1b08b81d176faf1d53e0 (submodule commit of that base); kudu-fv HEAD 9b8c5274fc296ff6d86ceb919a21106a6f915b10
+sail         base: 3f317060d2800c88432cc1309255a7c674bcab41 (lowRISC sail, lowrisc branch) + sail/sail_plugin_sv_unroll.diff
+
+## cheriot-sail kudu-fv commits
+b14d7ea kudu-fv: RV32E decode check for LR/SC/AMO; bump sail-riscv (A extension, Zbkb/Zbkx off)
+5adb53a Bump sail-riscv: dispatch fast interrupts
+5ca398e kudu-fv: MEPCC tag cleared when an interrupt is taken with PC unrepresentable in PCC (was an assert)
+ba93b28 Bump sail-riscv: U-mode WFI honours mstatus.TW
+1663dfc Bump sail-riscv: M interrupts enabled in U-mode
+3e3a02c kudu-fv: rv32e_illegal: compressed hints are never illegal (Kudu zeroes their register fields)
+dd34eaa RV32E register check at decode: x16-x31 make the instruction ILLEGAL before execute (as Kudu/cheriot-ibex), instead of Error_not_rv32e_register after side effects
+e6554e3 Bump sail-riscv: mie/MPP legalization as in Kudu, restore MSHWM store update
+d7f76c4 Bump sail-riscv: legalize mcause writes (WLRL, as in Kudu)
+84ab893 Bump sail-riscv: drop SFENCE_VMA (illegal, as in Kudu)
+87ba739 Point sail-riscv at local kudu-fv branch (FV-enabling lowRISC sail-riscv changes, cf. lowRISC ab2c83c)
+ca0079c Port lowRISC cd5f3d3 "Never throw an exception" (fetch PC check)
+2e72030 Port lowRISC 4ee9a6c "Prepare for FV" onto dii-read-from-file
+1765879 Added LFSR for mcycle in DII mode builds
+9c85d02 updated sail-riscv
+772bfdc updated sail-riscv
+b91cf9f updated sail-riscv (enabled RV32A)
+a48712d updated to support rv32 emulation
+37777ae updated sail-riscv
+98c8827 updated sail-riscv
+510d03f updated sail-riscv and initial mtvec address to support mini trap handler
+f80dfdd sail-riscv updates
+2ec47a4 moved mtcc default address to 0x80000000
+9966605 added mtcc checks for all pcc exception cases
+7820d09 updated sail-riscv
+489a4c3 updated sail-riscv
+d593712 extended rvfi_v1 packet data fields to 72-bit
+087d07f mereged implicit_t_sail branch changes
+a5c1de7 making rvfi rd/rs1/rs2 data 64-bit wide
+de30487 Add running.md file
+11e51de Update scripts for batch run and output the RVFI result to binary.
+59657a4 Add RUNNING.md for how to run the read from file and dump to ELF. Also provide Dockeer environment for easy build and reproduce.
+e4619cf Use the C++ ELFIO to write ELF file.
+91cd717 Update submodule to latest on cheriot-dii-read-from-file
+0e5a372 Add memory dump and -f option to read DII instructions from file
+b9e7ab7 Prepare for 1.0 Release
+d3f7c13 archdoc: update LLVM attribute names to have CHERIoT prefix as they are CHERIoT specific.
+930afcd README: Instruct to setup the `opam` environment variables (#110)
+cff6006 Bump sail-riscv module to pick up sail 0.20 fix.
+91c7f8a Enable bit manipulation extensions in the Sail model.
+0817768 Document new f64 calling convention
+906d662 Add section detailing divergence in the integer calling convention.
+ade1ab2 Disable andperms property that triggers Sail performance issue.
+881bb07 Strengthen root cap props to include max bounds and tag.
+c560114 Fix assembly syntax for CLC, CSC and CJALR.
+9184843 github actions: allow manually trigger build.
+9747ef4 Document CHERIOT_CCALL relocation.
+81bf3d2 Bump sail-riscv to point at version with enable-misaligned on by default in the sail simulator. This is the correct baseline for CHERIoT.
+
+## sail-riscv kudu-fv commits
+9b8c527 kudu-fv: A extension (LR.W/SC.W/AMO*.W) on the FV memory interface, SC outcome from match_reservation port; Zbkb/Zbkx off (Kudu has Zba/Zbb/Zbc/Zbs only)
+fba1588 Dispatch platform fast interrupts (mip/mie 30:16) first, lowest index highest, mcause 16+id (as cheriot-ibex's sail-riscv fork and Kudu)
+74efd9f U-mode WFI traps only when mstatus.TW=1 (no S-mode, as Kudu/cheriot-ibex)
+67633f5 Take M interrupts in U-mode regardless of mstatus.MIE (M/U system without S/N, as Kudu/cheriot-ibex); drop assert(priv == Machine) in dispatchInterrupt
+9d7bd77 Legalize mie (no S-mode bits, keep fast bits 30:16) and illegal MPP to M (as Kudu/cheriot-ibex); restore ext_check_phys_mem_write in checked_mem_write (CHERIoT MSHWM store update)
+740ba28 Legalize mcause writes to {Interrupt, Cause[4:0]} (WLRL, as in Kudu/cheriot-ibex)
+4520628 Drop SFENCE_VMA (decodes as illegal, as in Kudu/Ibex; no S-mode or VM in CHERIoT)
+b0589c3 Make the CHERIoT sail-riscv model provable with the Sail SV backend (kudu FV)
+122bcb8 Added LFSR for mcycle in DII mode builds
+29c5fd2 updated mem_dump for addata support
+d5cb04b added comments in riscv_sim.c
+86bb71e enabled RV32A instructions
+c7ed9c4 updated to support rv32i emulation (32-registers)
+df276a1 updated ELF mem_dump functions to use full memory address space and dump 1st writes instead of last
+92fe673 fixing c.srli/c.srai sail implementation again..
+f9c535a Added mini trap handler for phase 1 sail run, updated Makefile to build rv32 emulator
+0c0ade4 merged in upstream fix for c.srai and c.srli NSE cases
+833fbed added debug information for not_implemented:
+05d34d5 removed memory range check for dii mode to enable instr/data to address the entire 32-bit address space
+629ac55 extended rvfi_v1 packet data fields to 72-bit
+8076f21 making rvfi rd/rs1/rs2 data 64-bit wide
+a64ed75 Populate the rs1 and rs2 data into the RVFI.
+f73ffc3 Change the start address to 0x8000080 and use global variable to config.
+b6a6556 Update sail start address to 0x8000080 to sync up with ibex.
+1e6e85d Fix phase 2 ELF re-execute to dump RVFI.
+127d0ac Support dumping the RVFI into binary instead of sending through the socket.
+3d018e2 Clean up the unused files.
+36614d6 Use the c++ ELFIO to write to ELF file.
+b6e72ca Fix the sail elf loader will start from BROM. fix the instruction DII write to memory Fix the terminator instruction.
+5d26743 Add memory dump and -f option to read DII instructions from file
+a9a62c0 Support rvfi dii to read instruction from file.
+30317c5 Replace calls to __barrier with sail_barrier (new Sail concurrency interface).
+e5a5d41 Fix type signature of `plat_get_16_random_bits`.
+f5e058c Fix incompatibility with sail 0.20 release.
+0dace4f Delete generated prover snapshots.
+25654d6 Enable misaligned memory access by default.
+cf541be Initialize mstatus[MPP] to M mode
+23b1ac9 Add a hacky mechanism to track new lines in terminal and trace output and insert extra new lines to keep them separate.
+c040c15 riscv_sim: Pass htif exit code through to exit so we can easily test it when running tests.
+1ff730f riscv_sim: disable tracing by default.
+2f948ab Add a new 'exception' trace option that prints only on interrupts and exceptions.
+037c835 riscv_sim: Add command line arguments to enable or disable use of boot ROM.
+036655d Add very basic output-only MMIO UART for terminal output.
+4d04efa Trap if reading or writing upper 16 registers
+4b215f1 Fix handling of msatus.MIE in M-mode only case.
+64eadbb Initialise misa for CHERI-MCU: E not I, not U, not S, not A.
