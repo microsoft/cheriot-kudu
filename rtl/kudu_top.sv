@@ -186,7 +186,7 @@ module kudu_top import kudu_cfg_pkg::*; import super_pkg::*;  #(
 
   assign cheri_tsafe_en = CHERIoTEn;   // QQQ for now - tie to an input or CSR?
 
-  regfile #(.NRegs(32)) regfile_i (
+  regfile regfile_i (
      // Clock and Reset
     .clk_i          (clk_i       ),
     .rst_ni         (rst_ni      ),

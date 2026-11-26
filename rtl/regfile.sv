@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 module regfile import super_pkg::*; import cheri_pkg::*; #(
-  parameter int unsigned NRegs      = 32,
   parameter bit          CHERIoTEn  = 1'b1
 ) (
    // Clock and Reset
@@ -36,13 +35,15 @@ module regfile import super_pkg::*; import cheri_pkg::*; #(
   input  logic [4:0]       trvk_addr_i
 );
 
+  localparam int unsigned NRegs      = 32;
+
   logic [NRegs-1:0][RegW-1:0] rf_reg;
   logic [NRegs-1:1][RegW-1:0] rf_reg_q;
   
   logic [NRegs-1:1] we0_dec, we1_dec, we2_dec, trvk_clrtag_dec;
-
+  // Reg 0 - 15 (capability registers if HERIoTEn=1)
   // No flops for R0 as it's hard-wired to 0
-  for (genvar i = 1; i < NRegs; i++) begin : g_rf_flops
+  for (genvar i = 1; i < 16; i++) begin : g_rf_flop_0
     logic [RegW-1:0] clrtag_mask;
 
     assign we0_dec[i]  = (waddr0_i == 5'(i)) & we0_i;
@@ -65,7 +66,27 @@ module regfile import super_pkg::*; import cheri_pkg::*; #(
         rf_reg_q[i] <= rf_reg_q[i] & clrtag_mask;
       end 
     end
-  end // g_rf_flops
+  end // g_rf_flops_0
+
+  // Reg 16-31, regular RV32 registers, no meta data
+  for (genvar i = 16; i < 32; i++) begin : g_rf_flop_1
+
+    assign we0_dec[i]  = (waddr0_i == 5'(i)) & we0_i;
+    assign we1_dec[i]  = (waddr1_i == 5'(i)) & we1_i;
+    assign we2_dec[i]  = (waddr2_i == 5'(i)) & we2_i;
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+      if (!rst_ni) begin
+        rf_reg_q[i] <= 0;
+      end else if (we2_dec[i]) begin
+        rf_reg_q[i] <= wdata2_i[31:0];
+      end else if (we1_dec[i]) begin
+        rf_reg_q[i] <= wdata1_i[31:0];
+      end else if (we0_dec[i]) begin
+        rf_reg_q[i] <= wdata0_i[31:0];
+      end 
+    end
+  end // g_rf_flops_1
 
   assign rf_reg[0]   = 32'h0;
   for (genvar i=1; i<NRegs; i++) begin
